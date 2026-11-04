@@ -12,7 +12,7 @@ use std::process::{Command, Output, Stdio};
 
 use clap::Parser;
 use serde_json::Value;
-use vivi::cli::{Cli, Command as CliCommand, McpSubcommand};
+use vivi_core::cli::{Cli, Command as CliCommand, McpSubcommand};
 
 use project_server::ProjectServer;
 

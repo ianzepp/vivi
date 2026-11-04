@@ -3,11 +3,11 @@
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
-use vivi::cli::FlowCommand;
-use vivi::pump::flow::def::FlowKind;
-use vivi::pump::flow::index::{RunRow, StepRow, StepState};
-use vivi::pump::flow::registry::FLOW_VERSION;
-use vivi::pump::flow::view;
+use vivi_core::cli::FlowCommand;
+use vivi_core::pump::flow::def::FlowKind;
+use vivi_core::pump::flow::index::{RunRow, StepRow, StepState};
+use vivi_core::pump::flow::registry::FLOW_VERSION;
+use vivi_core::pump::flow::view;
 use vivi_error::VivariumError;
 
 const KINDS: [FlowKind; 4] = [

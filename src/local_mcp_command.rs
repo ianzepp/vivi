@@ -8,10 +8,10 @@ use std::io::{self, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
-use vivi::cli::{McpCommand, McpSubcommand};
-use vivi::mcp::client::{self, Client};
-use vivi::mcp::resolve::{self, MailspaceSource, McpFlags};
-use vivi::mcp::{BridgeConfig, HttpUpstream, serve};
+use vivi_core::cli::{McpCommand, McpSubcommand};
+use vivi_core::mcp::client::{self, Client};
+use vivi_core::mcp::resolve::{self, MailspaceSource, McpFlags};
+use vivi_core::mcp::{BridgeConfig, HttpUpstream, serve};
 use vivi_error::VivariumError;
 
 /// Exit status for a tool that reports `isError: true`.
@@ -58,9 +58,12 @@ fn run_one_shot(command: &McpCommand, one_shot: &McpSubcommand) -> Result<i32, S
         Ok(mcp) => mcp,
         // A signed-in session the server no longer knows (it restarted):
         // sign in again, once. Any other failure is reported as it is.
-        Err(error) if signed_in && vivi::machine_key::is_refused_bearer(&error.to_string()) => {
-            vivi::machine_key::forget(&config.server, command.host).map_err(|e| e.to_string())?;
-            retry_key = vivi::machine_key::sign_in(&config.server, command.host)
+        Err(error)
+            if signed_in && vivi_core::machine_key::is_refused_bearer(&error.to_string()) =>
+        {
+            vivi_core::machine_key::forget(&config.server, command.host)
+                .map_err(|e| e.to_string())?;
+            retry_key = vivi_core::machine_key::sign_in(&config.server, command.host)
                 .map_err(|e| e.to_string())?;
             Client::connect(&upstream, &retry_key).map_err(|e| e.to_string())?
         }
@@ -176,7 +179,7 @@ fn bridge_config(command: &McpCommand) -> Result<BridgeConfig, VivariumError> {
     let resolved = resolve::resolve(&flags, env_lookup, mailspace_lookup)?;
     let machine_session = resolved.api_key == SIGN_IN;
     let api_key = if machine_session {
-        vivi::machine_key::sign_in(&resolved.server, command.host)?
+        vivi_core::machine_key::sign_in(&resolved.server, command.host)?
     } else {
         resolved.api_key
     };
@@ -255,7 +258,7 @@ fn local_server_url() -> Option<String> {
         bind: Option<String>,
         port: Option<u16>,
     }
-    let path = vivi::home::server_home().ok()?.join("config.toml");
+    let path = vivi_util::home::server_home().ok()?.join("config.toml");
     let config: Config = toml::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
     let bind = match config.bind.as_deref() {
         None | Some("" | "0.0.0.0" | "::" | "[::]") => "127.0.0.1".to_string(),

@@ -1,5 +1,5 @@
-use vivi::cli::{MailAbsorbStatus, MailDumpCommand};
-use vivi::mailspace::{DumpFilters, MailAbsorbFilter, MailDumpRequest, Mailspace};
+use vivi_core::cli::{MailAbsorbStatus, MailDumpCommand};
+use vivi_core::mailspace::{DumpFilters, MailAbsorbFilter, MailDumpRequest, Mailspace};
 use vivi_error::VivariumError;
 use vivi_mail::message;
 

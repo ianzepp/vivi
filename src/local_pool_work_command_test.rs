@@ -3,7 +3,7 @@
 //! is launched.
 
 use super::*;
-use vivi::pool::config::PoolCommitter;
+use vivi_core::pool::config::PoolCommitter;
 
 /// A repository with `main` and `review/aaa`; returns the directory and the
 /// repository path.
@@ -183,8 +183,8 @@ fn an_unknown_ref_is_an_error_naming_the_ref_and_the_repository() {
 
 /// A finished dispatch record, the way `dispatch` builds one: the `with`
 /// entries already carry their resolved commit, cut to 12 hex digits.
-fn record(with: &[String]) -> vivi::pool::record::DispatchRecord {
-    vivi::pool::record::DispatchRecord {
+fn record(with: &[String]) -> vivi_core::pool::record::DispatchRecord {
+    vivi_core::pool::record::DispatchRecord {
         target: None,
         repository: None,
         pool: "p".into(),
@@ -230,7 +230,7 @@ fn the_human_dispatch_line_has_no_with_segment_when_the_job_has_none() {
 fn the_named_role_wins_over_the_task_addressee() {
     let tmp = tempfile::tempdir().unwrap();
     let mut space = Mailspace::init(Some(tmp.path())).unwrap();
-    let kind = |kind: &str| vivi::mailspace::RoleUpdate {
+    let kind = |kind: &str| vivi_core::mailspace::RoleUpdate {
         kind: Some(Some(kind.into())),
         ..Default::default()
     };

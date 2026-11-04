@@ -4,7 +4,7 @@ use std::path::Path;
 use std::process::{Command, Output};
 
 use serde_json::Value;
-use vivi::storage::Storage;
+use vivi_storage::storage::Storage;
 
 #[test]
 fn need_marks_are_events_and_round_trip_through_show_and_list() {

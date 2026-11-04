@@ -2,10 +2,10 @@
 //! record filed from the just-sent need.
 
 use super::*;
-use vivi::cli::{LocalSendCommand, NeedSendCommand};
-use vivi::mailspace::PumpState;
-use vivi::pump::config::PumpConfig;
-use vivi::pump::priority;
+use vivi_core::cli::{LocalSendCommand, NeedSendCommand};
+use vivi_core::mailspace::PumpState;
+use vivi_core::pump::config::PumpConfig;
+use vivi_core::pump::priority;
 
 /// A mailspace with the roles a default pump configuration names, plus
 /// `cedar` as a bystander recipient.

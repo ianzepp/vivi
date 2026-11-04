@@ -1,9 +1,9 @@
 use std::path::Path;
 
-use vivi::cli::{
+use vivi_core::cli::{
     AbsorbCommand, RuleCommand, RuleRetireCommand, RuleSaveCommand, RuleSupersedeCommand,
 };
-use vivi::mailspace::{Mailspace, RuleDetail, RuleRecord};
+use vivi_core::mailspace::{Mailspace, RuleDetail, RuleRecord};
 use vivi_error::VivariumError;
 
 pub(crate) fn handle_rule_command(command: &RuleCommand) -> Result<(), VivariumError> {
@@ -42,8 +42,10 @@ pub(crate) fn handle_rule_command(command: &RuleCommand) -> Result<(), VivariumE
 }
 
 fn save_rule(command: &RuleSaveCommand) -> Result<(), VivariumError> {
-    let body =
-        vivi::mailspace::read_body_input(command.body.as_deref(), command.body_file.as_deref())?;
+    let body = vivi_core::mailspace::read_body_input(
+        command.body.as_deref(),
+        command.body_file.as_deref(),
+    )?;
     let handle = Mailspace::discover(command.project.as_deref())?.save_rule(
         &command.for_identity,
         &command.subject,
@@ -55,8 +57,10 @@ fn save_rule(command: &RuleSaveCommand) -> Result<(), VivariumError> {
 }
 
 fn supersede_rule(command: &RuleSupersedeCommand) -> Result<(), VivariumError> {
-    let body =
-        vivi::mailspace::read_body_input(command.body.as_deref(), command.body_file.as_deref())?;
+    let body = vivi_core::mailspace::read_body_input(
+        command.body.as_deref(),
+        command.body_file.as_deref(),
+    )?;
     let written = Mailspace::discover(command.project.as_deref())?.supersede_rule(
         &command.for_identity,
         &command.handle,

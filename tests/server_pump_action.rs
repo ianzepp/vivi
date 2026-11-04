@@ -14,16 +14,16 @@ use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
 use serde_json::{Value, json};
 use tower::util::ServiceExt;
-use vivi::mailspace::{ItemEventState, Mailspace, RoleUpdate, SendRequest, WantState};
-use vivi::pump::control::{self, PumpMode};
-use vivi::pump::flow::index::{RunRow, StepState};
-use vivi::pump::jobs::{JobSpec, JobStatus, enqueue};
-use vivi::pump::requeue::{RequeueResult, RequeueTarget};
-use vivi::pump::state::State;
-use vivi::pump::store::{DB_FILENAME, PumpStore};
-use vivi::pump::withdraw::WithdrawClose;
-use vivi::server::grants::{GrantLevel, GrantRecord};
-use vivi::server::{AppState, app_state, hosted, router};
+use vivi_core::mailspace::{ItemEventState, Mailspace, RoleUpdate, SendRequest, WantState};
+use vivi_core::pump::control::{self, PumpMode};
+use vivi_core::pump::flow::index::{RunRow, StepState};
+use vivi_core::pump::jobs::{JobSpec, JobStatus, enqueue};
+use vivi_core::pump::requeue::{RequeueResult, RequeueTarget};
+use vivi_core::pump::state::State;
+use vivi_core::pump::store::{DB_FILENAME, PumpStore};
+use vivi_core::pump::withdraw::WithdrawClose;
+use vivi_server::server::grants::{GrantLevel, GrantRecord};
+use vivi_server::server::{AppState, app_state, hosted, router};
 
 fn scratch(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
@@ -184,14 +184,14 @@ fn open_record(root: &Path, need: &str) -> String {
 
 fn ensure_db(root: &Path) {
     let home = control::project_home(root).unwrap();
-    let mut store = PumpStore::open(&home.join(DB_FILENAME)).unwrap();
+    let store = PumpStore::open(&home.join(DB_FILENAME)).unwrap();
     store.initialize_control("stopped").unwrap();
     store.save(&State::default()).unwrap();
 }
 
 fn seed_flow(root: &Path, need: &str, task: &str) {
     let home = control::project_home(root).unwrap();
-    let mut store = PumpStore::open(&home.join(DB_FILENAME)).unwrap();
+    let store = PumpStore::open(&home.join(DB_FILENAME)).unwrap();
     store.initialize_control("running").unwrap();
     let run = RunRow {
         need: need.to_owned(),
@@ -220,7 +220,7 @@ fn seed_jobs(root: &Path) {
     st.jobs.get_mut("m1").unwrap().held = Some("no usable bridge".into());
     st.jobs.get_mut("d1").unwrap().status = JobStatus::Dispatched;
     let home = control::project_home(root).unwrap();
-    let mut store = PumpStore::open(&home.join(DB_FILENAME)).unwrap();
+    let store = PumpStore::open(&home.join(DB_FILENAME)).unwrap();
     store.initialize_control("running").unwrap();
     store.save(&st).unwrap();
 }
@@ -434,7 +434,7 @@ async fn withdraw_matches_the_library_and_closes_the_need() {
     ensure_db(&fx.root);
     let twin_root = twin(&fx.root);
 
-    let lib = vivi::pump::withdraw::withdraw(&twin_root, &[need.clone()], "stale").unwrap();
+    let lib = vivi_core::pump::withdraw::withdraw(&twin_root, &[need.clone()], "stale").unwrap();
     let got = fx
         .call(
             &key,
@@ -480,7 +480,7 @@ async fn requeue_steps_and_job_match_the_library() {
     seed_flow(&fx.root, &need, "step-task-1");
     let twin_root = twin(&fx.root);
 
-    let preview = vivi::pump::requeue::requeue(
+    let preview = vivi_core::pump::requeue::requeue(
         &twin_root,
         &RequeueTarget::Steps {
             tasks: &["step-task-1".into()],
@@ -510,7 +510,7 @@ async fn requeue_steps_and_job_match_the_library() {
     assert!(pending(&fx.root).is_empty());
     assert!(pending(&twin_root).is_empty());
 
-    let posted = vivi::pump::requeue::requeue(
+    let posted = vivi_core::pump::requeue::requeue(
         &twin_root,
         &RequeueTarget::Steps {
             tasks: &["step-task-1".into()],
@@ -550,7 +550,7 @@ async fn requeue_steps_and_job_match_the_library() {
     seed_jobs(&fx.root);
     let twin_root = twin(&fx.root);
     let preview =
-        vivi::pump::requeue::requeue(&twin_root, &RequeueTarget::Job("m1"), true).unwrap();
+        vivi_core::pump::requeue::requeue(&twin_root, &RequeueTarget::Job("m1"), true).unwrap();
     let got = fx
         .call(
             &key,
@@ -567,7 +567,7 @@ async fn requeue_steps_and_job_match_the_library() {
     assert!(releases(&twin_root).is_empty());
 
     let posted =
-        vivi::pump::requeue::requeue(&twin_root, &RequeueTarget::Job("m1"), false).unwrap();
+        vivi_core::pump::requeue::requeue(&twin_root, &RequeueTarget::Job("m1"), false).unwrap();
     let got = fx
         .call(
             &key,
@@ -606,11 +606,12 @@ async fn replan_answer_and_unlock_match_the_library() {
     );
     let twin_root = twin(&fx.root);
 
-    let lib_replan = vivi::pump::replan::replan(&twin_root, &need).unwrap();
+    let lib_replan = vivi_core::pump::replan::replan(&twin_root, &need).unwrap();
     let lib_answer =
-        vivi::pump::flow::answer::answer(&twin_root, &step, "merged", Some("see you")).unwrap();
+        vivi_core::pump::flow::answer::answer(&twin_root, &step, "merged", Some("see you"))
+            .unwrap();
     let lib_unlock =
-        vivi::pump::unlock::unlock(&twin_root, &need, Some("plan"), Some("go")).unwrap();
+        vivi_core::pump::unlock::unlock(&twin_root, &need, Some("plan"), Some("go")).unwrap();
 
     let got_replan = fx
         .call(
@@ -817,7 +818,7 @@ async fn pump_reset_matches_the_library() {
     fs::write(home.join("exceptions.txt"), "boom\n").unwrap();
     let twin_root = twin(&fx.root);
 
-    let lib = vivi::pump::reset::archive(&twin_root).unwrap();
+    let lib = vivi_core::pump::reset::archive(&twin_root).unwrap();
     let got = fx.call(&key, "pump_reset", json!({})).await;
 
     assert_eq!(got["moved"], json!(lib.moved));

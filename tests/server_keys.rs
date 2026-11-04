@@ -2,8 +2,8 @@
 
 use std::path::PathBuf;
 
-use vivi::server::auth::sha256_hex;
-use vivi::server::keys::{ApiKeyRegistry, KeyError};
+use vivi_server::server::auth::sha256_hex;
+use vivi_server::server::keys::{ApiKeyRegistry, KeyError};
 
 fn scratch(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("vivi-server-keys-{}-{name}", std::process::id()));

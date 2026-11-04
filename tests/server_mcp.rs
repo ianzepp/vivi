@@ -12,9 +12,9 @@ use ed25519_dalek::{Signer, SigningKey};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tower::util::ServiceExt;
-use vivi::server::api_router;
-use vivi::server::projects::{AppendItem, ProjectStore};
-use vivi::storage::Storage;
+use vivi_server::server::api_router;
+use vivi_server::server::projects::{AppendItem, ProjectStore};
+use vivi_storage::storage::Storage;
 
 fn store_key() -> String {
     STANDARD.encode([0x42u8; 32])

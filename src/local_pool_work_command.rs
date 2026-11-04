@@ -1,31 +1,31 @@
 //! `vivi pool dispatch | wait | reconcile`: the command glue. The engines are
-//! in [`vivi::pool::work`]; GitHub (token, default branch, base commit) is
+//! in [`vivi_core::pool::work`]; GitHub (token, default branch, base commit) is
 //! reached from here only.
 
 use std::path::Path;
 use std::time::Duration;
 
-use vivi::cli::{PoolDispatchCommand, PoolReconcileCommand, PoolWaitCommand};
-use vivi::mailspace::Mailspace;
-use vivi::mailspace::PoolTask;
-use vivi::pool::bridge;
-use vivi::pool::collect::{ErrorWatch, Pacing};
-use vivi::pool::config::RepoAccess;
-use vivi::pool::dispatch::{self, DispatchFlags};
-use vivi::pool::github::Secret;
-use vivi::pool::local_branch;
-use vivi::pool::local_git::Repo;
-use vivi::pool::plain_git::{self, RepoSource};
-use vivi::pool::pools::{self, PoolSet};
-use vivi::pool::porcelain;
-use vivi::pool::progress::{HEARTBEAT, Progress};
-use vivi::pool::provider::{PoolProvider, SlotLifetime};
-use vivi::pool::reconcile_parallel;
-use vivi::pool::record::{self, DispatchRecord};
-use vivi::pool::role_dispatch::{self, RoleFacts};
-use vivi::pool::slot::PoolId;
-use vivi::pool::work::{self, WaitOptions, Waited};
-use vivi::pool::{PoolConfig, github, job, run};
+use vivi_core::cli::{PoolDispatchCommand, PoolReconcileCommand, PoolWaitCommand};
+use vivi_core::mailspace::Mailspace;
+use vivi_core::mailspace::PoolTask;
+use vivi_core::pool::bridge;
+use vivi_core::pool::collect::{ErrorWatch, Pacing};
+use vivi_core::pool::config::RepoAccess;
+use vivi_core::pool::dispatch::{self, DispatchFlags};
+use vivi_core::pool::github::Secret;
+use vivi_core::pool::local_branch;
+use vivi_core::pool::local_git::Repo;
+use vivi_core::pool::plain_git::{self, RepoSource};
+use vivi_core::pool::pools::{self, PoolSet};
+use vivi_core::pool::porcelain;
+use vivi_core::pool::progress::{HEARTBEAT, Progress};
+use vivi_core::pool::provider::{PoolProvider, SlotLifetime};
+use vivi_core::pool::reconcile_parallel;
+use vivi_core::pool::record::{self, DispatchRecord};
+use vivi_core::pool::role_dispatch::{self, RoleFacts};
+use vivi_core::pool::slot::PoolId;
+use vivi_core::pool::work::{self, WaitOptions, Waited};
+use vivi_core::pool::{PoolConfig, github, job, run};
 use vivi_error::VivariumError;
 
 const WAIT_POLL: Duration = Duration::from_secs(8);
@@ -150,7 +150,7 @@ pub(crate) fn dispatch(command: &PoolDispatchCommand) -> Result<(), VivariumErro
     };
     warn_missing_env(provider, config);
     if handle.config.provider == "local" {
-        vivi::pool::clean::guard_before_dispatch(&space, &id.pool)?;
+        vivi_core::pool::clean::guard_before_dispatch(&space, &id.pool)?;
     }
     let bridged = command.command.is_none() && config.bridge.enabled;
     mint_bridge_grant(bridged, &space, &id.pool, &job_id, &mut plan, &progress)?;
@@ -217,7 +217,7 @@ fn resolve_extras(
     let pump = space.config.pump.as_ref().ok_or_else(|| {
         VivariumError::Config("--also-target requires [pump] repository targets".into())
     })?;
-    vivi::pool::extras::resolve(
+    vivi_core::pool::extras::resolve(
         pool,
         config,
         pump,
@@ -269,7 +269,7 @@ fn dispatch_reset_base(config: &PoolConfig, space: &Mailspace) -> Option<String>
     if config.provider != "local" {
         return None;
     }
-    Some(vivi::pool::reset::choose_base(space, None).name)
+    Some(vivi_core::pool::reset::choose_base(space, None).name)
 }
 
 /// Note, on a per-dispatch host, when an uncollected pod gives up its job.
@@ -283,12 +283,14 @@ fn note_uncollected(
     if provider.slot_lifetime() != SlotLifetime::PerDispatch || config.provider != "runpod" {
         return;
     }
-    let deadline = vivi::pool::runpod_open::dispatch_deadline(
+    let deadline = vivi_core::pool::runpod_open::dispatch_deadline(
         &config.runpod,
         ready_timeout,
         (made.at, made.budget),
     );
-    progress.say(&vivi::pool::runpod_open::uncollected_note(made, deadline));
+    progress.say(&vivi_core::pool::runpod_open::uncollected_note(
+        made, deadline,
+    ));
 }
 
 /// Record the job branch on a local slot so later clean can recycle it.
@@ -300,8 +302,11 @@ fn note_last_branch(provider: &dyn PoolProvider, machine: &str, branch: &str) {
         return;
     };
     let dir = root.join(machine);
-    let _ignored =
-        vivi::pool::clean_rule::write_mark(&dir, vivi::pool::clean_rule::MARK_LAST_BRANCH, branch);
+    let _ignored = vivi_core::pool::clean_rule::write_mark(
+        &dir,
+        vivi_core::pool::clean_rule::MARK_LAST_BRANCH,
+        branch,
+    );
 }
 
 /// What the dispatch says it is about to do to the pool: rent a pod (slots

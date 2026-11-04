@@ -3,7 +3,7 @@
 //! mind state, or socket is touched.
 
 use clap::Parser;
-use vivi::cli::{Cli, Command, MindServiceCommand, MindSubcommand};
+use vivi_core::cli::{Cli, Command, MindServiceCommand, MindSubcommand};
 
 #[test]
 fn bare_mind_parses_as_attach_and_service_verbs_parse() {

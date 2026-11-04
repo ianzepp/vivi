@@ -14,7 +14,6 @@ members = ["crates/*"]
 
 [workspace.dependencies]
 chrono = { version = "0.4", features = ["serde"] }
-lettre = { version = "0.11", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder"] }
 mail-builder = "0.3"
 mail-parser = "0.9"
 serde = { version = "1", features = ["derive"] }
@@ -29,53 +28,46 @@ name = "vivi"
 path = "src/main.rs"
 
 [dependencies]
+vivi-util = { path = "crates/vivi-util" }
+vivi-storage = { path = "crates/vivi-storage" }
+vivi-skills = { path = "crates/vivi-skills" }
+vivi-core = { path = "crates/vivi-core" }
+vivi-proxy = { path = "crates/vivi-proxy" }
+vivi-update = { path = "crates/vivi-update" }
+vivi-server = { path = "crates/vivi-server" }
+vivi-mind = { path = "crates/vivi-mind" }
+vivi-monitor = { path = "crates/vivi-monitor" }
+vivi-doctor = { path = "crates/vivi-doctor" }
+vivi-report = { path = "crates/vivi-report" }
 vivi-error.workspace = true
 vivi-mail.workspace = true
 chrono.workspace = true
 clap = { version = "4", features = ["derive"] }
-crossterm = "0.28"
-dirs = "6"
-ed25519-dalek = { version = "2", features = ["rand_core", "pkcs8"] }
-hex = "0.4"
-lettre.workspace = true
-mail-builder.workspace = true
 mail-parser.workspace = true
-regex = "1.12"
-rand_core = { version = "0.6", features = ["getrandom"] }
-ratatui = "0.29"
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "brotli", "deflate", "gzip", "json", "rustls-tls", "stream", "zstd"] }
-axum = "0.8"
-bytes = "1"
-futures-util = { version = "0.3", default-features = false, features = ["std"] }
-tokio-stream = "0.1"
-rusqlite = { version = "0.32", features = ["bundled"] }
 serde.workspace = true
 serde_json.workspace = true
-sha2 = "0.10"
-semver = "1"
-flate2 = "1"
-tar = "0.4"
-sysinfo = "0.32"
-tempfile = "3"
-thiserror.workspace = true
 tokio = { version = "1", features = ["full"] }
-tracing = "0.1"
 toml.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-toml_edit = "0.22"
 # vivi server (formerly the vivi-server crate)
-aes-gcm = "0.10"
-base64 = "0.22"
-getrandom = "0.4"
-subtle = "2"
-tower-http = { version = "0.6", default-features = false, features = ["compression-gzip"] }
+
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
 [dev-dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "deflate", "gzip", "json", "rustls-tls", "stream"] }
+tempfile = "3"
 vivi-mail = { workspace = true, features = ["test-support"] }
 tower = { version = "0.5", features = ["util"] }
+ed25519-dalek = { version = "2", features = ["rand_core", "pkcs8"] }
+hex = "0.4"
+axum = "0.8"
+rusqlite = { version = "0.32", features = ["bundled"] }
+sha2 = "0.10"
+flate2 = "1"
+tar = "0.4"
+base64 = "0.22"
 
 [profile.release]
 strip = true

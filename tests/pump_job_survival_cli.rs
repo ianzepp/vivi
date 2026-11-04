@@ -8,15 +8,15 @@ use std::process::{Child, Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use vivi::mailspace::{Mailspace, PumpState, SendRequest};
-use vivi::pump::flow::index::{FLOW_VERSION_NUMBER, RunRow, StepState, run_state};
-use vivi::pump::flow::mail::{MailWriter, MailspacePort};
-use vivi::pump::flow::need_branch;
-use vivi::pump::flow::prune::PRUNE_FAILED;
-use vivi::pump::flow::tick::RUN_ERROR;
-use vivi::pump::jobs::{self, JobSpec, JobStatus};
-use vivi::pump::state::State;
-use vivi::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
+use vivi_core::mailspace::{Mailspace, PumpState, SendRequest};
+use vivi_core::pump::flow::index::{FLOW_VERSION_NUMBER, RunRow, StepState, run_state};
+use vivi_core::pump::flow::mail::{MailWriter, MailspacePort};
+use vivi_core::pump::flow::need_branch;
+use vivi_core::pump::flow::prune::PRUNE_FAILED;
+use vivi_core::pump::flow::tick::RUN_ERROR;
+use vivi_core::pump::jobs::{self, JobSpec, JobStatus};
+use vivi_core::pump::state::State;
+use vivi_core::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
 use vivi_mail::letter::render;
 use vivi_mail::letter::work::{NeedFront, TaskFront};
 
@@ -497,7 +497,7 @@ fn seed_merge_run(rig: &Rig, existing_need: Option<&str>, run: u32) -> SeededMer
         }
     };
     let mut port = MailspacePort {
-        mailspace,
+        mailspace: vivi_core::pump::record::PumpMailspace::new(mailspace),
         pump_identity: String::from("mind"),
     };
     MailWriter::open_record(&mut port, &need, "").unwrap();
@@ -820,7 +820,7 @@ fn seed_state(rig: &Rig) {
         }),
     );
     let store = PumpStore::open(&rig.home.join(DB_FILENAME)).unwrap();
-    let mut store = store;
+    let store = store;
     store.save(&st).unwrap();
 }
 

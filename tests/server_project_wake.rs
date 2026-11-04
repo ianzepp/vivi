@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use vivi::server::project_wake::ProjectWake;
+use vivi_server::server::project_wake::ProjectWake;
 
 #[tokio::test]
 async fn same_project_notify_wakes_waiter() {

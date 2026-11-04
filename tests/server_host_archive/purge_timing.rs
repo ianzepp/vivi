@@ -176,7 +176,7 @@ async fn purge_refuses_an_unarchived_project() {
     assert!(!errored, "{made}");
     let id = made["project_id"].as_str().unwrap().to_owned();
     let root = PathBuf::from(made["project_root"].as_str().unwrap());
-    let registered = vivi::registry::load().unwrap().get(&root);
+    let registered = vivi_core::registry::load().unwrap().get(&root);
     assert!(registered.is_some(), "a served creation registers its root");
 
     let before: Before = (fx.project_json(&id), trees(&fx), keys(&fx));
@@ -191,7 +191,7 @@ async fn purge_refuses_an_unarchived_project() {
 
     assert_untouched(&fx, &id, before);
     assert_eq!(
-        vivi::registry::load().unwrap().get(&root),
+        vivi_core::registry::load().unwrap().get(&root),
         registered,
         "the project stays registered"
     );
@@ -207,7 +207,7 @@ async fn purge_refuses_a_bad_confirm() {
     let name = "purge-timing-confirm";
     let (id, archived) = create_and_archive(&fx, name).await;
     let root = PathBuf::from(archived["root"].as_str().unwrap());
-    let registered = vivi::registry::load().unwrap().get(&root);
+    let registered = vivi_core::registry::load().unwrap().get(&root);
     assert!(registered.is_none(), "the archive unregistered the root");
 
     // Past the deadline: the refusal must come from the confirm alone.
@@ -229,7 +229,7 @@ async fn purge_refuses_a_bad_confirm() {
 
     assert_untouched(&fx, &id, before);
     assert_eq!(
-        vivi::registry::load().unwrap().get(&root),
+        vivi_core::registry::load().unwrap().get(&root),
         registered,
         "the archived root stays unregistered"
     );

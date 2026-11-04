@@ -2,23 +2,23 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use std::collections::BTreeMap;
-use vivi::cli::PoolDoctorCommand;
-use vivi::mailspace::Mailspace;
+use vivi_core::cli::PoolDoctorCommand;
+use vivi_core::mailspace::Mailspace;
 use vivi_error::VivariumError;
 
-use vivi::pool::collect;
-use vivi::pool::doctor::{self, Check, Inputs, Report};
-use vivi::pool::doctor_pool;
-use vivi::pool::doctor_repo;
-use vivi::pool::pools::{self, Need, PoolHandle};
-use vivi::pool::porcelain;
-use vivi::pool::progress::Progress;
-use vivi::pool::record::OpenDispatch;
-use vivi::pool::selftest::{self, TestOptions};
-use vivi::pool::selftest_world::Timing;
-use vivi::pool::slot::PoolId;
-use vivi::pool::work::{epoch_secs, open_dispatches};
-use vivi::pool::{PoolConfig, PoolProvider};
+use vivi_core::pool::collect;
+use vivi_core::pool::doctor::{self, Check, Inputs, Report};
+use vivi_core::pool::doctor_pool;
+use vivi_core::pool::doctor_repo;
+use vivi_core::pool::pools::{self, Need, PoolHandle};
+use vivi_core::pool::porcelain;
+use vivi_core::pool::progress::Progress;
+use vivi_core::pool::record::OpenDispatch;
+use vivi_core::pool::selftest::{self, TestOptions};
+use vivi_core::pool::selftest_world::Timing;
+use vivi_core::pool::slot::PoolId;
+use vivi_core::pool::work::{epoch_secs, open_dispatches};
+use vivi_core::pool::{PoolConfig, PoolProvider};
 
 /// `vivi pool doctor [--pool <name>] [--test [--long]]`: print the report;
 /// fail when any check failed. Without `--pool` every pool is checked (and

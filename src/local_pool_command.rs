@@ -2,26 +2,26 @@ use std::time::Duration;
 
 use crate::local_pool_scale_command as scale;
 use crate::local_pool_work_command as work;
-use vivi::cli::{
+use vivi_core::cli::{
     PoolCleanCommand, PoolCreateCommand, PoolDestroyCommand, PoolResetCommand, PoolStatusCommand,
     PoolSubcommand,
 };
-use vivi::mailspace::Mailspace;
-use vivi::pool::bridge;
-use vivi::pool::clean;
-use vivi::pool::github::{self, Secret};
-use vivi::pool::local_branch;
-use vivi::pool::local_git::Repo;
-use vivi::pool::plain_git::{self, RepoSource};
-use vivi::pool::pools::{self, Need, PoolHandle, PoolSet};
-use vivi::pool::porcelain;
-use vivi::pool::progress::Progress;
-use vivi::pool::provider::SlotLifetime;
-use vivi::pool::requires;
-use vivi::pool::run::{self, CreateOptions, CreateReport, DestroyTarget, SlotOutcome};
-use vivi::pool::scale::no_resting_slots;
-use vivi::pool::slot::SlotStatus;
-use vivi::pool::work as engine;
+use vivi_core::mailspace::Mailspace;
+use vivi_core::pool::bridge;
+use vivi_core::pool::clean;
+use vivi_core::pool::github::{self, Secret};
+use vivi_core::pool::local_branch;
+use vivi_core::pool::local_git::Repo;
+use vivi_core::pool::plain_git::{self, RepoSource};
+use vivi_core::pool::pools::{self, Need, PoolHandle, PoolSet};
+use vivi_core::pool::porcelain;
+use vivi_core::pool::progress::Progress;
+use vivi_core::pool::provider::SlotLifetime;
+use vivi_core::pool::requires;
+use vivi_core::pool::run::{self, CreateOptions, CreateReport, DestroyTarget, SlotOutcome};
+use vivi_core::pool::scale::no_resting_slots;
+use vivi_core::pool::slot::SlotStatus;
+use vivi_core::pool::work as engine;
 use vivi_error::VivariumError;
 
 pub(crate) fn handle_pool_command(command: &PoolSubcommand) -> Result<(), VivariumError> {
@@ -427,12 +427,12 @@ fn reset(command: &PoolResetCommand) -> Result<(), VivariumError> {
     }
     let space = Mailspace::discover(command.project.as_deref())?;
     let handle = pools::open_one(&space, command.pool.as_deref())?;
-    let chosen = vivi::pool::reset::choose_base(&space, command.base.as_deref());
+    let chosen = vivi_core::pool::reset::choose_base(&space, command.base.as_deref());
     let machines = handle.provider.list()?;
-    let slots = vivi::pool::slot::pool_slots(&handle.id, &machines);
-    let targets: Vec<vivi::pool::slot::SlotStatus> = match &command.slot {
+    let slots = vivi_core::pool::slot::pool_slots(&handle.id, &machines);
+    let targets: Vec<vivi_core::pool::slot::SlotStatus> = match &command.slot {
         Some(sel) => {
-            let found = vivi::pool::slot::find_slot(&slots, sel).ok_or_else(|| {
+            let found = vivi_core::pool::slot::find_slot(&slots, sel).ok_or_else(|| {
                 VivariumError::Message(format!("no slot {sel} in pool {}", handle.id.pool))
             })?;
             vec![found.clone()]
@@ -456,7 +456,7 @@ fn reset(command: &PoolResetCommand) -> Result<(), VivariumError> {
 fn print_reset(
     handle: &PoolHandle,
     slot: &SlotStatus,
-    chosen: &vivi::pool::reset::ChosenBase,
+    chosen: &vivi_core::pool::reset::ChosenBase,
     porcelain: bool,
 ) -> bool {
     if slot.state != "free" {
@@ -464,7 +464,7 @@ fn print_reset(
         say_reset_skip(handle, slot, &chosen.name, &reason, porcelain);
         return false;
     }
-    match vivi::pool::reset::reset_slot(
+    match vivi_core::pool::reset::reset_slot(
         &handle.config,
         handle.provider.as_ref(),
         &slot.id,
@@ -485,7 +485,7 @@ fn print_reset(
 fn say_reset_ok(
     handle: &PoolHandle,
     slot: &SlotStatus,
-    out: &vivi::pool::reset::ResetOutcome,
+    out: &vivi_core::pool::reset::ResetOutcome,
     porcelain: bool,
 ) {
     if porcelain {

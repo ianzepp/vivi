@@ -1,8 +1,8 @@
-use vivi::cli::{
+use vivi_core::cli::{
     LocalSendCommand, NeedCommand, TaskDumpCommand, TaskDumpStatusArg, TaskStatus, WantCommand,
     WantStatus,
 };
-use vivi::mailspace::{
+use vivi_core::mailspace::{
     DeliveryResult, DumpFilters, Mailspace, PumpRecord, Recipient, SendRequest, TaskDumpRequest,
     WantListOptions, WantMetadataUpdate,
 };
@@ -31,7 +31,7 @@ pub(crate) fn handle_need_command(command: &NeedCommand) -> Result<(), VivariumE
                     "--origin applies to a project with [remote] (remote mode)".into(),
                 ));
             }
-            vivi::mailspace::validate_marks_filter(marks)?;
+            vivi_core::mailspace::validate_marks_filter(marks)?;
             let mailspace = Mailspace::discover(project.as_deref())?;
             let held = crate::local_work_list::held_scope(for_identity.as_deref(), *held)?;
             if let Some(scope) = &held {
@@ -175,7 +175,7 @@ pub(crate) fn handle_want_command(command: &WantCommand) -> Result<(), VivariumE
         } => {
             let held = crate::local_work_list::held_scope(for_identity.as_deref(), *held)?;
             if let Some(scope) = &held {
-                vivi::mailspace::validate_marks_filter(marks)?;
+                vivi_core::mailspace::validate_marks_filter(marks)?;
                 let mailspace = Mailspace::discover(project.as_deref())?;
                 crate::local_work_list::print_held_work_lists(
                     &mailspace,
@@ -275,7 +275,7 @@ pub(crate) fn handle_want_command(command: &WantCommand) -> Result<(), VivariumE
 /// `need|task|want depend`: add and remove prerequisites after the send,
 /// one line per dependency.
 pub(crate) fn depend_item(
-    command: &vivi::cli::DependCommand,
+    command: &vivi_core::cli::DependCommand,
     kind: &str,
 ) -> Result<(), VivariumError> {
     let mailspace = Mailspace::discover(command.project.as_deref())?;
@@ -299,7 +299,11 @@ pub(crate) fn depend_item(
     Ok(())
 }
 
-fn mark_item(command: &vivi::cli::MarkCommand, kind: &str, add: bool) -> Result<(), VivariumError> {
+fn mark_item(
+    command: &vivi_core::cli::MarkCommand,
+    kind: &str,
+    add: bool,
+) -> Result<(), VivariumError> {
     let mailspace = Mailspace::discover(command.project.as_deref())?;
     let writes = mailspace.set_marks(
         &command.for_identity,
@@ -348,7 +352,7 @@ fn list_wants(
     json: bool,
     project: Option<&std::path::Path>,
 ) -> Result<(), VivariumError> {
-    vivi::mailspace::validate_marks_filter(marks)?;
+    vivi_core::mailspace::validate_marks_filter(marks)?;
     let mailspace = Mailspace::discover(project)?;
     let from = crate::local_mail_list::resolve_list_header(&mailspace, from);
     let to = crate::local_mail_list::resolve_list_header(&mailspace, to);
@@ -362,7 +366,7 @@ fn list_wants(
                 "",
                 from.as_ref(),
                 to.as_ref(),
-            ) && vivi::mailspace::marks_include(&record.marks, marks)
+            ) && vivi_core::mailspace::marks_include(&record.marks, marks)
         })
         .collect::<Vec<_>>();
     if json {
@@ -422,8 +426,8 @@ fn dump_work_items(
 /// after the marks; an empty mark list never bypasses the dispatch. A
 /// `--priority` level is written only after the record is minted, keyed by
 /// the record's need; a refused dispatch never writes priority.
-fn send_need(command: &vivi::cli::NeedSendCommand) -> Result<(), VivariumError> {
-    vivi::mailspace::validate_marks_filter(&command.marks)?;
+fn send_need(command: &vivi_core::cli::NeedSendCommand) -> Result<(), VivariumError> {
+    vivi_core::mailspace::validate_marks_filter(&command.marks)?;
     let result = send_local_item_sent(&command.send, "needs", "need", "created", &command.sugar())?;
     if command.marks.is_empty() && !command.dispatch {
         return Ok(());
@@ -531,7 +535,7 @@ fn apply_dispatch_priority(
     let Some(level) = priority else {
         return Ok(());
     };
-    vivi::pump::priority::set(home, &record.need, level).map_err(|error| {
+    vivi_core::pump::priority::set(home, &record.need, level).map_err(|error| {
         VivariumError::Other(format!(
             "priority for dispatched need {} (pump record {}) failed: {error}",
             record.need, record.handle
@@ -562,10 +566,12 @@ fn send_local_item_sent(
     kind: &str,
     verb: &str,
     sugar: &Sugar,
-) -> Result<vivi::mailspace::DeliveryResult, VivariumError> {
+) -> Result<vivi_core::mailspace::DeliveryResult, VivariumError> {
     let mailspace = Mailspace::discover(command.project.as_deref())?;
-    let body =
-        vivi::mailspace::read_body_input(command.body.as_deref(), command.body_file.as_deref())?;
+    let body = vivi_core::mailspace::read_body_input(
+        command.body.as_deref(),
+        command.body_file.as_deref(),
+    )?;
     let sugared =
         sugar::apply(kind, &body, sugar).map_err(|err| VivariumError::Message(err.to_string()))?;
     let body = sugared.body;
@@ -657,7 +663,7 @@ pub(crate) fn print_close_timing(project: Option<&std::path::Path>, handle: &str
         let now = chrono::Utc::now().timestamp().unsigned_abs();
         println!(
             "{}",
-            vivi::pump::attempt_read::timing_summary(opened, &attempts, now)
+            vivi_core::pump::attempt_read::timing_summary(opened, &attempts, now)
         );
     }
 }
@@ -668,7 +674,10 @@ fn read_close_thread(
     project: Option<&std::path::Path>,
     handle: &str,
     receipts: bool,
-) -> Option<(Option<u64>, Vec<vivi::pump::attempt_read::AttemptFields>)> {
+) -> Option<(
+    Option<u64>,
+    Vec<vivi_core::pump::attempt_read::AttemptFields>,
+)> {
     let Ok(mailspace) = Mailspace::discover(project) else {
         return None;
     };
@@ -686,23 +695,23 @@ fn read_close_thread(
         .chain(pump_replies.iter())
         .filter_map(|message| {
             if receipts {
-                let mut attempt = vivi::pump::attempt_read::parse_receipt(&message.body)?;
-                attempt.end = vivi::pump::attempt_read::opened_epoch(&message.date);
+                let mut attempt = vivi_core::pump::attempt_read::parse_receipt(&message.body)?;
+                attempt.end = vivi_core::pump::attempt_read::opened_epoch(&message.date);
                 Some(attempt)
             } else {
-                vivi::pump::attempt_read::parse_record(&message.body)
+                vivi_core::pump::attempt_read::parse_record(&message.body)
             }
         })
         .collect();
     let opened = messages
         .first()
-        .and_then(|message| vivi::pump::attempt_read::opened_epoch(&message.date));
+        .and_then(|message| vivi_core::pump::attempt_read::opened_epoch(&message.date));
     Some((opened, attempts))
 }
 
 /// Print a move's one-line receipt, then one line per bound need the move
 /// completed through its join, so the acceptor sees the need close.
-pub(crate) fn print_move_receipt(moved: &vivi::mailspace::MoveOutcome, verb: &str) {
+pub(crate) fn print_move_receipt(moved: &vivi_core::mailspace::MoveOutcome, verb: &str) {
     println!("{}", moved.receipt(verb));
     let mut joined = moved.joined_needs.clone();
     joined.dedup();
@@ -722,13 +731,13 @@ fn show_need(
 ) -> Result<(), VivariumError> {
     let mailspace = Mailspace::discover(project)?;
     if let Some(count) = newest {
-        vivi::mailspace::print_thread_newest(&mailspace, handle, count, json)?;
+        vivi_core::mailspace::print_thread_newest(&mailspace, handle, count, json)?;
         return Ok(());
     }
     if !json && !latest {
-        vivi::mailspace::print_thread_outline(&mailspace.thread_outline(handle)?);
+        vivi_core::mailspace::print_thread_outline(&mailspace.thread_outline(handle)?);
     }
-    vivi::mailspace::print_thread(&mailspace, handle, false, 50, 50, json, latest)?;
+    vivi_core::mailspace::print_thread(&mailspace, handle, false, 50, 50, json, latest)?;
     if json || latest {
         return Ok(());
     }
@@ -750,7 +759,7 @@ fn show_need(
             .join("  ");
         println!("  units    {rendered}");
     }
-    let runs = vivi::pump::flow::mail::read::run_count(&mailspace, handle);
+    let runs = vivi_core::pump::flow::mail::read::run_count(&mailspace, handle);
     if runs > 0 {
         println!("  runs: {runs}");
     }
@@ -783,9 +792,9 @@ fn print_need_attempts(
     let attempts: Vec<_> = messages
         .iter()
         .chain(pump_replies.iter())
-        .filter_map(|message| vivi::pump::attempt_read::parse_record(&message.body))
+        .filter_map(|message| vivi_core::pump::attempt_read::parse_record(&message.body))
         .collect();
-    let opened = vivi::pump::attempt_read::opened_epoch(&anchor.date);
+    let opened = vivi_core::pump::attempt_read::opened_epoch(&anchor.date);
     if json {
         print_attempts_json(&anchor.handle, &attempts, opened)?;
         return Ok(());
@@ -811,7 +820,7 @@ fn print_need_attempts(
 /// every attempt record.
 fn print_attempts_json(
     need: &str,
-    attempts: &[vivi::pump::attempt_read::AttemptFields],
+    attempts: &[vivi_core::pump::attempt_read::AttemptFields],
     opened: Option<u64>,
 ) -> Result<(), VivariumError> {
     let out = serde_json::json!({ "need": need, "opened": opened, "attempts": attempts });
@@ -831,10 +840,10 @@ fn status_roles<'a>(status: &TaskStatus, open_role: &'a str) -> Vec<&'a str> {
     }
 }
 
-fn want_state_filter(status: &WantStatus) -> Option<vivi::mailspace::WantState> {
+fn want_state_filter(status: &WantStatus) -> Option<vivi_core::mailspace::WantState> {
     match status {
-        WantStatus::Open => Some(vivi::mailspace::WantState::Open),
-        WantStatus::Done => Some(vivi::mailspace::WantState::Done),
+        WantStatus::Open => Some(vivi_core::mailspace::WantState::Open),
+        WantStatus::Done => Some(vivi_core::mailspace::WantState::Done),
         WantStatus::All => None,
     }
 }
@@ -850,9 +859,9 @@ fn want_status_roles(status: &WantStatus) -> &'static [&'static str] {
 fn work_dump_request(command: &TaskDumpCommand, open_role: &str, kind: &str) -> TaskDumpRequest {
     TaskDumpRequest {
         status: match command.status {
-            TaskDumpStatusArg::Open => vivi::mailspace::TaskDumpStatus::Open,
-            TaskDumpStatusArg::Done => vivi::mailspace::TaskDumpStatus::Done,
-            TaskDumpStatusArg::All => vivi::mailspace::TaskDumpStatus::All,
+            TaskDumpStatusArg::Open => vivi_core::mailspace::TaskDumpStatus::Open,
+            TaskDumpStatusArg::Done => vivi_core::mailspace::TaskDumpStatus::Done,
+            TaskDumpStatusArg::All => vivi_core::mailspace::TaskDumpStatus::All,
         },
         open_role: open_role.into(),
         kind: kind.into(),

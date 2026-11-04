@@ -3,11 +3,11 @@
 
 use std::path::{Path, PathBuf};
 
-use vivi::cli::ConfigCommand;
-use vivi::mailspace::config_edit;
-use vivi::mailspace::inherit::ConfigOrigins;
-use vivi::pump::config::{self, MigrateReport};
-use vivi::routing::{ConfigOverview, format_report, render_text, require_ok};
+use vivi_core::cli::ConfigCommand;
+use vivi_core::mailspace::config_edit;
+use vivi_core::mailspace::inherit::ConfigOrigins;
+use vivi_core::pump::config::{self, MigrateReport};
+use vivi_core::routing::{ConfigOverview, format_report, render_text, require_ok};
 use vivi_error::VivariumError;
 
 pub(crate) fn handle_config_command(command: &ConfigCommand) -> Result<(), VivariumError> {
@@ -161,23 +161,23 @@ fn validate_cmd(json: bool, project: Option<&Path>) -> Result<(), VivariumError>
         print!("{}", report.origins.render());
     }
     require_ok(&report.issues)?;
-    if !vivi::pump::readiness::is_ready(&report.issues) {
+    if !vivi_core::pump::readiness::is_ready(&report.issues) {
         std::process::exit(NOT_READY_EXIT);
     }
     Ok(())
 }
 
-fn print_report(issues: &[vivi::routing::Issue]) {
+fn print_report(issues: &[vivi_core::routing::Issue]) {
     let others: Vec<_> = issues
         .iter()
-        .filter(|issue| issue.severity != vivi::routing::Severity::NotReady)
+        .filter(|issue| issue.severity != vivi_core::routing::Severity::NotReady)
         .cloned()
         .collect();
     let report = format_report(&others);
     if !report.is_empty() {
         println!("{report}");
     }
-    let missing = vivi::pump::readiness::render_missing(issues);
+    let missing = vivi_core::pump::readiness::render_missing(issues);
     if !missing.is_empty() {
         println!("{missing}");
     }

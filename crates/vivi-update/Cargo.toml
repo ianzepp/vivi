@@ -1,0 +1,23 @@
+[package]
+name = "vivi-update"
+version = "22.1.0"
+edition = "2024"
+description = "vivi self-update"
+license = "MIT"
+
+[dependencies]
+vivi-skills = { path = "../vivi-skills" }
+vivi-core = { path = "../vivi-core" }
+dirs = "6"
+flate2 = "1"
+hex = "0.4"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "deflate", "gzip", "json", "rustls-tls", "stream"] }
+semver = "1"
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+tar = "0.4"
+vivi-error.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

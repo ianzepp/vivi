@@ -7,14 +7,14 @@ use std::fs;
 use std::process::{Command, Output};
 use std::sync::Arc;
 
-use vivi::mailspace::{Mailspace, PumpState};
-use vivi::pump::config::{BoardConfig, FlowConfig, PumpConfig, RungsConfig};
-use vivi::pump::flow::tick::tick;
-use vivi::pump::host::{Ctx, RealHost};
-use vivi::pump::jobs::{JobOutcome, JobStatus, PoolJob, rung};
-use vivi::pump::state::State;
-use vivi::pump::store::{DB_FILENAME, PumpStore};
-use vivi::routing::{RoleRouting, RoutedPool, RoutedRole};
+use vivi_core::mailspace::{Mailspace, PumpState};
+use vivi_core::pump::config::{BoardConfig, FlowConfig, PumpConfig, RungsConfig};
+use vivi_core::pump::flow::tick::tick;
+use vivi_core::pump::host::{Ctx, RealHost};
+use vivi_core::pump::jobs::{JobOutcome, JobStatus, PoolJob, rung};
+use vivi_core::pump::state::State;
+use vivi_core::pump::store::{DB_FILENAME, PumpStore};
+use vivi_core::routing::{RoleRouting, RoutedPool, RoutedRole};
 use vivi_mail::letter::read::{need_of, record_of};
 use vivi_mail::letter::records::RecordKind;
 

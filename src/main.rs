@@ -7,11 +7,11 @@ use std::process;
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
-use vivi::cli::{
+use vivi_core::cli::{
     Cli, Command, ProxySubcommand, PumpServiceCommand, PumpSubcommand, ServerSubcommand,
 };
-use vivi::update::CheckOutcome;
 use vivi_error::VivariumError;
+use vivi_update::update::CheckOutcome;
 
 mod local_board_command;
 mod local_boot_command;
@@ -63,7 +63,7 @@ fn main() {
         .and_then(|n| n.to_str())
         == Some("vivi-server")
     {
-        vivi::server::entry::run(argv.collect());
+        vivi_server::server::entry::run(argv.collect());
         return;
     }
 
@@ -87,15 +87,15 @@ fn run_before_runtime(cli: Cli) -> Option<Cli> {
     match &cli.command {
         Command::Server {
             command: ServerSubcommand::Run { args },
-        } => vivi::server::entry::run(args.clone()),
+        } => vivi_server::server::entry::run(args.clone()),
         Command::Pool {
-            command: vivi::cli::PoolSubcommand::Run(run),
+            command: vivi_core::cli::PoolSubcommand::Run(run),
         } => process::exit(local_pool_run_command::run(run)),
         Command::Key {
-            command: vivi::cli::KeyCommand::Show,
+            command: vivi_core::cli::KeyCommand::Show,
         } => key_show(),
         Command::Key {
-            command: vivi::cli::KeyCommand::GitCredential { action },
+            command: vivi_core::cli::KeyCommand::GitCredential { action },
         } => git_credential(action),
         Command::Server {
             command: ServerSubcommand::Pump { action },
@@ -110,7 +110,7 @@ fn run_before_runtime(cli: Cli) -> Option<Cli> {
 
 /// `vivi key show`: this machine's public key, fingerprint and key file.
 fn key_show() {
-    match vivi::machine_key::MachineKey::load_or_create() {
+    match vivi_core::machine_key::MachineKey::load_or_create() {
         Ok(key) => {
             println!("public_key  {}", key.public_key());
             println!("fingerprint {}", key.fingerprint());
@@ -124,8 +124,8 @@ fn key_show() {
 }
 
 /// `vivi server pump <pause|resume|status>`.
-fn server_pump(action: &vivi::cli::ServerPumpAction) {
-    let file = match vivi::home::server_home() {
+fn server_pump(action: &vivi_core::cli::ServerPumpAction) {
+    let file = match vivi_util::home::server_home() {
         Ok(home) => home.join("pump-state"),
         Err(e) => {
             eprintln!("error: {e}");
@@ -139,17 +139,17 @@ fn server_pump(action: &vivi::cli::ServerPumpAction) {
         }
     };
     match action {
-        vivi::cli::ServerPumpAction::Pause => write("paused"),
-        vivi::cli::ServerPumpAction::Resume => write("running"),
-        vivi::cli::ServerPumpAction::Status => {}
+        vivi_core::cli::ServerPumpAction::Pause => write("paused"),
+        vivi_core::cli::ServerPumpAction::Resume => write("running"),
+        vivi_core::cli::ServerPumpAction::Status => {}
     }
-    let paused = vivi::pump::service::server_pump_paused(&file);
+    let paused = vivi_core::pump::service::server_pump_paused(&file);
     println!("server pump {}", if paused { "paused" } else { "running" });
 }
 
 /// `vivi server init`.
 fn server_init(port: Option<u16>) {
-    if let Err(e) = vivi::server::init::run(port) {
+    if let Err(e) = vivi_server::server::init::run(port) {
         eprintln!("error: {e}");
         process::exit(1);
     }
@@ -182,13 +182,13 @@ async fn run(cli: Cli) -> Result<(), VivariumError> {
             }
         }
     ) {
-        return vivi::pump::service::run().await;
+        return vivi_core::pump::service::run().await;
     }
     if let Command::Proxy {
         command: ProxySubcommand::Run(cmd),
     } = &cli.command
     {
-        return vivi::proxy::run(cmd).await;
+        return vivi_proxy::proxy::run(cmd).await;
     }
     if let Command::Mind(command) = &cli.command {
         return run_mind(command).await;
@@ -207,27 +207,27 @@ async fn run(cli: Cli) -> Result<(), VivariumError> {
 }
 
 #[cfg(unix)]
-async fn run_mind(command: &vivi::cli::MindCommand) -> Result<(), VivariumError> {
-    vivi::mind::run(command).await
+async fn run_mind(command: &vivi_core::cli::MindCommand) -> Result<(), VivariumError> {
+    vivi_mind::mind::run(command).await
 }
 
 #[cfg(not(unix))]
-async fn run_mind(_command: &vivi::cli::MindCommand) -> Result<(), VivariumError> {
+async fn run_mind(_command: &vivi_core::cli::MindCommand) -> Result<(), VivariumError> {
     Err(VivariumError::Other("vivi mind needs a Unix host".into()))
 }
 
 fn dispatch_self_update(command: &Command) -> Option<Result<(), VivariumError>> {
     match command {
         Command::Update(cmd) if cmd.check => Some(run_update_check()),
-        Command::Update(cmd) => Some(vivi::update::run_update(cmd)),
-        Command::Versions(cmd) => Some(vivi::update::print_versions(cmd)),
-        Command::Uninstall(cmd) => Some(vivi::update::uninstall(cmd)),
+        Command::Update(cmd) => Some(vivi_update::update::run_update(cmd)),
+        Command::Versions(cmd) => Some(vivi_update::update::print_versions(cmd)),
+        Command::Uninstall(cmd) => Some(vivi_update::update::uninstall(cmd)),
         _ => None,
     }
 }
 
 fn run_update_check() -> Result<(), VivariumError> {
-    match vivi::update::check_for_update() {
+    match vivi_update::update::check_for_update() {
         Ok(CheckOutcome::Available) => process::exit(1),
         Ok(_) => Ok(()),
         Err(error) => {
@@ -264,8 +264,8 @@ fn git_credential(action: &str) {
     match action {
         // Always a fresh sign-in: git does not retry after a 401, so a cached
         // token a restarted server no longer knows would fail the command.
-        "get" => match vivi::machine_key::forget(&server, false)
-            .and_then(|()| vivi::machine_key::sign_in(&server, false))
+        "get" => match vivi_core::machine_key::forget(&server, false)
+            .and_then(|()| vivi_core::machine_key::sign_in(&server, false))
         {
             Ok(token) => {
                 println!("username=vivi");
@@ -277,7 +277,7 @@ fn git_credential(action: &str) {
             }
         },
         "erase" => {
-            if let Err(e) = vivi::machine_key::forget(&server, false) {
+            if let Err(e) = vivi_core::machine_key::forget(&server, false) {
                 eprintln!("warning: cannot forget the cached session: {e}");
             }
         }

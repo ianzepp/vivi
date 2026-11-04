@@ -7,7 +7,7 @@ use std::process::Command;
 use clap::Parser;
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
-use vivi::cli::{Cli, Command as CliCommand};
+use vivi_core::cli::{Cli, Command as CliCommand};
 
 fn current_triple() -> &'static str {
     match (std::env::consts::OS, std::env::consts::ARCH) {

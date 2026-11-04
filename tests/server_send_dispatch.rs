@@ -18,13 +18,13 @@ use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
 use serde_json::{Value, json};
 use tower::util::ServiceExt;
-use vivi::mailspace::{Mailspace, PumpState, RoleUpdate};
-use vivi::pump::priority;
-use vivi::server::grants::{GrantLevel, GrantRecord};
-use vivi::server::identities::IdentityRecord;
-use vivi::server::projects::{Scan, Viewer};
-use vivi::server::{AppState, app_state, hosted, router};
-use vivi::storage::StoredMessageView;
+use vivi_core::mailspace::{Mailspace, PumpState, RoleUpdate};
+use vivi_core::pump::priority;
+use vivi_server::server::grants::{GrantLevel, GrantRecord};
+use vivi_server::server::identities::IdentityRecord;
+use vivi_server::server::projects::{Scan, Viewer};
+use vivi_server::server::{AppState, app_state, hosted, router};
+use vivi_storage::storage::StoredMessageView;
 
 /// The non-default pump home the fixture configures, relative to the project
 /// root, so tests can tell the configured home from the default one.
@@ -117,7 +117,7 @@ impl Fx {
             .collect()
     }
 
-    fn records(&self, state: Option<PumpState>) -> Vec<vivi::mailspace::PumpRecord> {
+    fn records(&self, state: Option<PumpState>) -> Vec<vivi_core::mailspace::PumpRecord> {
         self.ms().pump_list(None, state).unwrap()
     }
 

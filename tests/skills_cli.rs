@@ -8,8 +8,8 @@ use std::process::{Command, Output};
 use clap::{Command as ClapCommand, CommandFactory};
 use serde_json::Value;
 use tempfile::tempdir;
-use vivi::cli::Cli;
-use vivi::skills;
+use vivi_core::cli::Cli;
+use vivi_skills::skills;
 
 #[test]
 fn help_names_the_skills_commands() {

@@ -684,7 +684,7 @@ fn a_porcelain_dispatch_with_no_from_prints_a_refused_line() {
     let rig = rig("");
     let out = porcelain_dispatch(&rig, "nofrom", &["--read-only"]);
     let stdout = String::from_utf8_lossy(&out.stdout);
-    let reason = vivi::pool::porcelain::refused_reason(&stdout);
+    let reason = vivi_core::pool::porcelain::refused_reason(&stdout);
     assert!(
         !out.status.success() && reason.is_some_and(|r| r.contains("no from")),
         "{stdout}"
@@ -699,5 +699,5 @@ fn a_porcelain_dispatch_that_fails_after_planning_prints_no_refused_line() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(!out.status.success(), "{}", text(&out));
     assert!(text(&out).contains("already exists"), "{}", text(&out));
-    assert_eq!(vivi::pool::porcelain::refused_reason(&stdout), None);
+    assert_eq!(vivi_core::pool::porcelain::refused_reason(&stdout), None);
 }

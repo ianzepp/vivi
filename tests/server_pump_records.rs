@@ -9,9 +9,9 @@ use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
 use serde_json::{Value, json};
 use tower::util::ServiceExt;
-use vivi::mailspace::{Mailspace, PumpState, RoleUpdate, SendRequest};
-use vivi::server::grants::{GrantLevel, GrantRecord};
-use vivi::server::{AppState, app_state, hosted, router};
+use vivi_core::mailspace::{Mailspace, PumpState, RoleUpdate, SendRequest};
+use vivi_server::server::grants::{GrantLevel, GrantRecord};
+use vivi_server::server::{AppState, app_state, hosted, router};
 
 fn scratch(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
@@ -93,7 +93,7 @@ impl Fx {
         .handle
     }
 
-    fn records(&self, state: Option<PumpState>) -> Vec<vivi::mailspace::PumpRecord> {
+    fn records(&self, state: Option<PumpState>) -> Vec<vivi_core::mailspace::PumpRecord> {
         Mailspace::open_root(self.root.clone())
             .unwrap()
             .pump_list(None, state)

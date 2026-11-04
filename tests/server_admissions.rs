@@ -11,8 +11,8 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use ed25519_dalek::SigningKey;
 
-use vivi::server::admissions::AdmissionsFile;
-use vivi::server::projects::{AppendItem, ProjectError, ProjectStore, Viewer};
+use vivi_server::server::admissions::AdmissionsFile;
+use vivi_server::server::projects::{AppendItem, ProjectError, ProjectStore, Viewer};
 
 /// The sender of every letter in this file; it has no mailspace prefix.
 fn alice() -> Viewer<'static> {

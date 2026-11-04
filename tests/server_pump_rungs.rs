@@ -10,9 +10,9 @@ use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
 use serde_json::{Value, json};
 use tower::util::ServiceExt;
-use vivi::mailspace::{Mailspace, RoleUpdate};
-use vivi::server::grants::{GrantLevel, GrantRecord};
-use vivi::server::{AppState, app_state, hosted, router};
+use vivi_core::mailspace::{Mailspace, RoleUpdate};
+use vivi_server::server::grants::{GrantLevel, GrantRecord};
+use vivi_server::server::{AppState, app_state, hosted, router};
 
 fn scratch(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(

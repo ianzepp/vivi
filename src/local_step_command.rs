@@ -1,5 +1,5 @@
-use vivi::judgment::{JudgmentProvider, TypesafeProvider};
-use vivi::mailspace::Mailspace;
+use vivi_core::judgment::{JudgmentProvider, TypesafeProvider};
+use vivi_core::mailspace::Mailspace;
 use vivi_error::VivariumError;
 
 pub(crate) fn handle_step_command(
@@ -30,7 +30,7 @@ pub(crate) fn handle_step_command(
     Ok(())
 }
 
-fn print_manifest(manifest: &vivi::mailspace::StepManifest) {
+fn print_manifest(manifest: &vivi_core::mailspace::StepManifest) {
     println!("graph {}", manifest.graph);
     println!();
     if manifest.dispatches.is_empty() {

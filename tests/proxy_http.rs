@@ -5,11 +5,11 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use tempfile::TempDir;
-use vivi::cli::ProxyCheckCommand;
-use vivi::proxy::check;
-use vivi::proxy::config::{self, ProxyConfig};
-use vivi::proxy::providers;
-use vivi::proxy::runtime;
+use vivi_core::cli::ProxyCheckCommand;
+use vivi_proxy::proxy::check;
+use vivi_proxy::proxy::config::{self, ProxyConfig};
+use vivi_proxy::proxy::providers;
+use vivi_proxy::proxy::runtime;
 
 #[path = "support/proxy_upstream.rs"]
 mod proxy_upstream;
@@ -282,7 +282,7 @@ fn codex_responses_stream_parses_with_temperature() {
     );
     let text = response.text().unwrap();
     let mut buffer = text.clone().into_bytes();
-    let events = vivi::proxy::sse::take_events(&mut buffer);
+    let events = vivi_proxy::proxy::sse::take_events(&mut buffer);
     assert!(
         events.len() >= 3,
         "only {} event(s): {text:?}",
@@ -631,7 +631,7 @@ fn child_restarts_after_exit() {
 
 #[test]
 fn systemd_unit_mentions_proxy_run() {
-    let unit = vivi::proxy::install::systemd_unit(std::path::Path::new("/opt/vivi"), None);
+    let unit = vivi_proxy::proxy::install::systemd_unit(std::path::Path::new("/opt/vivi"), None);
     assert!(unit.contains("proxy run"));
     assert!(unit.contains("Restart=on-failure"));
     assert!(unit.contains("StartLimitBurst=5"));
@@ -639,7 +639,7 @@ fn systemd_unit_mentions_proxy_run() {
 
 #[test]
 fn launchd_plist_mentions_label() {
-    let plist = vivi::proxy::install::launch_agent_plist(
+    let plist = vivi_proxy::proxy::install::launch_agent_plist(
         std::path::Path::new("/opt/vivi"),
         std::path::Path::new("/tmp/logs"),
         "/bin",

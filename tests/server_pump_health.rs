@@ -10,12 +10,12 @@ use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
 use serde_json::{Value, json};
 use tower::util::ServiceExt;
-use vivi::mailspace::Mailspace;
-use vivi::pump::health::HealthOptions;
-use vivi::pump::state::State;
-use vivi::pump::store::{DB_FILENAME, PumpStore, SCHEMA_VERSION, append_exception};
-use vivi::server::grants::{GrantLevel, GrantRecord};
-use vivi::server::{AppState, app_state, hosted, pump_health, router};
+use vivi_core::mailspace::Mailspace;
+use vivi_core::pump::health::HealthOptions;
+use vivi_core::pump::state::State;
+use vivi_core::pump::store::{DB_FILENAME, PumpStore, SCHEMA_VERSION, append_exception};
+use vivi_server::server::grants::{GrantLevel, GrantRecord};
+use vivi_server::server::{AppState, app_state, hosted, pump_health, router};
 
 fn scratch(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
@@ -75,7 +75,7 @@ fn now() -> u64 {
 fn write_pump(root: &Path, at: u64) {
     let home = root.join(".vivi").join("pump");
     std::fs::create_dir_all(&home).unwrap();
-    let mut store = PumpStore::open(&home.join(DB_FILENAME)).unwrap();
+    let store = PumpStore::open(&home.join(DB_FILENAME)).unwrap();
     store.save(&State::default()).unwrap();
     store.initialize_control("paused").unwrap();
     drop(store);

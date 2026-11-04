@@ -1,0 +1,20 @@
+[package]
+name = "vivi-report"
+version = "22.1.0"
+edition = "2024"
+description = "vivi pump reports"
+license = "MIT"
+
+[dependencies]
+vivi-storage = { path = "../vivi-storage" }
+vivi-core = { path = "../vivi-core" }
+chrono.workspace = true
+mail-parser.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+vivi-error.workspace = true
+
+[dev-dependencies]
+rusqlite = { version = "0.32", features = ["bundled"] }
+tempfile = "3"
+vivi-mail = { workspace = true, features = ["test-support"] }

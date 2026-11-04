@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use vivi::mailspace::{Mailspace, WantStateReport};
+use vivi_core::mailspace::{Mailspace, WantStateReport};
 use vivi_error::VivariumError;
 
 /// Show a want. `--latest` keeps the plain thread output; text adds the
@@ -15,13 +15,13 @@ pub(crate) fn show_want(
 ) -> Result<(), VivariumError> {
     let mailspace = Mailspace::discover(project)?;
     if latest {
-        return vivi::mailspace::print_thread(&mailspace, handle, false, 50, 50, json, true);
+        return vivi_core::mailspace::print_thread(&mailspace, handle, false, 50, 50, json, true);
     }
     if json {
         return print_json(&mailspace, handle);
     }
-    vivi::mailspace::print_thread_outline(&mailspace.thread_outline(handle)?);
-    vivi::mailspace::print_thread(&mailspace, handle, false, 50, 50, false, false)?;
+    vivi_core::mailspace::print_thread_outline(&mailspace.thread_outline(handle)?);
+    vivi_core::mailspace::print_thread(&mailspace, handle, false, 50, 50, false, false)?;
     print_state(&mailspace.want_state(handle)?);
     Ok(())
 }

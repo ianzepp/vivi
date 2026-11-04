@@ -11,11 +11,11 @@ use std::process::Command;
 use std::sync::{Arc, Barrier};
 use std::time::{Duration, Instant};
 
-use vivi::pool::PoolConfig;
-use vivi::pool::provider::{CreateSpec, PoolProvider};
-use vivi::pool::runpod::HostContext;
-use vivi::pool::slot::{self, META_STATE, PoolId, STATE_READY};
-use vivi::pool::ssh::SshProvider;
+use vivi_core::pool::PoolConfig;
+use vivi_core::pool::provider::{CreateSpec, PoolProvider};
+use vivi_core::pool::runpod::HostContext;
+use vivi_core::pool::slot::{self, META_STATE, PoolId, STATE_READY};
+use vivi_core::pool::ssh::SshProvider;
 
 /// Each test has a pool of its own, so tests may run side by side.
 const POOL_STOP: &str = "vivi-livetest-stop";

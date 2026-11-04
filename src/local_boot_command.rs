@@ -2,8 +2,8 @@
 
 use std::path::Path;
 
-use vivi::boot::BootReport;
-use vivi::mailspace::Mailspace;
+use vivi_core::boot::BootReport;
+use vivi_core::mailspace::Mailspace;
 use vivi_error::VivariumError;
 
 pub(crate) fn handle_boot_command(project: Option<&Path>, json: bool) -> Result<(), VivariumError> {

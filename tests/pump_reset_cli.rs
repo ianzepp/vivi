@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use serde_json::Value;
-use vivi::mailspace::{Mailspace, PumpState};
-use vivi::pump::control::{self, PumpMode};
+use vivi_core::mailspace::{Mailspace, PumpState};
+use vivi_core::pump::control::{self, PumpMode};
 
 /// Home entries `reset` renames, in archive order. Same list as the library.
 const MOVED: [&str; 10] = [

@@ -1,7 +1,7 @@
 //! The per-identity write limit: the 30/min default, a configured limit, and
 //! `SEND_RATE_PER_MINUTE=0` for no limit.
 
-use vivi::server::safety::{DEFAULT_SEND_RATE_PER_MINUTE, RateLimiter, parse_send_rate};
+use vivi_server::server::safety::{DEFAULT_SEND_RATE_PER_MINUTE, RateLimiter, parse_send_rate};
 
 fn refused_at(limiter: &RateLimiter, attempts: u32) -> Option<u32> {
     (1..=attempts).find(|_| !limiter.allow_send("project", 7))

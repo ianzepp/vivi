@@ -12,19 +12,19 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use ed25519_dalek::SigningKey;
 use sha2::{Digest, Sha256};
-use vivi::mailspace::{Mailspace, SendRequest};
-use vivi::server::hosted;
-use vivi::server::identities::IdentityRegistry;
-use vivi::server::projects::{
-    AppendItem, IndexOutcome, IndexSkip, ListQuery, ProjectError, ProjectStore, Viewer,
-};
-use vivi::sync::lock::SyncLock;
-use vivi::sync::push;
-use vivi::sync::transport::{
+use vivi_core::mailspace::{Mailspace, SendRequest};
+use vivi_core::sync::lock::SyncLock;
+use vivi_core::sync::push;
+use vivi_core::sync::transport::{
     AppendFailure, Appended, Envelope, ListQuery as WireQuery, Page, Transport,
 };
-use vivi::sync::{SyncConfig, SyncSettings, sync_dir};
+use vivi_core::sync::{SyncConfig, SyncSettings, sync_dir};
 use vivi_error::VivariumError;
+use vivi_server::server::hosted;
+use vivi_server::server::identities::IdentityRegistry;
+use vivi_server::server::projects::{
+    AppendItem, IndexOutcome, IndexSkip, ListQuery, ProjectError, ProjectStore, Viewer,
+};
 
 fn scratch(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(

@@ -11,10 +11,10 @@ use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
 use serde_json::{Value, json};
 use tower::util::ServiceExt;
-use vivi::mailspace::board::BoardOptions;
-use vivi::mailspace::{Mailspace, RoleUpdate, SendRequest, folded_marks};
-use vivi::server::grants::{GrantLevel, GrantRecord};
-use vivi::server::{AppState, app_state, hosted, router};
+use vivi_core::mailspace::board::BoardOptions;
+use vivi_core::mailspace::{Mailspace, RoleUpdate, SendRequest, folded_marks};
+use vivi_server::server::grants::{GrantLevel, GrantRecord};
+use vivi_server::server::{AppState, app_state, hosted, router};
 
 fn scratch(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
@@ -200,7 +200,7 @@ fn server_key(state: &AppState, project: &str, member: &str, identity: Option<&s
         .key
 }
 
-fn handles(views: &[vivi::storage::StoredMessageView]) -> Vec<String> {
+fn handles(views: &[vivi_storage::storage::StoredMessageView]) -> Vec<String> {
     views.iter().map(|v| v.handle.clone()).collect()
 }
 
@@ -917,7 +917,7 @@ async fn memo_save_lands_in_the_acting_identitys_memos() {
 #[tokio::test]
 async fn the_configured_write_limit_reaches_mcp_writes() {
     let fx = fixture_with("rate-limit", |state| {
-        state.limiter = vivi::server::safety::RateLimiter::new(Some(2));
+        state.limiter = vivi_server::server::safety::RateLimiter::new(Some(2));
     });
     let mind = fx.key(Some("mind"));
     for n in 0..2 {
@@ -950,7 +950,7 @@ async fn the_configured_write_limit_reaches_mcp_writes() {
 #[tokio::test]
 async fn zero_unlimits_mcp_writes() {
     let fx = fixture_with("rate-unlimited", |state| {
-        state.limiter = vivi::server::safety::RateLimiter::new(None);
+        state.limiter = vivi_server::server::safety::RateLimiter::new(None);
     });
     let mind = fx.key(Some("mind"));
     for n in 0..40 {
@@ -1026,14 +1026,16 @@ async fn a_member_token_on_a_hosted_project_is_refused() {
 /// The flow tick's job shelf: jobs the run enqueues stay in memory; nothing
 /// dispatches them (that is the outer pump loop's work, not the flow's).
 #[derive(Default)]
-struct Jobs(std::collections::BTreeMap<String, vivi::pump::jobs::PoolJob>);
+struct Jobs(std::collections::BTreeMap<String, vivi_core::pump::jobs::PoolJob>);
 
-impl vivi::pump::jobs::JobStore for Jobs {
-    fn jobs(&self) -> &std::collections::BTreeMap<String, vivi::pump::jobs::PoolJob> {
+impl vivi_core::pump::jobs::JobStore for Jobs {
+    fn jobs(&self) -> &std::collections::BTreeMap<String, vivi_core::pump::jobs::PoolJob> {
         &self.0
     }
 
-    fn jobs_mut(&mut self) -> &mut std::collections::BTreeMap<String, vivi::pump::jobs::PoolJob> {
+    fn jobs_mut(
+        &mut self,
+    ) -> &mut std::collections::BTreeMap<String, vivi_core::pump::jobs::PoolJob> {
         &mut self.0
     }
 }
@@ -1161,7 +1163,7 @@ async fn a_server_owned_project_keeps_the_transport_tools_for_keys() {
 /// raises no `flow-letter-invalid`.
 #[tokio::test]
 async fn a_pumped_need_the_server_composed_starts_a_run() {
-    use vivi::pump::flow::index::run_state;
+    use vivi_core::pump::flow::index::run_state;
     let fx = fixture("pump-run");
     let key = fx.key(None);
     let sent = fx
@@ -1179,29 +1181,30 @@ async fn a_pumped_need_the_server_composed_starts_a_run() {
     let need = {
         let ms = fx.ms();
         let record = ms.pump_send(None, &handle, None).unwrap();
-        assert_eq!(record.status, vivi::mailspace::PumpState::Open);
+        assert_eq!(record.status, vivi_core::mailspace::PumpState::Open);
         record.need
     };
 
     // One pump tick (`vivi pump once`'s flow half) over the hosted root.
     let home = scratch("pump-run-home");
-    let mut cfg = vivi::pump::config::PumpConfig::default();
+    let mut cfg = vivi_core::pump::config::PumpConfig::default();
     cfg.home = Some(home.to_string_lossy().into_owned());
     let mailspace = fx.ms();
-    let ctx = vivi::pump::host::Ctx::new(
+    let ctx = vivi_core::pump::host::Ctx::new(
         cfg,
-        std::sync::Arc::new(vivi::pump::host::RealHost::new(&home)),
+        std::sync::Arc::new(vivi_core::pump::host::RealHost::new(&home)),
         fx.root.clone(),
         "vivi".into(),
     )
     .with_mailspace(mailspace.mailspace_id().to_owned());
     drop(mailspace);
     let mut jobs = Jobs::default();
-    vivi::pump::flow::tick::tick(&ctx, &mut jobs).unwrap();
+    vivi_core::pump::flow::tick::tick(&ctx, &mut jobs).unwrap();
 
     // A run exists for the need ...
     let store =
-        vivi::pump::store::PumpStore::open(&home.join(vivi::pump::store::DB_FILENAME)).unwrap();
+        vivi_core::pump::store::PumpStore::open(&home.join(vivi_core::pump::store::DB_FILENAME))
+            .unwrap();
     let runs = store.runs_of(&need).unwrap();
     assert!(!runs.is_empty(), "no run for need {need}");
     let states: Vec<&str> = runs.iter().map(|run| run.state.as_str()).collect();

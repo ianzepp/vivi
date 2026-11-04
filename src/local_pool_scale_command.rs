@@ -1,18 +1,18 @@
-//! `vivi pool scale`: the command glue. The plan is [`vivi::pool::scale`].
+//! `vivi pool scale`: the command glue. The plan is [`vivi_core::pool::scale`].
 
 use std::time::Duration;
 
 use crate::local_pool_command::{SeedAt, create_into};
-use vivi::cli::PoolScaleCommand;
-use vivi::mailspace::Mailspace;
-use vivi::pool::pools;
-use vivi::pool::porcelain;
-use vivi::pool::progress::Progress;
-use vivi::pool::provider::SlotLifetime;
-use vivi::pool::run::{self, CreateOptions};
-use vivi::pool::scale;
-use vivi::pool::slot::SlotStatus;
-use vivi::pool::work as engine;
+use vivi_core::cli::PoolScaleCommand;
+use vivi_core::mailspace::Mailspace;
+use vivi_core::pool::pools;
+use vivi_core::pool::porcelain;
+use vivi_core::pool::progress::Progress;
+use vivi_core::pool::provider::SlotLifetime;
+use vivi_core::pool::run::{self, CreateOptions};
+use vivi_core::pool::scale;
+use vivi_core::pool::slot::SlotStatus;
+use vivi_core::pool::work as engine;
 use vivi_error::VivariumError;
 
 pub(crate) fn scale(command: &PoolScaleCommand) -> Result<(), VivariumError> {

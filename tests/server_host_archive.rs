@@ -34,9 +34,9 @@ use axum::http::{Request, StatusCode};
 use chrono::{SecondsFormat, TimeZone, Utc};
 use serde_json::{Value, json};
 use tower::util::ServiceExt;
-use vivi::server::mcp::host::HostConfig;
-use vivi::server::projects::ProjectStore;
-use vivi::server::{AppState, app_state, router};
+use vivi_server::server::mcp::host::HostConfig;
+use vivi_server::server::projects::ProjectStore;
+use vivi_server::server::{AppState, app_state, router};
 
 #[path = "server_host_archive/archive_cases.rs"]
 mod archive_cases;

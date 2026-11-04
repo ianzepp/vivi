@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use clap::error::ErrorKind;
-use vivi::cli::{
+use vivi_core::cli::{
     Cli, Command, CycleCommand, DeliveryCommand, MailAbsorbStatus, MailCommand, MailspaceCommand,
     MailspaceIdentityCommand, MemoCommand, NeedCommand, NeedSendCommand, PoolSubcommand,
     SkillsCommand, TaskCommand, TaskDumpStatusArg, TaskSendCommand, TaskStatus, WantCommand,
@@ -127,7 +127,7 @@ fn parses_mailspace_archive_set_and_clear() {
         Command::Mailspace {
             command:
                 MailspaceCommand::Archive {
-                    command: Some(vivi::cli::MailspaceArchiveCommand::Export { json, .. }),
+                    command: Some(vivi_core::cli::MailspaceArchiveCommand::Export { json, .. }),
                     ..
                 },
         } => {
@@ -139,7 +139,7 @@ fn parses_mailspace_archive_set_and_clear() {
 
 #[test]
 fn parses_role_add_set_and_charter() {
-    use vivi::cli::{RoleCharterCommand, RoleCommand};
+    use vivi_core::cli::{RoleCharterCommand, RoleCommand};
 
     let add = Cli::try_parse_from([
         "vivi",
@@ -234,7 +234,7 @@ fn parses_role_add_set_and_charter() {
 
 #[test]
 fn parses_role_set_pid_host_and_status() {
-    use vivi::cli::RoleCommand;
+    use vivi_core::cli::RoleCommand;
 
     let set = Cli::try_parse_from([
         "vivi", "role", "set", "hand-1", "--pid", "12345", "--host", "pharos",
@@ -1031,7 +1031,7 @@ fn parses_want_list_status_all() {
     match cli.command {
         Command::Want {
             command: WantCommand::List { status, .. },
-        } => assert!(matches!(status, vivi::cli::WantStatus::All)),
+        } => assert!(matches!(status, vivi_core::cli::WantStatus::All)),
         other => panic!("unexpected command: {other:?}"),
     }
 }
@@ -1637,7 +1637,7 @@ fn parses_task_list_blocked_and_blocking() {
 
 #[test]
 fn parses_pool_dispatch_default_branch_override() {
-    use vivi::cli::PoolSubcommand;
+    use vivi_core::cli::PoolSubcommand;
     let parse = |extra: &[&str]| {
         let mut args = vec!["vivi", "pool", "dispatch", "abcd1234", "--model", "m/x"];
         args.extend(extra);
@@ -1655,7 +1655,7 @@ fn parses_pool_dispatch_default_branch_override() {
 
 #[test]
 fn parses_pool_dispatch_read_only_and_refuses_a_branch_with_it() {
-    use vivi::cli::PoolSubcommand;
+    use vivi_core::cli::PoolSubcommand;
     let parse = |extra: &[&str]| {
         let mut args = vec!["vivi", "pool", "dispatch", "abcd1234", "--model", "m/x"];
         args.extend(extra);
@@ -1680,7 +1680,7 @@ fn parses_pool_dispatch_read_only_and_refuses_a_branch_with_it() {
 
 #[test]
 fn parses_pool_dispatch_with_refs() {
-    use vivi::cli::PoolSubcommand;
+    use vivi_core::cli::PoolSubcommand;
     let parse = |extra: &[&str]| {
         let mut args = vec!["vivi", "pool", "dispatch", "abcd1234", "--model", "m/x"];
         args.extend(extra);
@@ -1705,7 +1705,7 @@ fn parses_pool_dispatch_with_refs() {
 
 #[test]
 fn parses_pool_dispatch_repository_target() {
-    use vivi::cli::PoolSubcommand;
+    use vivi_core::cli::PoolSubcommand;
     let cli = Cli::try_parse_from([
         "vivi", "pool", "dispatch", "abcd1234", "--target", "radix", "--model", "m/x",
     ])
@@ -1721,7 +1721,7 @@ fn parses_pool_dispatch_repository_target() {
 
 #[test]
 fn parses_pool_doctor_test_and_long() {
-    use vivi::cli::PoolSubcommand;
+    use vivi_core::cli::PoolSubcommand;
     let parse = |extra: &[&str]| {
         let mut args = vec!["vivi", "pool", "doctor"];
         args.extend(extra);
@@ -1788,7 +1788,7 @@ fn parses_skills_list_show_and_install() {
 
 #[test]
 fn parses_config_and_role_pool_helpers() {
-    use vivi::cli::{ConfigCommand, PoolSubcommand, RoleCommand};
+    use vivi_core::cli::{ConfigCommand, PoolSubcommand, RoleCommand};
 
     let show = Cli::try_parse_from(["vivi", "config", "show", "--resolved", "--json"]).unwrap();
     match show.command {

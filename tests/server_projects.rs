@@ -11,8 +11,10 @@ use base64::engine::general_purpose::STANDARD;
 use ed25519_dalek::SigningKey;
 use sha2::{Digest, Sha256};
 
-use vivi::server::projects::{AppendItem, ListQuery, ProjectError, ProjectStore, Scan, Viewer};
-use vivi::storage::Storage;
+use vivi_server::server::projects::{
+    AppendItem, ListQuery, ProjectError, ProjectStore, Scan, Viewer,
+};
+use vivi_storage::storage::Storage;
 
 fn scratch_data_dir(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
@@ -1085,7 +1087,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 
 use chrono::{TimeZone, Utc};
-use vivi::server::projects::{PAGE_BYTE_CAP, monotone_stamp};
+use vivi_server::server::projects::{PAGE_BYTE_CAP, monotone_stamp};
 
 /// A store whose clock reads `seconds` (unix), which the test steps.
 fn stepped_store(name: &str) -> (ProjectStore, Arc<AtomicI64>, PathBuf) {

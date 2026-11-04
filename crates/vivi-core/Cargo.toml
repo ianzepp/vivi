@@ -1,0 +1,40 @@
+[package]
+name = "vivi-core"
+version = "22.1.0"
+edition = "2024"
+description = "Mailspace, pump, pools, routing and sync: the vivi core"
+license = "MIT"
+
+[dependencies]
+vivi-util = { path = "../vivi-util" }
+vivi-storage = { path = "../vivi-storage" }
+base64 = "0.22"
+chrono.workspace = true
+clap = { version = "4", features = ["derive"] }
+dirs = "6"
+ed25519-dalek = { version = "2", features = ["rand_core", "pkcs8"] }
+hex = "0.4"
+parking_lot = "0.12"
+mail-parser.workspace = true
+rand_core = { version = "0.6", features = ["getrandom"] }
+regex = "1.12"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "deflate", "gzip", "json", "rustls-tls", "stream"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+sysinfo = { version = "0.32", default-features = false, features = ["system"] }
+tempfile = "3"
+tokio = { version = "1", features = ["full"] }
+toml.workspace = true
+toml_edit = "0.22"
+tracing = "0.1"
+vivi-error.workspace = true
+vivi-mail.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+vivi-mail = { workspace = true, features = ["test-support"] }
+vivi-storage = { path = "../vivi-storage", features = ["test-support"] }

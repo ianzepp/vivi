@@ -15,11 +15,11 @@ use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tower::util::ServiceExt;
-use vivi::mailspace::{Mailspace, RoleUpdate};
-use vivi::pump::priority;
-use vivi::server::grants::{GrantLevel, GrantRecord};
-use vivi::server::safety::RateLimiter;
-use vivi::server::{AppState, app_state, hosted, router};
+use vivi_core::mailspace::{Mailspace, RoleUpdate};
+use vivi_core::pump::priority;
+use vivi_server::server::grants::{GrantLevel, GrantRecord};
+use vivi_server::server::safety::RateLimiter;
+use vivi_server::server::{AppState, app_state, hosted, router};
 
 fn scratch(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(

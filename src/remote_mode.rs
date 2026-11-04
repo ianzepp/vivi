@@ -15,9 +15,9 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
-use vivi::cli::{Command, MailCommand, NeedCommand, TaskStatus};
-use vivi::mcp::HttpUpstream;
-use vivi::mcp::client::{self, Client};
+use vivi_core::cli::{Command, MailCommand, NeedCommand, TaskStatus};
+use vivi_core::mcp::HttpUpstream;
+use vivi_core::mcp::client::{self, Client};
 use vivi_error::VivariumError;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -70,8 +70,8 @@ pub(crate) fn run(command: &Command, remote: &RemoteConfig) -> Result<(), Vivari
     let result = match first {
         // A signed-in session the server no longer knows (it restarted):
         // sign in again, once.
-        Err(e) if remote.key_file.is_none() && vivi::machine_key::is_refused_bearer(&e) => {
-            vivi::machine_key::forget(&server, false)?;
+        Err(e) if remote.key_file.is_none() && vivi_core::machine_key::is_refused_bearer(&e) => {
+            vivi_core::machine_key::forget(&server, false)?;
             attempt(&api_key(remote)?)
         }
         other => other,
@@ -95,7 +95,7 @@ fn api_key(remote: &RemoteConfig) -> Result<String, VivariumError> {
             .map_err(|e| VivariumError::Other(format!("key_file {}: {e}", path.display())))?;
         return Ok(key.trim().to_string());
     }
-    vivi::machine_key::sign_in(&remote.server, false)
+    vivi_core::machine_key::sign_in(&remote.server, false)
         .map_err(|e| VivariumError::Other(format!("remote mode: machine sign-in: {e}")))
 }
 
@@ -129,7 +129,7 @@ fn command_project(command: &Command) -> Option<&Path> {
 type Args = Map<String, Value>;
 
 /// The arguments of `need send`.
-fn put_need_send(c: &vivi::cli::NeedSendCommand, a: &mut Args) -> Result<(), VivariumError> {
+fn put_need_send(c: &vivi_core::cli::NeedSendCommand, a: &mut Args) -> Result<(), VivariumError> {
     a.insert("kind".into(), json!("need"));
     a.insert("to".into(), json!(c.send.to));
     a.insert("subject".into(), json!(c.send.subject));

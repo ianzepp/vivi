@@ -341,7 +341,7 @@ fn configure_pump(project: &std::path::Path, from: &str, reply_from: &str) {
 /// id. Read-only: a config edit after this stays invisible here and is
 /// rediscovered by the next binary run.
 fn address_domain(project: &std::path::Path) -> String {
-    vivi::mailspace::Mailspace::discover(Some(project))
+    vivi_core::mailspace::Mailspace::discover(Some(project))
         .unwrap()
         .address_domain()
 }

@@ -17,7 +17,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde_json::{Value, json};
 
-use vivi::b64;
+use vivi_util::b64;
 
 #[path = "project_server_mcp.rs"]
 mod server_mcp;

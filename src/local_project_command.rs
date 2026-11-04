@@ -1,12 +1,12 @@
-use vivi::cli::{
+use vivi_core::cli::{
     ProjectCommand, ProjectCreateCommand, ProjectDeleteCommand, ProjectLaneAddCommand,
     ProjectLaneCommand,
 };
-use vivi::project_create::lane_add::{self, LaneAdd, LaneAdded};
-use vivi::project_create::{
+use vivi_error::VivariumError;
+use vivi_server::project_create::lane_add::{self, LaneAdd, LaneAdded};
+use vivi_server::project_create::{
     self, ProjectCreate, ProjectCreated, ProjectDelete, ProjectDeleted, Readiness,
 };
-use vivi_error::VivariumError;
 
 pub(crate) fn handle(command: &ProjectCommand) -> Result<(), VivariumError> {
     match command {

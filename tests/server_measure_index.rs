@@ -15,10 +15,10 @@
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
-use vivi::mailspace::{Mailspace, SendRequest};
-use vivi::server::hosted;
-use vivi::server::identities::IdentityRegistry;
-use vivi::server::projects::{IndexOutcome, ProjectStore};
+use vivi_core::mailspace::{Mailspace, SendRequest};
+use vivi_server::server::hosted;
+use vivi_server::server::identities::IdentityRegistry;
+use vivi_server::server::projects::{IndexOutcome, ProjectStore};
 
 const OFF_HOST: &str = "mind@0badc0de.local";
 

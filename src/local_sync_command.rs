@@ -2,21 +2,21 @@ use std::io::Write as _;
 use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::path::Path;
 
-use vivi::cli::{ApiKeyCommand, QuarantineCommand, SyncCommand, SyncSubcommand};
-use vivi::mailspace::Mailspace;
-use vivi::sync::fetch::fetch_handles;
-use vivi::sync::http::{self, HttpTransport};
-use vivi::sync::identity::SyncIdentity;
-use vivi::sync::kept::{self as sync_kept, KeptLocal};
-use vivi::sync::keys;
-use vivi::sync::lock::SyncLock;
-use vivi::sync::prune as sync_prune;
-use vivi::sync::pull::PullPlan;
-use vivi::sync::quarantine::{self, RefileOutcome};
-use vivi::sync::state::SyncState;
-use vivi::sync::vouch::{compose_vouch, send_vouch};
-use vivi::sync::window::{parse_age, parse_since};
-use vivi::sync::{SyncSettings, pull, push, refs, sync_dir};
+use vivi_core::cli::{ApiKeyCommand, QuarantineCommand, SyncCommand, SyncSubcommand};
+use vivi_core::mailspace::Mailspace;
+use vivi_core::sync::fetch::fetch_handles;
+use vivi_core::sync::http::{self, HttpTransport};
+use vivi_core::sync::identity::SyncIdentity;
+use vivi_core::sync::kept::{self as sync_kept, KeptLocal};
+use vivi_core::sync::keys;
+use vivi_core::sync::lock::SyncLock;
+use vivi_core::sync::prune as sync_prune;
+use vivi_core::sync::pull::PullPlan;
+use vivi_core::sync::quarantine::{self, RefileOutcome};
+use vivi_core::sync::state::SyncState;
+use vivi_core::sync::vouch::{compose_vouch, send_vouch};
+use vivi_core::sync::window::{parse_age, parse_since};
+use vivi_core::sync::{SyncSettings, pull, push, refs, sync_dir};
 use vivi_error::VivariumError;
 
 /// How a pull differs from continuing at the stored cursor.
@@ -80,7 +80,7 @@ pub(crate) fn handle_sync_command(command: &SyncCommand) -> Result<(), VivariumE
             project,
         }) => {
             if *refs {
-                vivi::sync::refs::check_depth(*depth)?;
+                vivi_core::sync::refs::check_depth(*depth)?;
             }
             run_passes(
                 project.as_deref().or(top),

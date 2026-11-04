@@ -6,13 +6,13 @@ use std::fs;
 use std::process::{Command, Output};
 use std::sync::Arc;
 
-use vivi::mailspace::Mailspace;
-use vivi::pump::config::{BoardConfig, PumpConfig};
-use vivi::pump::flow::tick::tick;
-use vivi::pump::host::{Ctx, RealHost};
-use vivi::pump::state::State;
-use vivi::pump::store::{DB_FILENAME, PumpStore};
-use vivi::routing::{RoleRouting, RoutedPool, RoutedRole};
+use vivi_core::mailspace::Mailspace;
+use vivi_core::pump::config::{BoardConfig, PumpConfig};
+use vivi_core::pump::flow::tick::tick;
+use vivi_core::pump::host::{Ctx, RealHost};
+use vivi_core::pump::state::State;
+use vivi_core::pump::store::{DB_FILENAME, PumpStore};
+use vivi_core::routing::{RoleRouting, RoutedPool, RoutedRole};
 
 #[test]
 fn flow_intake_starts_runs_only_for_needs_with_an_open_pump_record() {

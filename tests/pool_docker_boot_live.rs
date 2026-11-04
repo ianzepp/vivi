@@ -7,13 +7,13 @@
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use vivi::pool::PoolConfig;
-use vivi::pool::bootscript::{SlotMode, slot_command, slot_env, slot_files};
-use vivi::pool::docker::DockerProvider;
-use vivi::pool::github::Secret;
-use vivi::pool::provider::{CreateSpec, PoolProvider};
-use vivi::pool::selftest_source::test_config;
-use vivi::pool::slot::{self, PoolId};
+use vivi_core::pool::PoolConfig;
+use vivi_core::pool::bootscript::{SlotMode, slot_command, slot_env, slot_files};
+use vivi_core::pool::docker::DockerProvider;
+use vivi_core::pool::github::Secret;
+use vivi_core::pool::provider::{CreateSpec, PoolProvider};
+use vivi_core::pool::selftest_source::test_config;
+use vivi_core::pool::slot::{self, PoolId};
 
 const POOL: &str = "vivi-livetest-boot";
 const TOKEN: &str = "ghs_live_test_token_value";

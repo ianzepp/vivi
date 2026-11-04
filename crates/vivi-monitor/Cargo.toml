@@ -1,0 +1,23 @@
+[package]
+name = "vivi-monitor"
+version = "22.1.0"
+edition = "2024"
+description = "The vivi monitor terminal UI"
+license = "MIT"
+
+[dependencies]
+vivi-storage = { path = "../vivi-storage" }
+vivi-core = { path = "../vivi-core" }
+chrono.workspace = true
+crossterm = "0.28"
+ratatui = "0.29"
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde.workspace = true
+serde_json.workspace = true
+tracing = "0.1"
+vivi-error.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+toml.workspace = true
+vivi-mail = { workspace = true, features = ["test-support"] }

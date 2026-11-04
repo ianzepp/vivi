@@ -15,8 +15,8 @@ use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 
 use serde_json::{Value, json};
-use vivi::registry::{self, Flags};
-use vivi::server::mcp::host::HostConfig;
+use vivi_core::registry::{self, Flags};
+use vivi_server::server::mcp::host::HostConfig;
 
 use super::{BASE_SECONDS, Fx, PREFIX, fixture, rfc3339, router};
 

@@ -7,8 +7,8 @@ use std::collections::BTreeSet;
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
-use vivi::mailspace::Mailspace;
-use vivi::storage::MessageIngestRequest;
+use vivi_core::mailspace::Mailspace;
+use vivi_storage::storage::MessageIngestRequest;
 
 fn vivi<I, S>(args: I) -> Output
 where

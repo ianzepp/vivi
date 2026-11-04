@@ -128,28 +128,34 @@ fn production_files_split(server: bool) -> Vec<SourceFile> {
 /// each held at the size it arrived with: they may shrink, never grow. Every
 /// other file, server or not, keeps [`MAX_FILE_LINES`].
 const SERVER_LONG_FILES: &[(&str, usize)] = &[
-    ("src/server/projects.rs", 1688),
-    ("src/server/mcp/tools.rs", 1132),
-    ("src/server/mcp/server.rs", 1075),
+    ("crates/vivi-server/src/server/projects.rs", 1688),
+    ("crates/vivi-server/src/server/mcp/tools.rs", 1132),
+    ("crates/vivi-server/src/server/mcp/server.rs", 1075),
 ];
 
 /// Server files whose longest function arrived over [`MAX_FN_LINES`], with
 /// that length as the file's ceiling: no function there may grow past it.
 /// Every other file keeps [`MAX_FN_LINES`].
 const SERVER_LONG_FUNCTIONS: &[(&str, usize)] = &[
-    ("src/server/mcp.rs", 500),
-    ("src/server/keys.rs", 115),
-    ("src/server/projects_api.rs", 112),
-    ("src/server/mcp/tools.rs", 109),
-    ("src/server/mcp/server.rs", 108),
-    ("src/server/mcp/letters.rs", 102),
-    ("src/server/grants.rs", 79),
-    ("src/server/rooms.rs", 73),
-    ("src/server/mcp/host/archive/purge.rs", 73),
-    ("src/server/mcp/host/archive/restore.rs", 67),
-    ("src/server/projects/hosted_index.rs", 66),
-    ("src/server/mod.rs", 66),
-    ("src/server/hosted.rs", 62),
+    ("crates/vivi-server/src/server/mcp.rs", 500),
+    ("crates/vivi-server/src/server/keys.rs", 115),
+    ("crates/vivi-server/src/server/projects_api.rs", 112),
+    ("crates/vivi-server/src/server/mcp/tools.rs", 109),
+    ("crates/vivi-server/src/server/mcp/server.rs", 108),
+    ("crates/vivi-server/src/server/mcp/letters.rs", 102),
+    ("crates/vivi-server/src/server/grants.rs", 79),
+    ("crates/vivi-server/src/server/rooms.rs", 73),
+    (
+        "crates/vivi-server/src/server/mcp/host/archive/purge.rs",
+        73,
+    ),
+    (
+        "crates/vivi-server/src/server/mcp/host/archive/restore.rs",
+        67,
+    ),
+    ("crates/vivi-server/src/server/projects/hosted_index.rs", 66),
+    ("crates/vivi-server/src/server/mod.rs", 66),
+    ("crates/vivi-server/src/server/hosted.rs", 62),
 ];
 
 /// The allowance for `path` in `table`, else `default`.

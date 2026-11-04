@@ -10,10 +10,10 @@ use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use vivi::pool::PoolConfig;
-use vivi::pool::docker::DockerProvider;
-use vivi::pool::provider::{CreateSpec, PoolProvider};
-use vivi::pool::slot::{self, META_STATE, PoolId, STATE_READY};
+use vivi_core::pool::PoolConfig;
+use vivi_core::pool::docker::DockerProvider;
+use vivi_core::pool::provider::{CreateSpec, PoolProvider};
+use vivi_core::pool::slot::{self, META_STATE, PoolId, STATE_READY};
 
 const POOL: &str = "vivi-livetest";
 const IMAGE: &str = "ubuntu:24.04";

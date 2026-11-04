@@ -4,7 +4,7 @@
 
 use std::process::{Command, Output};
 
-use vivi::mailspace::{Mailspace, SendRequest};
+use vivi_core::mailspace::{Mailspace, SendRequest};
 use vivi_mail::letter::render;
 use vivi_mail::letter::work::TaskFront;
 

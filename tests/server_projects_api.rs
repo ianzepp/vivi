@@ -13,7 +13,7 @@ use ed25519_dalek::{Signer, SigningKey};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tower::util::ServiceExt;
-use vivi::server::api_router;
+use vivi_server::server::api_router;
 
 const STORE_KEY_SEED: u8 = 0x42;
 

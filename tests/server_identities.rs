@@ -8,8 +8,12 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use ed25519_dalek::{Signer, SigningKey};
 
-use vivi::server::auth::{ChallengeBook, canonical_spki_hex, key_fingerprint, parse_verifying_key};
-use vivi::server::identities::{IdentityRegistry, MAX_IDENTITY_LEN, RefreshError, RegisterError};
+use vivi_server::server::auth::{
+    ChallengeBook, canonical_spki_hex, key_fingerprint, parse_verifying_key,
+};
+use vivi_server::server::identities::{
+    IdentityRegistry, MAX_IDENTITY_LEN, RefreshError, RegisterError,
+};
 
 fn scratch_data_dir(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(

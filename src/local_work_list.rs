@@ -1,7 +1,7 @@
 use serde::Serialize;
-use vivi::mailspace::{Mailspace, is_foreign_account};
-use vivi::storage::{MailspaceEvent, StoredMessageView};
+use vivi_core::mailspace::{Mailspace, is_foreign_account};
 use vivi_error::VivariumError;
+use vivi_storage::storage::{MailspaceEvent, StoredMessageView};
 
 #[derive(Debug, Serialize)]
 struct WorkListItem {
@@ -170,7 +170,7 @@ fn render_work_list(
                 .map_or([].as_slice(), Vec::as_slice);
             work_list_item(message, kind, events)
         })
-        .filter(|item| vivi::mailspace::marks_include(&item.marks, marks))
+        .filter(|item| vivi_core::mailspace::marks_include(&item.marks, marks))
         .collect::<Vec<_>>();
     if json {
         print_json(&items)
@@ -196,7 +196,7 @@ fn work_list_item(
         from: message.from_addr,
         to: message.to_addr,
         subject: message.subject,
-        marks: vivi::mailspace::folded_marks(events),
+        marks: vivi_core::mailspace::folded_marks(events),
         last_event: events.last().map(work_list_event),
     }
 }

@@ -13,7 +13,7 @@ use base64::engine::general_purpose::STANDARD;
 use serde_json::Value;
 use tower::util::ServiceExt;
 
-use vivi::server::api_router;
+use vivi_server::server::api_router;
 
 fn scratch_data_dir(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(

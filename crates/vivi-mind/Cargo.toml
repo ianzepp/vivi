@@ -1,0 +1,22 @@
+[package]
+name = "vivi-mind"
+version = "22.1.0"
+edition = "2024"
+description = "The vivi mind service"
+license = "MIT"
+
+[dependencies]
+vivi-util = { path = "../vivi-util" }
+vivi-core = { path = "../vivi-core" }
+vivi-proxy = { path = "../vivi-proxy" }
+chrono.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "deflate", "gzip", "json", "rustls-tls", "stream"] }
+serde.workspace = true
+serde_json.workspace = true
+tokio = { version = "1", features = ["full"] }
+toml.workspace = true
+tracing = "0.1"
+vivi-error.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

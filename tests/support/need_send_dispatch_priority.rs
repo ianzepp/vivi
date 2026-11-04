@@ -12,8 +12,8 @@
 use std::path::{Path, PathBuf};
 
 use super::*;
-use vivi::pump::flow::rank::need_key;
-use vivi::pump::store::{DB_FILENAME, PumpStore};
+use vivi_core::pump::flow::rank::need_key;
+use vivi_core::pump::store::{DB_FILENAME, PumpStore};
 
 /// The non-default pump home the tests configure, relative to the project
 /// root, so the tests can tell the configured home from the default one.
@@ -68,7 +68,7 @@ fn dispatch_priority_uses_canonical_need_and_configured_home() {
 
     // The public priority list and its CLI see the same sole row.
     assert_eq!(
-        vivi::pump::priority::list(&home(&root)).unwrap(),
+        vivi_core::pump::priority::list(&home(&root)).unwrap(),
         vec![(need.clone(), 7)]
     );
     assert_eq!(
@@ -132,7 +132,11 @@ fn dispatch_zero_and_omitted_priority_have_no_row() {
         store.need_priorities().unwrap().is_empty(),
         "level 0 stored a row"
     );
-    assert!(vivi::pump::priority::list(&home(&root)).unwrap().is_empty());
+    assert!(
+        vivi_core::pump::priority::list(&home(&root))
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(
         ok(&vivi(["pump", "priority", "list", "--project", &root])),
         ""
@@ -179,7 +183,7 @@ fn dispatch_zero_and_omitted_priority_have_no_row() {
         ""
     );
     assert!(
-        vivi::pump::priority::list(&home(&other_root))
+        vivi_core::pump::priority::list(&home(&other_root))
             .unwrap()
             .is_empty()
     );

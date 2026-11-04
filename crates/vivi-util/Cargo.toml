@@ -1,0 +1,13 @@
+[package]
+name = "vivi-util"
+version = "22.1.0"
+edition = "2024"
+description = "Small shared helpers: base64, durations, extraction, home paths, stdout budget"
+license = "MIT"
+
+[dependencies]
+dirs = "6"
+mail-parser.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+vivi-error.workspace = true

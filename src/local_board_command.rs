@@ -5,10 +5,12 @@ use std::fs;
 use std::io::ErrorKind;
 
 use chrono::{DateTime, Utc};
-use vivi::cli::BoardCommand;
-use vivi::mailspace::board::{Board, BoardGraph, BoardItem, BoardOptions, IdentityBoard};
-use vivi::mailspace::{GoalView, Mailspace};
-use vivi::role_schedule::{ScheduleReport, ScheduleState, state_label as schedule_state_label};
+use vivi_core::cli::BoardCommand;
+use vivi_core::mailspace::board::{Board, BoardGraph, BoardItem, BoardOptions, IdentityBoard};
+use vivi_core::mailspace::{GoalView, Mailspace};
+use vivi_core::role_schedule::{
+    ScheduleReport, ScheduleState, state_label as schedule_state_label,
+};
 use vivi_error::VivariumError;
 
 pub(crate) fn handle_board_command(command: &BoardCommand) -> Result<(), VivariumError> {
@@ -31,7 +33,7 @@ pub(crate) fn handle_board_command(command: &BoardCommand) -> Result<(), Vivariu
 
 fn resolve_since(command: &BoardCommand) -> Result<Option<DateTime<Utc>>, VivariumError> {
     if let Some(since) = &command.since {
-        return vivi::mailspace::parse_time_bound(since).map(Some);
+        return vivi_core::mailspace::parse_time_bound(since).map(Some);
     }
     let Some(path) = &command.watermark_file else {
         return Ok(None);
@@ -45,7 +47,7 @@ fn resolve_since(command: &BoardCommand) -> Result<Option<DateTime<Utc>>, Vivari
     if value.is_empty() {
         Ok(None)
     } else {
-        vivi::mailspace::parse_time_bound(value).map(Some)
+        vivi_core::mailspace::parse_time_bound(value).map(Some)
     }
 }
 
@@ -170,7 +172,7 @@ fn print_identity(mailspace: &Mailspace, identity: &IdentityBoard) {
     print_schedule_line(&identity.schedule, identity.last_auto_run.as_deref());
     print_items("tasks", &identity.tasks, |_| 0);
     print_items("needs", &identity.needs, |handle| {
-        vivi::pump::flow::mail::read::run_count(mailspace, handle)
+        vivi_core::pump::flow::mail::read::run_count(mailspace, handle)
     });
     print_items("wants", &identity.wants, |_| 0);
     if identity.wants_hidden > 0 {
@@ -192,8 +194,8 @@ fn print_capacity_line(identity: &IdentityBoard) {
     println!();
 }
 
-fn role_status_state_label(state: &vivi::role_status::ProcessState) -> &'static str {
-    use vivi::role_status::ProcessState;
+fn role_status_state_label(state: &vivi_core::role_status::ProcessState) -> &'static str {
+    use vivi_core::role_status::ProcessState;
     match state {
         ProcessState::NotSet => "not_set",
         ProcessState::Remote => "remote",

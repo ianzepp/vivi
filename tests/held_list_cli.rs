@@ -6,10 +6,10 @@
 use std::path::Path;
 use std::process::{Command, Output};
 
-use vivi::mailspace::Mailspace;
-use vivi::storage::MessageIngestRequest;
+use vivi_core::mailspace::Mailspace;
 use vivi_mail::letter::render;
 use vivi_mail::letter::work::{NeedFront, TaskFront, WantFront};
+use vivi_storage::storage::MessageIngestRequest;
 
 /// Another member's `mind`: work addressed to it is held under this address.
 const THEIRS: &str = "mind@bd371d96.local";

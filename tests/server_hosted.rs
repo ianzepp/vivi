@@ -12,12 +12,12 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use ed25519_dalek::SigningKey;
 use tower::util::ServiceExt;
-use vivi::mailspace::Mailspace;
-use vivi::registry::{self, Flags};
-use vivi::server::hosted::{self, Report};
-use vivi::server::identities::IdentityRegistry;
-use vivi::server::ids::{mint_room_id, room_id_from_uuid};
-use vivi::server::projects::{
+use vivi_core::mailspace::Mailspace;
+use vivi_core::registry::{self, Flags};
+use vivi_server::server::hosted::{self, Report};
+use vivi_server::server::identities::IdentityRegistry;
+use vivi_server::server::ids::{mint_room_id, room_id_from_uuid};
+use vivi_server::server::projects::{
     AppendItem, Archived, ListQuery, ProjectError, ProjectMeta, ProjectStore, Viewer,
 };
 
@@ -319,8 +319,8 @@ async fn the_http_surface_answers_unknown_once_a_root_is_unserved() {
     let env = env("http");
     let (root, _) = host_root(&env, "app", None);
     let id = serve(&env, &[&root]).served[0].project_id.clone();
-    let state = vivi::server::app_state(env.data.clone(), None, None).expect("app state");
-    let app = vivi::server::router(state.clone());
+    let state = vivi_server::server::app_state(env.data.clone(), None, None).expect("app state");
+    let app = vivi_server::server::router(state.clone());
     let get = |app: axum::Router| {
         let uri = format!("/v1/projects/{id}/directory");
         async move {
@@ -454,7 +454,7 @@ fn a_hosted_project_accepts_an_append_and_files_it_in_the_host() {
     assert!(!outcome.duplicate);
     assert!(env.projects.append(&id, &item).unwrap().duplicate);
     // The host mailspace holds the letter (an address of no local role).
-    let storage = vivi::storage::Storage::open_mailspace(&root.join(".vivi")).unwrap();
+    let storage = vivi_storage::storage::Storage::open_mailspace(&root.join(".vivi")).unwrap();
     assert_eq!(storage.list_messages().unwrap().len(), 1);
 }
 
@@ -477,7 +477,11 @@ fn need_eml(id: &str, format_header: bool, front: &str) -> Vec<u8> {
 /// receipt at the top of `.vivi/quarantine/` (the discard trail under
 /// `dropped/` does not count).
 fn assert_nothing_quarantined(vivi_dir: &Path) {
-    assert!(vivi::sync::quarantine::list(vivi_dir).unwrap().is_empty());
+    assert!(
+        vivi_core::sync::quarantine::list(vivi_dir)
+            .unwrap()
+            .is_empty()
+    );
     let held = std::fs::read_dir(vivi_dir.join("quarantine"))
         .map(|entries| {
             entries
@@ -608,7 +612,7 @@ fn a_bad_format1_letter_is_refused_at_push_and_nothing_is_filed_or_held() {
     // letter it cannot read instead of quarantining it. The transport page
     // over the whole window is empty — a row with no blob would fail it.
     let vivi_dir = root.join(".vivi");
-    let storage = vivi::storage::Storage::open_mailspace(&vivi_dir).unwrap();
+    let storage = vivi_storage::storage::Storage::open_mailspace(&vivi_dir).unwrap();
     assert_eq!(storage.list_messages().unwrap().len(), 0);
     assert_nothing_quarantined(&vivi_dir);
     assert_one_dropped_pair(&vivi_dir);
@@ -632,7 +636,7 @@ fn a_good_format1_need_still_files_on_a_hosted_push() {
 
     let outcome = env.projects.append(&id, &item).unwrap();
     assert!(!outcome.duplicate);
-    let storage = vivi::storage::Storage::open_mailspace(&root.join(".vivi")).unwrap();
+    let storage = vivi_storage::storage::Storage::open_mailspace(&root.join(".vivi")).unwrap();
     assert_eq!(storage.list_messages().unwrap().len(), 1);
 }
 
@@ -656,7 +660,7 @@ fn a_legacy_letter_files_as_history_on_a_hosted_push() {
 
     let outcome = env.projects.append(&id, &item).unwrap();
     assert!(!outcome.duplicate);
-    let storage = vivi::storage::Storage::open_mailspace(&root.join(".vivi")).unwrap();
+    let storage = vivi_storage::storage::Storage::open_mailspace(&root.join(".vivi")).unwrap();
     assert_eq!(storage.list_messages().unwrap().len(), 1);
 }
 
@@ -687,7 +691,7 @@ fn pushing_the_same_bad_letter_again_refuses_it_and_keeps_one_dropped_pair() {
         "discard must overwrite the one pair, not leave another"
     );
     assert_nothing_quarantined(&vivi_dir);
-    let storage = vivi::storage::Storage::open_mailspace(&vivi_dir).unwrap();
+    let storage = vivi_storage::storage::Storage::open_mailspace(&vivi_dir).unwrap();
     assert_eq!(storage.list_messages().unwrap().len(), 0);
     assert_transport_page_empty(&env, &id);
 }
@@ -701,7 +705,7 @@ fn a_refused_push_leaves_the_transport_page_empty() {
 
     assert_refused(env.projects.append(&id, &bad_format1(6)).unwrap_err());
 
-    let storage = vivi::storage::Storage::open_mailspace(&vivi_dir).unwrap();
+    let storage = vivi_storage::storage::Storage::open_mailspace(&vivi_dir).unwrap();
     assert_eq!(storage.list_messages().unwrap().len(), 0);
     assert_transport_page_empty(&env, &id);
 }
@@ -721,14 +725,14 @@ fn a_discard_failure_still_refuses_the_letter_and_records_nothing() {
 
     let message = assert_refused(env.projects.append(&id, &bad_format1(7)).unwrap_err());
 
-    let storage = vivi::storage::Storage::open_mailspace(&vivi_dir).unwrap();
+    let storage = vivi_storage::storage::Storage::open_mailspace(&vivi_dir).unwrap();
     assert_eq!(storage.list_messages().unwrap().len(), 0);
     assert_transport_page_empty(&env, &id);
     assert!(
         blocker.is_file(),
         "discard replaced the blocker; the failure was not simulated"
     );
-    let held = vivi::sync::quarantine::list(&vivi_dir).unwrap();
+    let held = vivi_core::sync::quarantine::list(&vivi_dir).unwrap();
     assert_eq!(
         held.len(),
         1,

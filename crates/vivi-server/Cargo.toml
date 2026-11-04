@@ -1,0 +1,38 @@
+[package]
+name = "vivi-server"
+version = "22.1.0"
+edition = "2024"
+description = "vivi-server: hosted projects and the MCP endpoint"
+license = "MIT"
+
+[dependencies]
+vivi-util = { path = "../vivi-util" }
+vivi-storage = { path = "../vivi-storage" }
+vivi-core = { path = "../vivi-core" }
+aes-gcm = "0.10"
+axum = "0.8"
+base64 = "0.22"
+chrono.workspace = true
+ed25519-dalek = { version = "2", features = ["rand_core", "pkcs8"] }
+flate2 = "1"
+getrandom = "0.4"
+hex = "0.4"
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+subtle = "2"
+tokio = { version = "1", features = ["full"] }
+toml.workspace = true
+toml_edit = "0.22"
+tower-http = { version = "0.6", default-features = false, features = ["compression-gzip"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+vivi-error.workspace = true
+vivi-mail.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"

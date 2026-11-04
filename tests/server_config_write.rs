@@ -14,11 +14,11 @@ use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
 use serde_json::{Value, json};
 use tower::util::ServiceExt;
-use vivi::mailspace::config_edit;
-use vivi::mailspace::{Mailspace, RoleUpdate};
-use vivi::pump::config::targets::{self, TargetSpec};
-use vivi::server::grants::{GrantLevel, GrantRecord};
-use vivi::server::{AppState, app_state, hosted, router};
+use vivi_core::mailspace::config_edit;
+use vivi_core::mailspace::{Mailspace, RoleUpdate};
+use vivi_core::pump::config::targets::{self, TargetSpec};
+use vivi_server::server::grants::{GrantLevel, GrantRecord};
+use vivi_server::server::{AppState, app_state, hosted, router};
 
 fn scratch(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
@@ -347,7 +347,7 @@ async fn config_migrate_dry_run_is_a_read_and_write_matches_the_library() {
     let key = fx.key_by(&fx.member, None);
     let before = fx.config_text();
     let dry_twin = twin(&fx.root);
-    let dry = vivi::pump::config::migrate(Some(&dry_twin), false).unwrap();
+    let dry = vivi_core::pump::config::migrate(Some(&dry_twin), false).unwrap();
     let got = fx.call(&key, "config_migrate", json!({})).await;
     assert_eq!(got["dry_run"], true);
     assert_eq!(got["plan"], dry.plan);
@@ -361,7 +361,7 @@ async fn config_migrate_dry_run_is_a_read_and_write_matches_the_library() {
     );
 
     let write_twin = twin(&fx.root);
-    let wrote = vivi::pump::config::migrate(Some(&write_twin), true).unwrap();
+    let wrote = vivi_core::pump::config::migrate(Some(&write_twin), true).unwrap();
     let got = fx
         .call(&key, "config_migrate", json!({"write": true}))
         .await;
@@ -439,7 +439,7 @@ async fn pool_allow_set_matches_the_library_and_refuses_a_bad_type() {
         .map(|model| model.to_string())
         .collect();
     let twin_root = twin(&fx.root);
-    vivi::pool::config_allow::set_allow(&twin_root, "glm", &models).unwrap();
+    vivi_core::pool::config_allow::set_allow(&twin_root, "glm", &models).unwrap();
     let got = fx
         .call(
             &key,
@@ -518,8 +518,11 @@ async fn writes_are_refused_while_the_pump_runs_and_a_paused_pump_is_writable() 
     let fx = fixture("running");
     let key = fx.key_by(&fx.member, None);
     let before = fx.config_text();
-    vivi::pump::control::set_project_mode(&fx.root, vivi::pump::control::PumpMode::Running)
-        .unwrap();
+    vivi_core::pump::control::set_project_mode(
+        &fx.root,
+        vivi_core::pump::control::PumpMode::Running,
+    )
+    .unwrap();
     let lock = hold_pump_lock(&fx.root);
     let writes = [
         ("config_migrate", json!({"write": true})),
@@ -539,7 +542,11 @@ async fn writes_are_refused_while_the_pump_runs_and_a_paused_pump_is_writable() 
     assert!(lines.iter().all(|line| line["outcome"] == "refused"));
     drop(lock);
 
-    vivi::pump::control::set_project_mode(&fx.root, vivi::pump::control::PumpMode::Paused).unwrap();
+    vivi_core::pump::control::set_project_mode(
+        &fx.root,
+        vivi_core::pump::control::PumpMode::Paused,
+    )
+    .unwrap();
     let _lock = hold_pump_lock(&fx.root);
     let got = fx
         .call(

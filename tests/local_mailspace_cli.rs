@@ -2,10 +2,10 @@ use std::io::Write;
 use std::process::{Command, Output, Stdio};
 
 use serde_json::Value;
-use vivi::pump::cadence::{CadenceState, RoleRun, set_state};
-use vivi::pump::state::State as PumpState;
-use vivi::pump::store::{DB_FILENAME, PumpStore};
-use vivi::storage::Storage;
+use vivi_core::pump::cadence::{CadenceState, RoleRun, set_state};
+use vivi_core::pump::state::State as PumpState;
+use vivi_core::pump::store::{DB_FILENAME, PumpStore};
+use vivi_storage::storage::Storage;
 
 #[test]
 #[allow(clippy::too_many_lines)]
@@ -2878,7 +2878,7 @@ fn role_cadence_and_schedule_status_from_outbound_mail() {
         },
     );
     set_state(&mut pump_state, &cadence);
-    let mut pump_store = PumpStore::open(&pump_home.join(DB_FILENAME)).unwrap();
+    let pump_store = PumpStore::open(&pump_home.join(DB_FILENAME)).unwrap();
     pump_store.save(&pump_state).unwrap();
     drop(pump_store);
 

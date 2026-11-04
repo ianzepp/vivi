@@ -1,5 +1,5 @@
 use clap::Parser;
-use vivi::cli::{Cli, Command, ProxySubcommand};
+use vivi_core::cli::{Cli, Command, ProxySubcommand};
 
 #[test]
 fn parses_proxy_surface() {

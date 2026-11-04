@@ -6,8 +6,8 @@
 mod project_server;
 
 use serde_json::{Value, json};
-use vivi::b64;
-use vivi::sync::identity::SyncIdentity;
+use vivi_core::sync::identity::SyncIdentity;
+use vivi_util::b64;
 
 use project_server::{HttpReply, ProjectServer, http};
 

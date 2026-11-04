@@ -6,9 +6,9 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use tempfile::TempDir;
-use vivi::proxy::config::{self, ProxyConfig};
-use vivi::proxy::dead::DEAD_MESSAGE;
-use vivi::proxy::runtime;
+use vivi_proxy::proxy::config::{self, ProxyConfig};
+use vivi_proxy::proxy::dead::DEAD_MESSAGE;
+use vivi_proxy::proxy::runtime;
 
 #[path = "support/proxy_upstream.rs"]
 mod proxy_upstream;

@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 
 use chrono::{TimeZone, Utc};
 
-use vivi::server::projects::{AppendItem, ListQuery, ProjectStore, Viewer};
+use vivi_server::server::projects::{AppendItem, ListQuery, ProjectStore, Viewer};
 
 const PREFIXES: [&str; 10] = [
     "3f9a1c7e", "a1b2c3d4", "0badc0de", "deadbeef", "12345678", "cafef00d", "8badf00d", "feedface",

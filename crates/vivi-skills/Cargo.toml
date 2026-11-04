@@ -1,0 +1,16 @@
+[package]
+name = "vivi-skills"
+version = "22.1.0"
+edition = "2024"
+description = "The skill files embedded in the vivi binary"
+license = "MIT"
+build = "build.rs"
+
+[dependencies]
+dirs = "6"
+serde.workspace = true
+serde_json.workspace = true
+vivi-error.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

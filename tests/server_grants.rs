@@ -3,8 +3,8 @@
 
 use std::path::PathBuf;
 
-use vivi::server::auth::sha256_hex;
-use vivi::server::grants::{
+use vivi_server::server::auth::sha256_hex;
+use vivi_server::server::grants::{
     GrantLevel, GrantRecord, GrantsError, ServerKeyStore, retire_legacy_project_keys,
 };
 

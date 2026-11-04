@@ -1,15 +1,15 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use vivi::cli::MonitorCommand;
-use vivi::monitor::model::{MonitorRow, RowState};
-use vivi::monitor::{merge_roots, snapshot};
+use vivi_core::cli::MonitorCommand;
 use vivi_error::VivariumError;
+use vivi_monitor::monitor::model::{MonitorRow, RowState};
+use vivi_monitor::monitor::{merge_roots, snapshot};
 
 pub(crate) fn run(command: &MonitorCommand) -> Result<(), VivariumError> {
     if command.json && !command.once {
         return Err(VivariumError::Message(String::from("--json needs --once")));
     }
-    let (registered, mut warnings) = match vivi::registry::load() {
+    let (registered, mut warnings) = match vivi_core::registry::load() {
         Ok(registry) => (registry.roots(), Vec::new()),
         Err(error) => (
             Default::default(),
@@ -38,7 +38,7 @@ pub(crate) fn run(command: &MonitorCommand) -> Result<(), VivariumError> {
     for warning in warnings {
         eprintln!("warning: {warning}");
     }
-    vivi::monitor::tui::run(&roots)
+    vivi_monitor::monitor::tui::run(&roots)
 }
 
 fn print_rows(rows: &[MonitorRow]) {
@@ -56,8 +56,8 @@ fn print_rows(rows: &[MonitorRow]) {
             task(row),
             row.model,
             state(&row.state),
-            vivi::monitor::model::started_text(row.started_at),
-            vivi::monitor::model::running_text(row),
+            vivi_monitor::monitor::model::started_text(row.started_at),
+            vivi_monitor::monitor::model::running_text(row),
             row.read_only
                 .map_or("-", |read_only| if read_only { "ro" } else { "rw" }),
         );

@@ -10,8 +10,8 @@ use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
 use serde_json::{Value, json};
 use tower::util::ServiceExt;
-use vivi::server::mcp::host::HostConfig;
-use vivi::server::{AppState, app_state, router};
+use vivi_server::server::mcp::host::HostConfig;
+use vivi_server::server::{AppState, app_state, router};
 
 const TOKEN: &str = "host-operator-secret";
 const PREFIX: &str = "git@hub.example.ts.net:";
@@ -205,7 +205,7 @@ async fn create_project_makes_the_repo_mailspace_and_registration_and_serves_it(
     assert!(made["initial_commit"].is_string(), "{made}");
     assert!(made["mailspace_id"].is_string());
     assert!(made["readiness"]["missing"].is_array());
-    let registry = vivi::registry::load().unwrap();
+    let registry = vivi_core::registry::load().unwrap();
     let flags = registry.get(&root).expect("registered");
     assert!(flags.serve && flags.pump);
 
@@ -239,7 +239,7 @@ async fn create_project_starts_the_pump_running() {
     // the same way the library reads it, and the project stays registered.
     let root = fx.projects.join("auto").canonicalize().unwrap();
     assert_eq!(pump_mode(&root), "running");
-    let flags = vivi::registry::load()
+    let flags = vivi_core::registry::load()
         .unwrap()
         .get(&root)
         .expect("registered");
@@ -345,7 +345,13 @@ async fn serve_false_registers_without_serving() {
     assert_eq!(made["served"], false);
     assert!(made.get("operator_key").is_none() && made.get("project_id").is_none());
     let root = fx.projects.join("quiet").canonicalize().unwrap();
-    assert!(!vivi::registry::load().unwrap().get(&root).unwrap().serve);
+    assert!(
+        !vivi_core::registry::load()
+            .unwrap()
+            .get(&root)
+            .unwrap()
+            .serve
+    );
 }
 
 #[tokio::test]
@@ -358,7 +364,13 @@ async fn pump_false_registers_without_starting() {
     assert_eq!(made["pump_mode"], "stopped", "{made}");
     assert!(made.get("pump_error").is_none(), "{made}");
     let root = fx.projects.join("sleepy").canonicalize().unwrap();
-    assert!(!vivi::registry::load().unwrap().get(&root).unwrap().pump);
+    assert!(
+        !vivi_core::registry::load()
+            .unwrap()
+            .get(&root)
+            .unwrap()
+            .pump
+    );
 }
 
 #[tokio::test]
@@ -452,8 +464,8 @@ async fn create_project_seeds_the_given_rungs_and_answers_the_readiness_after() 
     assert!(made.get("rungs_error").is_none(), "{made}");
 
     let root = fx.projects.join("laddered").canonicalize().unwrap();
-    let space = vivi::mailspace::Mailspace::open_root(root.clone()).unwrap();
-    let issues = vivi::pump::readiness::assess(&space);
+    let space = vivi_core::mailspace::Mailspace::open_root(root.clone()).unwrap();
+    let issues = vivi_core::pump::readiness::assess(&space);
     let rungs = space.config.pump.unwrap().rungs;
     assert_eq!(rungs.need.as_deref(), Some("make need"));
     assert_eq!(rungs.main.as_deref(), Some("make main"));
@@ -461,7 +473,7 @@ async fn create_project_seeds_the_given_rungs_and_answers_the_readiness_after() 
 
     // The answer is the readiness as it stands after the write.
     assert_eq!(made["readiness"]["ready"], false, "{made}");
-    let listed: Vec<_> = vivi::routing::not_ready(&issues)
+    let listed: Vec<_> = vivi_core::routing::not_ready(&issues)
         .map(|i| i.item.clone().unwrap_or_default())
         .collect();
     let answered: Vec<_> = made["readiness"]["missing"]
@@ -525,7 +537,7 @@ async fn create_project_writes_rung_timeout_and_pools() {
     let raw = std::fs::read_to_string(root.join(".vivi").join("mailspace.toml")).unwrap();
     assert!(raw.contains("timeout = 900"), "{raw}");
     assert!(raw.contains("pools = [\"rung\"]"), "{raw}");
-    let space = vivi::mailspace::Mailspace::open_root(root).unwrap();
+    let space = vivi_core::mailspace::Mailspace::open_root(root).unwrap();
     let rungs = space.config.pump.unwrap().rungs;
     assert_eq!(rungs.need.as_deref(), Some("make need"));
     assert_eq!(rungs.timeout, Some(900));
@@ -552,8 +564,8 @@ async fn create_project_with_rungs_and_pools_lands_every_command() {
     assert!(made.get("rungs_error").is_none(), "{made}");
 
     let root = fx.projects.join("complete").canonicalize().unwrap();
-    let space = vivi::mailspace::Mailspace::open_root(root).unwrap();
-    let issues = vivi::pump::readiness::assess(&space);
+    let space = vivi_core::mailspace::Mailspace::open_root(root).unwrap();
+    let issues = vivi_core::pump::readiness::assess(&space);
     let rungs = space.config.pump.unwrap().rungs;
     assert_eq!(rungs.task.as_deref(), Some("make task"));
     assert_eq!(rungs.need.as_deref(), Some("make need"));
@@ -562,9 +574,9 @@ async fn create_project_with_rungs_and_pools_lands_every_command() {
     assert_eq!(rungs.pools, vec!["rung".to_owned()]);
     assert_eq!(
         made["readiness"]["ready"],
-        vivi::pump::readiness::is_ready(&issues)
+        vivi_core::pump::readiness::is_ready(&issues)
     );
-    let listed: Vec<_> = vivi::routing::not_ready(&issues)
+    let listed: Vec<_> = vivi_core::routing::not_ready(&issues)
         .map(|issue| issue.item.clone().unwrap_or_default())
         .collect();
     let answered: Vec<_> = made["readiness"]["missing"]
@@ -601,7 +613,7 @@ async fn create_project_writes_rung_timeout_alone() {
     assert!(!errored, "{made}");
     assert!(made.get("rungs_error").is_none(), "{made}");
     let root = fx.projects.join("onlytimeout").canonicalize().unwrap();
-    let space = vivi::mailspace::Mailspace::open_root(root).unwrap();
+    let space = vivi_core::mailspace::Mailspace::open_root(root).unwrap();
     assert_eq!(space.config.pump.unwrap().rungs.timeout, Some(60));
 }
 
@@ -671,8 +683,8 @@ fn dir_names(dir: &std::path::Path) -> Vec<String> {
 /// The stored pump control mode of a project, read the way the library
 /// reads it (not the answer's copy of it).
 fn pump_mode(project: &std::path::Path) -> String {
-    let home = vivi::pump::control::project_home(project).unwrap();
-    vivi::pump::control::inspect(&home)
+    let home = vivi_core::pump::control::project_home(project).unwrap();
+    vivi_core::pump::control::inspect(&home)
         .unwrap()
         .mode
         .to_string()
@@ -812,7 +824,7 @@ async fn lane_create_makes_the_lane_the_checkout_and_the_target() {
     let live = std::fs::read_to_string(root.join(".vivi/mailspace.toml")).unwrap();
     assert!(live.contains("[pump.targets.sandbox]"), "{live}");
     assert!(live.contains(&format!("remote_url = \"{url}\"")), "{live}");
-    let ids: Vec<_> = vivi::pump::config::targets::list(&root)
+    let ids: Vec<_> = vivi_core::pump::config::targets::list(&root)
         .unwrap()
         .into_iter()
         .map(|row| row.id)
@@ -892,7 +904,7 @@ async fn lane_create_refuses_a_source_that_is_not_a_github_url() {
         config,
         "a refusal leaves the config byte-for-byte unchanged"
     );
-    let ids: Vec<_> = vivi::pump::config::targets::list(&root)
+    let ids: Vec<_> = vivi_core::pump::config::targets::list(&root)
         .unwrap()
         .into_iter()
         .map(|row| row.id)
@@ -987,7 +999,7 @@ async fn create_project_refuses_a_source_that_is_not_a_github_url() {
         assert!(!projects.join(&name).exists(), "{source} made a project");
         assert!(!fx.lanes.join(&name).exists(), "{source} made a lane");
         assert!(
-            vivi::registry::load()
+            vivi_core::registry::load()
                 .unwrap()
                 .get(&projects.join(&name))
                 .is_none(),
@@ -1041,8 +1053,8 @@ async fn project_list(fx: &Fx) -> Vec<Value> {
 /// Retire `root`: unregister it in the host registry and reconcile the
 /// served set locally (what the registry watcher does within seconds).
 fn retire(fx: &Fx, root: &std::path::Path) {
-    vivi::registry::update(|registry| Ok(registry.remove(root))).unwrap();
-    vivi::server::hosted::reconcile_registry(&fx.state.projects, &fx.state.identities);
+    vivi_core::registry::update(|registry| Ok(registry.remove(root))).unwrap();
+    vivi_server::server::hosted::reconcile_registry(&fx.state.projects, &fx.state.identities);
 }
 
 #[tokio::test]
@@ -1095,7 +1107,7 @@ async fn an_archived_project_stays_listed_and_its_name_is_refused() {
         "a refusal leaves the config byte-for-byte unchanged"
     );
     assert!(
-        vivi::registry::load().unwrap().get(&root).is_none(),
+        vivi_core::registry::load().unwrap().get(&root).is_none(),
         "a refused create does not re-register the archive"
     );
     let lines = tool_lines(&fx.data, "create_project");

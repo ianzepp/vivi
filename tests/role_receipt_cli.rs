@@ -5,8 +5,8 @@
 use std::fs;
 use std::process::{Command, Output};
 
-use vivi::pump::attempt_record::hand_message;
-use vivi::pump::flow::fanout::parse_reply;
+use vivi_core::pump::attempt_record::hand_message;
+use vivi_core::pump::flow::fanout::parse_reply;
 
 const ENVELOPE: &str = "+++\n\
 answer = \"sliced\"\n\

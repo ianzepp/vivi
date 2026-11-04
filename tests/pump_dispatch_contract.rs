@@ -47,8 +47,8 @@ const FORBIDDEN_EXECUTION: &[(&str, &str)] = &[
 
 #[test]
 fn production_run_uses_pool_dispatch_and_restarts_through_receipt_collectors() {
-    let run = include_str!("../src/pump/run.rs");
-    let collect = include_str!("../src/pump/collect.rs");
+    let run = include_str!("../crates/vivi-core/src/pump/run.rs");
+    let collect = include_str!("../crates/vivi-core/src/pump/collect.rs");
     assert!(run.contains("jobs::dispatch_pending(ctx, st)"), "{run}");
     assert!(run.contains("collect::collect("), "{run}");
     assert!(
@@ -107,7 +107,7 @@ fn pump_does_not_push_git_refs_itself() {
 
 #[test]
 fn hand_planner_and_merge_producers_dispatch_through_pool_jobs() {
-    let planner = include_str!("../src/pump/planner_jobs.rs");
+    let planner = include_str!("../crates/vivi-core/src/pump/planner_jobs.rs");
     assert!(planner.contains("jobs::enqueue(st, spec)"), "{planner}");
     assert!(!planner.contains(".spawn("), "{planner}");
 }

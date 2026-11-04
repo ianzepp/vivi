@@ -1,8 +1,8 @@
 use std::process::Command as ProcessCommand;
 
 use serde::{Deserialize, Serialize};
-use vivi::cli::DeliveryCommand;
-use vivi::mailspace::{Mailspace, SendRequest};
+use vivi_core::cli::DeliveryCommand;
+use vivi_core::mailspace::{Mailspace, SendRequest};
 use vivi_error::VivariumError;
 use vivi_mail::letter::work::NeedFront;
 

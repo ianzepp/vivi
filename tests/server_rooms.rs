@@ -8,7 +8,7 @@ use axum::http::{Request, StatusCode};
 use serde_json::{Value, json};
 use tower::util::ServiceExt;
 
-use vivi::server::api_router;
+use vivi_server::server::api_router;
 
 fn scratch(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("vivi-server-chat-{}-{name}", std::process::id()));

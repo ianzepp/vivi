@@ -1,0 +1,24 @@
+[package]
+name = "vivi-doctor"
+version = "22.1.0"
+edition = "2024"
+description = "vivi doctor checks"
+license = "MIT"
+
+[dependencies]
+vivi-util = { path = "../vivi-util" }
+vivi-storage = { path = "../vivi-storage" }
+vivi-skills = { path = "../vivi-skills" }
+vivi-core = { path = "../vivi-core" }
+vivi-proxy = { path = "../vivi-proxy" }
+vivi-update = { path = "../vivi-update" }
+chrono.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "deflate", "gzip", "json", "rustls-tls", "stream"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+tempfile = "3"
+toml.workspace = true
+vivi-mail = { workspace = true, features = ["test-support"] }

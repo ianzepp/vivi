@@ -10,9 +10,9 @@ use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
 use serde_json::{Value, json};
 use tower::util::ServiceExt;
-use vivi::mailspace::{Mailspace, RoleUpdate};
-use vivi::server::grants::{GrantLevel, GrantRecord};
-use vivi::server::{AppState, app_state, hosted, router};
+use vivi_core::mailspace::{Mailspace, RoleUpdate};
+use vivi_server::server::grants::{GrantLevel, GrantRecord};
+use vivi_server::server::{AppState, app_state, hosted, router};
 
 fn scratch(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
@@ -481,8 +481,11 @@ async fn set_and_unset_write_through_the_guard() {
     let fx = fixture_with("guard", "\n[pump]\ntick = 20\n");
     let key = fx.key_by(&fx.member, None);
     let before = fx.config_text();
-    vivi::pump::control::set_project_mode(&fx.root, vivi::pump::control::PumpMode::Running)
-        .unwrap();
+    vivi_core::pump::control::set_project_mode(
+        &fx.root,
+        vivi_core::pump::control::PumpMode::Running,
+    )
+    .unwrap();
     let lock = hold_pump_lock(&fx.root);
     for arguments in [
         json!({"action": "set", "pool": "main", "band": "P2", "model": "other/model"}),
@@ -498,7 +501,11 @@ async fn set_and_unset_write_through_the_guard() {
     assert!(lines.iter().all(|line| line["outcome"] == "refused"));
     drop(lock);
 
-    vivi::pump::control::set_project_mode(&fx.root, vivi::pump::control::PumpMode::Paused).unwrap();
+    vivi_core::pump::control::set_project_mode(
+        &fx.root,
+        vivi_core::pump::control::PumpMode::Paused,
+    )
+    .unwrap();
     let _lock = hold_pump_lock(&fx.root);
     let set = fx
         .bands(

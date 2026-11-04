@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use vivi::server::audit::{AuditEvent, AuditLog, AuditOutcome, AuditRecord};
+use vivi_server::server::audit::{AuditEvent, AuditLog, AuditOutcome, AuditRecord};
 
 fn scratch(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("vivi-server-audit-{}-{name}", std::process::id()));

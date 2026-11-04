@@ -1,12 +1,12 @@
 use std::path::{Path, PathBuf};
 
 use chrono::NaiveDate;
-use vivi::cli::{
+use vivi_core::cli::{
     ReportBy, ReportCommand, ReportCommon, ReportFormat, ReportRecordsFormat, ReportSubcommand,
 };
-use vivi::report::format::OutputFormat;
-use vivi::report::model::{Dimension, Filter, View};
 use vivi_error::VivariumError;
+use vivi_report::report::format::OutputFormat;
+use vivi_report::report::model::{Dimension, Filter, View};
 
 pub(crate) fn run(command: &ReportCommand) -> Result<(), VivariumError> {
     let (view, common, format, by, top) = match &command.command {
@@ -48,9 +48,13 @@ pub(crate) fn run(command: &ReportCommand) -> Result<(), VivariumError> {
     };
     let root = project_root(common.project.as_deref())?;
     let filter = filter(common, by, top)?;
-    let data = vivi::report::data::read(&root)?;
-    let rows = vivi::report::views::rows(&data, view, &filter);
-    let rendered = vivi::report::format::render(&rows, vivi::report::views::columns(view), format)?;
+    let data = vivi_report::report::data::read(&root)?;
+    let rows = vivi_report::report::views::rows(&data, view, &filter);
+    let rendered = vivi_report::report::format::render(
+        &rows,
+        vivi_report::report::views::columns(view),
+        format,
+    )?;
     print!("{rendered}");
     Ok(())
 }
@@ -106,7 +110,7 @@ fn parse_bound(value: Option<&str>, until: bool) -> Result<Option<u64>, Vivarium
             .timestamp();
         if until { midnight - 1 } else { midnight }
     } else {
-        vivi::mailspace::parse_time_bound(value)?.timestamp()
+        vivi_core::mailspace::parse_time_bound(value)?.timestamp()
     };
     u64::try_from(timestamp).map(Some).map_err(|_| {
         VivariumError::Message(format!(

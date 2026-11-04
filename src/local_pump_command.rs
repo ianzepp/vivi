@@ -2,18 +2,18 @@
 
 use std::path::PathBuf;
 
-use vivi::cli::{
+use vivi_core::cli::{
     PumpHealthCommand, PumpLogCommand, PumpPriorityCommand, PumpResetCommand, PumpRungsCommand,
     PumpServiceCommand, PumpSubcommand, PumpTargetCommand,
 };
-use vivi::pump::config::RungsConfig;
-use vivi::pump::config::targets::{self, TargetSpec};
-use vivi::pump::control::PumpMode;
-use vivi::pump::health::{self, HealthOptions};
-use vivi::pump::logview::{self, LogFile, LogFilter, ShowOptions};
-use vivi::pump::priority;
-use vivi::pump::reset::ResetReport;
-use vivi::pump::run as pump_run;
+use vivi_core::pump::config::RungsConfig;
+use vivi_core::pump::config::targets::{self, TargetSpec};
+use vivi_core::pump::control::PumpMode;
+use vivi_core::pump::health::{self, HealthOptions};
+use vivi_core::pump::logview::{self, LogFile, LogFilter, ShowOptions};
+use vivi_core::pump::priority;
+use vivi_core::pump::reset::ResetReport;
+use vivi_core::pump::run as pump_run;
 use vivi_error::VivariumError;
 
 pub(crate) fn handle_pump_command(command: &PumpSubcommand) -> Result<(), VivariumError> {
@@ -25,15 +25,20 @@ pub(crate) fn handle_pump_command(command: &PumpSubcommand) -> Result<(), Vivari
         PumpSubcommand::Once(cmd) => pump_run::run(&project_root(&cmd.project), true),
         PumpSubcommand::Health(cmd) => pump_health(cmd),
         PumpSubcommand::Log(cmd) => pump_log(cmd),
-        PumpSubcommand::Pause(cmd) => {
-            vivi::pump::control::set_project_mode(&project_root(&cmd.project), PumpMode::Paused)
-        }
+        PumpSubcommand::Pause(cmd) => vivi_core::pump::control::set_project_mode(
+            &project_root(&cmd.project),
+            PumpMode::Paused,
+        ),
         PumpSubcommand::Resume(cmd) | PumpSubcommand::Start(cmd) => {
-            vivi::pump::control::set_project_mode(&project_root(&cmd.project), PumpMode::Running)
+            vivi_core::pump::control::set_project_mode(
+                &project_root(&cmd.project),
+                PumpMode::Running,
+            )
         }
-        PumpSubcommand::Stop(cmd) => {
-            vivi::pump::control::set_project_mode(&project_root(&cmd.project), PumpMode::Stopped)
-        }
+        PumpSubcommand::Stop(cmd) => vivi_core::pump::control::set_project_mode(
+            &project_root(&cmd.project),
+            PumpMode::Stopped,
+        ),
         PumpSubcommand::Reset(cmd) => pump_reset(cmd),
         PumpSubcommand::Priority { command } => match command {
             PumpPriorityCommand::Set(cmd) => {
@@ -46,24 +51,30 @@ pub(crate) fn handle_pump_command(command: &PumpSubcommand) -> Result<(), Vivari
         },
         PumpSubcommand::Rungs { command } => pump_rungs(command),
         PumpSubcommand::Target { command } => pump_target(command),
-        PumpSubcommand::Requeue(cmd) => vivi::pump::requeue::run(&project_root(&cmd.project), cmd),
-        PumpSubcommand::Withdraw(cmd) => {
-            vivi::pump::withdraw::run(&project_root(&cmd.project), cmd)
+        PumpSubcommand::Requeue(cmd) => {
+            vivi_core::pump::requeue::run(&project_root(&cmd.project), cmd)
         }
-        PumpSubcommand::Replan(cmd) => vivi::pump::replan::run(&project_root(&cmd.project), cmd),
+        PumpSubcommand::Withdraw(cmd) => {
+            vivi_core::pump::withdraw::run(&project_root(&cmd.project), cmd)
+        }
+        PumpSubcommand::Replan(cmd) => {
+            vivi_core::pump::replan::run(&project_root(&cmd.project), cmd)
+        }
         PumpSubcommand::Answer {
             step,
             word,
             note,
             project,
-        } => vivi::pump::flow::answer::run(&project_root(project), step, word, note.as_deref()),
+        } => {
+            vivi_core::pump::flow::answer::run(&project_root(project), step, word, note.as_deref())
+        }
         PumpSubcommand::Unlock {
             need,
             entry,
             note,
             project,
         } => {
-            let posted = vivi::pump::unlock::unlock(
+            let posted = vivi_core::pump::unlock::unlock(
                 &project_root(project),
                 need,
                 entry.as_deref(),
@@ -81,16 +92,16 @@ pub(crate) fn handle_pump_command(command: &PumpSubcommand) -> Result<(), Vivari
         PumpSubcommand::Service { command } => match command {
             PumpServiceCommand::Add(cmd) => {
                 let (pump, serve) = cmd.flag_change();
-                vivi::pump::service::add(
+                vivi_core::pump::service::add(
                     &cmd.project,
-                    vivi::pump::service::FlagChange { pump, serve },
+                    vivi_core::pump::service::FlagChange { pump, serve },
                 )
             }
-            PumpServiceCommand::Remove(cmd) => vivi::pump::service::remove(&cmd.project),
-            PumpServiceCommand::List => vivi::pump::service::list(),
-            PumpServiceCommand::Install => vivi::pump::service::install(),
-            PumpServiceCommand::Uninstall => vivi::pump::service::uninstall(),
-            PumpServiceCommand::Status => vivi::pump::service::status(),
+            PumpServiceCommand::Remove(cmd) => vivi_core::pump::service::remove(&cmd.project),
+            PumpServiceCommand::List => vivi_core::pump::service::list(),
+            PumpServiceCommand::Install => vivi_core::pump::service::install(),
+            PumpServiceCommand::Uninstall => vivi_core::pump::service::uninstall(),
+            PumpServiceCommand::Status => vivi_core::pump::service::status(),
             PumpServiceCommand::Run => Err(VivariumError::Other(
                 "pump service run requires the async command entry point".into(),
             )),
@@ -101,7 +112,7 @@ pub(crate) fn handle_pump_command(command: &PumpSubcommand) -> Result<(), Vivari
 const RESET_NOTE: &str = "pump records are letters: the next tick re-ingests every open record and starts fresh runs; use vivi pump withdraw to stop a need instead";
 
 fn pump_reset(cmd: &PumpResetCommand) -> Result<(), VivariumError> {
-    let report = vivi::pump::reset::archive(&project_root(&cmd.project))?;
+    let report = vivi_core::pump::reset::archive(&project_root(&cmd.project))?;
     print_reset(&report, cmd.json)
 }
 

@@ -1,0 +1,138 @@
+//! Read synced report inputs from an existing mailspace without opening a writer.
+
+use std::collections::BTreeMap;
+use std::path::Path;
+
+use vivi_core::pump::attempt_read::AttemptFields;
+use vivi_error::VivariumError;
+use vivi_storage::storage::Storage;
+
+use super::model::{AttemptRecord, NeedWindow, ReportData};
+
+pub fn read(project: &Path) -> Result<ReportData, VivariumError> {
+    let dir = project.join(".vivi");
+    let storage = Storage::open_mailspace_read_only(&dir)?;
+    let messages = storage.list_messages()?;
+    let mut attempts: BTreeMap<String, AttemptFields> = BTreeMap::new();
+    for message in messages {
+        let bytes = storage.read_message(&message.message_id)?;
+        let body = text_body(&bytes);
+        if let Some(attempt) = vivi_core::pump::attempt_read::parse_record(&body) {
+            keep_newest(&mut attempts, attempt);
+        }
+    }
+    let attempts: Vec<AttemptFields> = attempts.into_values().collect();
+    let needs = need_windows(&storage, &attempts)?;
+    Ok(ReportData {
+        attempts: attempts.iter().map(AttemptRecord::from).collect(),
+        needs,
+    })
+}
+
+fn text_body(bytes: &[u8]) -> String {
+    mail_parser::MessageParser::default()
+        .parse(bytes)
+        .and_then(|message| message.body_text(0).map(|body| body.into_owned()))
+        .unwrap_or_default()
+}
+
+fn keep_newest(attempts: &mut BTreeMap<String, AttemptFields>, next: AttemptFields) {
+    let replace = attempts
+        .get(&next.attempt)
+        .is_none_or(|current| next.end.unwrap_or_default() > current.end.unwrap_or_default());
+    if replace {
+        attempts.insert(next.attempt.clone(), next);
+    }
+}
+
+fn need_windows(
+    storage: &Storage,
+    attempts: &[AttemptFields],
+) -> Result<Vec<NeedWindow>, VivariumError> {
+    let mut needs: std::collections::BTreeSet<String> = attempts
+        .iter()
+        .filter_map(|attempt| attempt.need.clone())
+        .collect();
+    needs.extend(
+        storage
+            .list_messages_by_role("needs")?
+            .into_iter()
+            .map(|message| message.handle),
+    );
+    needs
+        .iter()
+        .map(|need| need_window(storage, need))
+        .collect()
+}
+
+fn need_window(storage: &Storage, need: &str) -> Result<NeedWindow, VivariumError> {
+    let id = storage.resolve_message_token(need)?;
+    let view = storage.message_by_id(&id)?;
+    let mut opened_at = view
+        .as_ref()
+        .and_then(|message| vivi_core::pump::attempt_read::opened_epoch(&message.date));
+    let mut done_at = None;
+    let mut latest_lifecycle_state = None;
+    let mut events = storage.list_mailspace_events(&id)?;
+    events.sort_by_key(|event| event.event_id);
+    for event in events {
+        let at = vivi_core::pump::attempt_read::opened_epoch(&event.occurred_at);
+        match event.command.as_str() {
+            "need send" => {
+                if at.is_some() {
+                    opened_at = at;
+                }
+            }
+            "need reopen" => {
+                opened_at = at;
+                done_at = None;
+                latest_lifecycle_state = Some(false);
+            }
+            "need done" => {
+                done_at = at;
+                latest_lifecycle_state = Some(true);
+            }
+            _ => {}
+        }
+    }
+    let done = latest_lifecycle_state.unwrap_or_else(|| {
+        view.as_ref()
+            .is_some_and(|message| message.local_role == "done")
+    });
+    if !done {
+        done_at = None;
+    }
+    Ok(NeedWindow {
+        need: need.to_owned(),
+        opened_at,
+        done_at,
+        done,
+    })
+}
+
+impl From<&AttemptFields> for AttemptRecord {
+    fn from(fields: &AttemptFields) -> Self {
+        Self {
+            need: fields.need.clone().unwrap_or_default(),
+            task: fields.task.clone(),
+            attempt: fields.attempt.clone(),
+            actor: fields.actor.clone(),
+            role: fields.role.clone(),
+            pool: fields.pool.clone(),
+            slot: fields.slot.clone(),
+            model: fields.model.clone(),
+            kind: fields.kind.clone(),
+            start: fields.start,
+            end: fields.end,
+            agent_seconds: fields.agent_seconds,
+            outcome: fields.outcome.clone(),
+            ready_at: fields.ready_at,
+            delivered_at: fields.delivered_at,
+            merged_at: fields.merged_at,
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "data_test.rs"]
+mod tests;

@@ -6,7 +6,7 @@ use std::path::Path;
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 
-use vivi::storage::{RemoteBindingInput, Storage};
+use vivi_storage::storage::{RemoteBindingInput, Storage};
 
 const PROJECT_ID: &str = "abcde-fghjk-mnpqr-stvwz-23456";
 

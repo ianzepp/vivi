@@ -16,8 +16,8 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value, json};
 
-use vivi::cli::PoolRunCommand;
-use vivi::sync::http::send_raw;
+use vivi_core::cli::PoolRunCommand;
+use vivi_core::sync::http::send_raw;
 
 const EXIT_FAILED: i32 = 1;
 const EXIT_USAGE: i32 = 2;
@@ -63,7 +63,7 @@ fn run_inner(command: &PoolRunCommand) -> Result<i32, Failure> {
     if !server.starts_with("http://") && !server.starts_with("https://") {
         return Err(usage(format!("{server:?} is not an http(s) server URL")));
     }
-    let worker = vivi::home::vivi_home().map_err(usage)?.join("worker");
+    let worker = vivi_util::home::vivi_home().map_err(usage)?.join("worker");
     let job_dir = worker.join("jobs").join(job_id);
     let slots = read_slots(&worker)?;
 

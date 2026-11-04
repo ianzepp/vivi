@@ -16,10 +16,10 @@ use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
 use serde_json::{Value, json};
 use tower::util::ServiceExt;
-use vivi::mailspace::{Mailspace, RoleUpdate};
-use vivi::pump::priority;
-use vivi::server::grants::{GrantLevel, GrantRecord};
-use vivi::server::{AppState, app_state, hosted, router};
+use vivi_core::mailspace::{Mailspace, RoleUpdate};
+use vivi_core::pump::priority;
+use vivi_server::server::grants::{GrantLevel, GrantRecord};
+use vivi_server::server::{AppState, app_state, hosted, router};
 
 /// The non-default pump home the fixture configures, relative to the project
 /// root, so tests can tell the configured home from the default one.

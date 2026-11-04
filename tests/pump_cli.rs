@@ -8,9 +8,9 @@ use std::process::{Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use vivi::mailspace::{Mailspace, PumpAction, PumpActionKind};
-use vivi::pump::flow::index::{RunRow, StepState};
-use vivi::pump::store::{DB_FILENAME, PumpStore};
+use vivi_core::mailspace::{Mailspace, PumpAction, PumpActionKind};
+use vivi_core::pump::flow::index::{RunRow, StepState};
+use vivi_core::pump::store::{DB_FILENAME, PumpStore};
 
 #[test]
 fn once_runs_one_tick_and_writes_db_status_and_log() {
@@ -353,7 +353,11 @@ fn a_missing_pump_table_is_a_clear_error() {
     // `mailspace init` writes a starter [pump]; take it out again.
     let config = project.path().join(".vivi").join("mailspace.toml");
     let text = fs::read_to_string(&config).unwrap();
-    fs::write(&config, text.replace(vivi::mailspace::STARTER_PUMP, "")).unwrap();
+    fs::write(
+        &config,
+        text.replace(vivi_core::mailspace::STARTER_PUMP, ""),
+    )
+    .unwrap();
     let out = vivi(["pump", "once", "--project", root(&project)]);
     assert!(!out.status.success(), "{}", stdout(&out));
     assert!(stderr(&out).contains("[pump]"), "{}", stderr(&out));

@@ -4,7 +4,7 @@ use std::path::Path;
 use std::process::{Command, Output};
 
 use serde_json::Value;
-use vivi::storage::{MessageIngestRequest, Storage};
+use vivi_storage::storage::{MessageIngestRequest, Storage};
 
 #[test]
 fn active_rules_are_visible_to_every_seat() {
@@ -461,7 +461,7 @@ fn event_actors(project: &Path, handle: &str, event_type: &str) -> Vec<Option<St
         .collect()
 }
 
-fn events(project: &Path, handle: &str) -> Vec<vivi::storage::MailspaceEvent> {
+fn events(project: &Path, handle: &str) -> Vec<vivi_storage::storage::MailspaceEvent> {
     Storage::open_mailspace(&project.join(".vivi"))
         .unwrap()
         .list_mailspace_events(handle)

@@ -1,8 +1,8 @@
 use std::path::Path;
 use std::process;
 
-use vivi::cli::DoctorCommand;
-use vivi::doctor::{DoctorReport, Finding, Project, Verdict};
+use vivi_core::cli::DoctorCommand;
+use vivi_doctor::doctor::{DoctorReport, Finding, Project, Verdict};
 use vivi_error::VivariumError;
 
 /// Gather and print the project-wide read-only doctor report.
@@ -27,29 +27,32 @@ pub(crate) fn run(
 
 fn report(project_path: Option<&Path>) -> DoctorReport {
     let release_result =
-        vivi::update::compare_latest().map_err(|_| "release lookup unavailable".to_string());
+        vivi_update::update::compare_latest().map_err(|_| "release lookup unavailable".to_string());
     let release = Some(match &release_result {
         Ok(outcome) => Ok(outcome),
         Err(reason) => Err(reason.clone()),
     });
-    let targets: Vec<_> = vivi::skills::recorded_targets()
+    let targets: Vec<_> = vivi_skills::skills::recorded_targets()
         .into_iter()
         .map(|path| {
-            let status = vivi::skills::copy_status(&path);
+            let status = vivi_skills::skills::copy_status(&path);
             (path, status)
         })
         .collect();
-    let mut findings =
-        vivi::doctor::install_section::findings(env!("CARGO_PKG_VERSION"), release, &targets);
+    let mut findings = vivi_doctor::doctor::install_section::findings(
+        env!("CARGO_PKG_VERSION"),
+        release,
+        &targets,
+    );
 
     let project = Project::discover(project_path);
     match project.as_ref() {
         Ok(project) => gather_project_sections(project, &mut findings),
         Err(_) => gather_unavailable_project_sections(project_path, &mut findings),
     }
-    findings.extend(vivi::doctor::proxy_section::findings(None));
+    findings.extend(vivi_doctor::doctor::proxy_section::findings(None));
     if let Ok(project) = project {
-        findings.extend(vivi::doctor::disk_section::findings(&project));
+        findings.extend(vivi_doctor::doctor::disk_section::findings(&project));
     } else {
         findings.push(skipped("disk", "project", "mailspace config unavailable"));
     }
@@ -57,22 +60,26 @@ fn report(project_path: Option<&Path>) -> DoctorReport {
 }
 
 fn gather_project_sections(project: &Project, findings: &mut Vec<Finding>) {
-    findings.extend(vivi::doctor::mailspace_section::findings(Some(
+    findings.extend(vivi_doctor::doctor::mailspace_section::findings(Some(
         &project.root,
     )));
-    findings.extend(vivi::doctor::roles_section::findings(project));
-    let reachable = vivi::doctor::sync_section::probe_server(project);
-    findings.extend(vivi::doctor::sync_section::findings(
+    findings.extend(vivi_doctor::doctor::roles_section::findings(project));
+    let reachable = vivi_doctor::doctor::sync_section::probe_server(project);
+    findings.extend(vivi_doctor::doctor::sync_section::findings(
         project,
         chrono::Utc::now(),
         reachable,
     ));
-    findings.extend(vivi::doctor::pools_section::findings(Some(&project.root)));
-    findings.extend(vivi::doctor::pump_section::findings(project));
+    findings.extend(vivi_doctor::doctor::pools_section::findings(Some(
+        &project.root,
+    )));
+    findings.extend(vivi_doctor::doctor::pump_section::findings(project));
 }
 
 fn gather_unavailable_project_sections(project_path: Option<&Path>, findings: &mut Vec<Finding>) {
-    findings.extend(vivi::doctor::mailspace_section::findings(project_path));
+    findings.extend(vivi_doctor::doctor::mailspace_section::findings(
+        project_path,
+    ));
     findings.push(skipped("roles", "roster", "mailspace config unavailable"));
     findings.push(skipped("sync", "config", "mailspace config unavailable"));
     findings.push(skipped("pools", "config", "mailspace config unavailable"));

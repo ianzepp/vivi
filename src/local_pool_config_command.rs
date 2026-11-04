@@ -4,15 +4,15 @@
 use std::path::Path;
 
 use serde::Serialize;
-use vivi::cli::{
+use vivi_core::cli::{
     PoolAddCommand, PoolBandsCommand, PoolConfigSetCommand, PoolListCommand, PoolRemoveCommand,
     PoolShowCommand, PoolUnsetCommand,
 };
-use vivi::mailspace::Mailspace;
-use vivi::mailspace::config_edit::{self, GuardedWrite, PoolAdd};
-use vivi::pool::PoolConfig;
-use vivi::pool::config::{PoolRow, check_pool_name, list_view, show_view};
-use vivi::pool::work::open_dispatches;
+use vivi_core::mailspace::Mailspace;
+use vivi_core::mailspace::config_edit::{self, GuardedWrite, PoolAdd};
+use vivi_core::pool::PoolConfig;
+use vivi_core::pool::config::{PoolRow, check_pool_name, list_view, show_view};
+use vivi_core::pool::work::open_dispatches;
 use vivi_error::VivariumError;
 
 pub(crate) fn list(command: &PoolListCommand) -> Result<(), VivariumError> {

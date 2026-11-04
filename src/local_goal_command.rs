@@ -1,5 +1,5 @@
-use vivi::cli::GoalCommand;
-use vivi::mailspace::{GoalView, Mailspace};
+use vivi_core::cli::GoalCommand;
+use vivi_core::mailspace::{GoalView, Mailspace};
 use vivi_error::VivariumError;
 
 pub(crate) fn handle_goal_command(command: &GoalCommand) -> Result<(), VivariumError> {
