@@ -134,10 +134,19 @@ fn merged_section(slices: &[StepRow]) -> String {
 
 /// The slices that ended without landing (failed, or superseded by the
 /// restart), each with the last message its hand left: the reason the rework
-/// has to answer.
+/// has to answer. A slice a later run landed under the same node is merged,
+/// not missing: listing it here too would have the slicer cut it again.
 fn unlanded_section(cx: &StartCx<'_>, slices: &[StepRow]) -> String {
+    let merged: Vec<&str> = slices
+        .iter()
+        .filter(|row| landed(row))
+        .map(|row| row.node.as_str())
+        .collect();
     let mut lines = Vec::new();
-    for row in slices.iter().filter(|row| !landed(row)) {
+    for row in slices
+        .iter()
+        .filter(|row| !landed(row) && !merged.contains(&row.node.as_str()))
+    {
         let verdict = row.verdict.as_deref().unwrap_or("open");
         lines.push(format!("### {} (task {}, {verdict})", row.node, row.task));
         // Best effort: an unreadable task leaves the slice listed, unexplained.

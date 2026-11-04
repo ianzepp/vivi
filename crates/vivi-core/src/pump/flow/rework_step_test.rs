@@ -473,3 +473,40 @@ fn rework_brief(rig: &Rig) -> Result<String, VivariumError> {
     };
     Ok(job.body.clone())
 }
+
+/// The lab stress run (need 3e5bac51): slice n4u4 conflicted and was
+/// superseded in run 1, landed in the run 2 rework, and the need went red
+/// again. The run 3 rework brief listed n4u4 as merged and as not landed, the
+/// slicer cut it again, its hand found nothing to change, and the CTO locked
+/// the need. A slice a later run landed is merged only.
+#[test]
+fn a_slice_a_later_run_landed_is_not_listed_as_not_landed() -> R {
+    let mut rig = rig()?;
+    rig.store.insert_run(&rig.run)?;
+    rig.store
+        .insert_step(NEED, &step("slice:s4", "t-s4-r1", Some("superseded")))?;
+    rig.run.run = 2;
+    rig.run.entry = "rework1".into();
+    rig.store.insert_run(&rig.run)?;
+    rig.store.insert_step(
+        NEED,
+        &StepRow {
+            run: 2,
+            ..step("slice:s4", "t-s4-r2", Some("merged"))
+        },
+    )?;
+    rig.run.run = 3;
+    rig.store.insert_run(&rig.run)?;
+    let body = rework_brief(&rig)?;
+    assert!(body.contains("- slice:s4 (task t-s4-r2)"), "{body}");
+    let unlanded = body
+        .split("## Slices that did not land")
+        .nth(1)
+        .and_then(|rest| rest.split("\n## ").next())
+        .unwrap_or_default();
+    assert!(
+        !unlanded.contains("slice:s4"),
+        "landed slice listed as not landed: {body}"
+    );
+    Ok(())
+}
