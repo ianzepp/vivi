@@ -31,6 +31,7 @@ use crate::pump::flow::handlers::{FlowMail, Registry, TickPhase};
 use crate::pump::flow::index::run_state;
 use crate::pump::flow::index::{RunRow, StepJobRow, StepState};
 use crate::pump::flow::mail::{MailReader, MailWriter};
+use crate::pump::flow::tick::OPERATOR_HOLD;
 use crate::pump::host::Ctx;
 use crate::pump::jobs::{self, JobSpec, JobStatus, JobStore, PoolJob};
 use crate::pump::store::PumpStore;
@@ -186,7 +187,16 @@ fn requeue(
     if release_held(st, store, &run.need, task)? {
         return Ok(());
     }
-    let (old, row) = newest_job(st, store, task)?
+    let newest = newest_job(st, store, task)?;
+    // A step held because its start failed tick after tick has no job: put
+    // it back to pending, so the next tick starts it again with fresh tries.
+    if newest.is_none()
+        && step.state == StepState::Waiting
+        && step.verdict.as_deref() == Some(OPERATOR_HOLD)
+    {
+        return store.set_step_state(&step.task, StepState::Pending, None);
+    }
+    let (old, row) = newest
         .ok_or_else(|| VivariumError::Message(format!("step {task} has no job to requeue")))?;
     if !old.status.is_terminal() {
         return Err(VivariumError::Message(format!(

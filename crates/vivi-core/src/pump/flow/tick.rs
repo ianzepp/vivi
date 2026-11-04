@@ -417,8 +417,14 @@ where
             jobs::mark_applied(self.st, id, self.ctx.now());
         }
         let text = format!(
-            "step {node} task {task} of need {} r{}: expected the {phase} to succeed; actual: {error} on {n} ticks in a row; held for `vivi pump answer {task} <word>`",
-            self.run.need, self.run.run
+            "step {node} task {task} of need {} r{}: expected the {phase} to succeed; actual: {error} on {n} ticks in a row; held for `vivi pump answer {task} <word>`{retry}",
+            self.run.need,
+            self.run.run,
+            retry = if phase == "start" {
+                format!(", or `vivi pump requeue {task}` to start it again once the cause is fixed")
+            } else {
+                String::new()
+            },
         );
         if let Err(held) = step_error::hold(self.ctx, self.store, task, &text) {
             boundary(self.ctx, &format!("{unit} {node}"), Err::<(), _>(held));

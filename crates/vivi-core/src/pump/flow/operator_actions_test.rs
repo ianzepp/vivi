@@ -463,3 +463,72 @@ fn an_unlock_letter_is_left_unapplied_by_this_phase() -> R {
     assert!(!rig.exceptions().contains(ACTION_REFUSED));
     Ok(())
 }
+
+/// A step held after its start failed three ticks in a row has no job (the
+/// 2026-11-04 local pump: a slice step whose plan lookup was fixed). Requeue
+/// is the documented release; it puts the step back to pending.
+#[test]
+fn a_requeue_of_a_start_held_step_with_no_job_returns_it_to_pending() -> R {
+    let mut rig = rig()?;
+    let held = rig.mail.send_step(
+        "pump",
+        "pump",
+        "slice",
+        &step_body(&rig.need, 1, "slice", ""),
+        &[],
+    )?;
+    rig.store.insert_step(
+        &rig.need,
+        &StepRow {
+            run: 1,
+            node: "slice".into(),
+            task: held.clone(),
+            state: StepState::Waiting,
+            verdict: Some(crate::pump::flow::tick::OPERATOR_HOLD.into()),
+        },
+    )?;
+    let id = rig.post(&PumpActionRequest::requeue(&held, "cause fixed"))?;
+    rig.phase()?;
+
+    let step = rig.store.step_by_task(&held)?.expect("step row");
+    assert_eq!((step.state, step.verdict), (StepState::Pending, None));
+    assert!(rig.applied(&id)?);
+    assert!(
+        !rig.exceptions().contains(ACTION_REFUSED),
+        "{}",
+        rig.exceptions()
+    );
+    assert_eq!(rig.jobs.jobs().len(), 1, "no job is queued by the release");
+    Ok(())
+}
+
+#[test]
+fn a_requeue_of_an_open_step_with_no_job_and_no_hold_is_still_refused() -> R {
+    let mut rig = rig()?;
+    let open = rig.mail.send_step(
+        "pump",
+        "pump",
+        "slice",
+        &step_body(&rig.need, 1, "slice", ""),
+        &[],
+    )?;
+    rig.store.insert_step(
+        &rig.need,
+        &StepRow {
+            run: 1,
+            node: "slice".into(),
+            task: open.clone(),
+            state: StepState::Pending,
+            verdict: None,
+        },
+    )?;
+    rig.post(&PumpActionRequest::requeue(&open, "x"))?;
+    rig.phase()?;
+
+    assert!(
+        rig.exceptions().contains("has no job to requeue"),
+        "{}",
+        rig.exceptions()
+    );
+    Ok(())
+}
