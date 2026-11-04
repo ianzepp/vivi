@@ -1,0 +1,31 @@
+# Allow and report: a hand that also writes a file outside its write scope is merged, and the pump names the file.
+target = "app"
+
+[world]
+machines = 1
+slots = 4
+agent_secs = 0.3
+
+[expect]
+landed = 1
+exceptions_present = ["flow-scope-exceeded"]
+mail_present = ['outside its write scope: lab-outside/u1-a1\.txt']
+
+[[need]]
+id = "n1"
+subject = "lab scope-report: n1"
+done_when = ["the listed unit files exist and ./check.sh passes"]
+body = "LAB-NEED: n1"
+
+[[need.slice]]
+id = "u1"
+title = "Add unit u1"
+brief = "Create src/u1.sh.\nLAB-EDIT: src/u1.sh u1() { echo u1; }"
+write_scope = ["src/u1.sh"]
+lab = ["out_of_scope@a1"]
+
+[[need.slice]]
+id = "u2"
+title = "Add unit u2"
+brief = "Create src/u2.sh.\nLAB-EDIT: src/u2.sh u2() { echo u2; }"
+write_scope = ["src/u2.sh"]

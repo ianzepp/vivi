@@ -18,8 +18,33 @@ The plan is not invented: the slicer prints the slices the scenario predefines
 names on a line of the form `LAB-EDIT: <path> <text>`.
 
 Every call is logged with a copy of its brief under ~/sim-agent/.
+
+Misbehaviors, taken from what real models did on 2026-11-04, make the pump's
+failure paths reachable. A behavior fires deterministically from a token list
+or at random from a rate:
+
+    [[slice]] lab = ["before_fix@a1", "out_of_scope"]     # this slice's hand
+    [world.script] planner = ["quota@c1"]                 # a role's calls
+    [world.misbehave] preamble = 15.0                     # percent, any call
+
+A token is `name` or `name@cond`: `a<N>` attempt N, `r<N>` run N, `c<N>` the
+role's N-th call for the need (counted on this worker). Behaviors:
+  preamble       prose before the envelope (any role)
+  quota          no output, a Codex 429 usage_limit_reached on stderr, exit 1
+  silent         no output, exit 1 (any role)
+  before_fix     hand: a failing "(before fix)" [[check]] beside passing ones
+  bad_check      hand: a check result that is not pass|fail|skipped
+  out_of_scope   hand: also writes a file outside its write scope
+  false_premise  hand: changes nothing and answers failed (premise not landed)
+  sleep          hand: sleeps [world] sleep_secs first (a budget kill)
+  residual       auditor: answers residual with one finding; judge: residual
+World switches: cto_answer = "rework"|"slice"|"plan" (head-cto before run 3),
+rework_strict = true (the rework slicer cuts only the slices its brief lists
+under "Slices that did not land"), and require_files on a slice or need (the
+slicer escalates unless its checkout holds them: landed work it must see).
 """
 import os
+import random
 import re
 import sys
 import time
@@ -50,8 +75,9 @@ def parse_args(argv):
 def log_call(role, model, brief_path, brief):
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
-    base = LOG_DIR / f"{stamp}-{role}"
-    base.with_suffix(".brief.md").write_text(brief)
+    # The stamp holds a dot, so the name is built whole: with_suffix would cut
+    # the role off and the brief could not be found by role.
+    (LOG_DIR / f"{stamp}-{role}.brief.md").write_text(brief)
     with (LOG_DIR / "calls.log").open("a") as log:
         log.write(f"{stamp} role={role} model={model} cwd={os.getcwd()} brief={brief_path}\n")
 
@@ -74,6 +100,72 @@ def need_of(brief):
     """The lab need id a brief carries (`LAB-NEED: <id>`), or None."""
     found = NEED_MARK.search(brief)
     return found.group(1) if found else None
+
+
+class Ctx:
+    """What one call knows about itself, for the behavior tokens."""
+
+    def __init__(self, role, brief):
+        self.role = role
+        self.brief = brief
+        repair = REPAIR_MARK.search(brief)
+        self.attempt = int(repair.group(1)) + 1 if repair else 1
+        run = re.search(r"^run\s*=\s*(\d+)", brief, re.M) or re.search(r"\br(\d+)\b", brief)
+        self.run = int(run.group(1)) if run else 1
+        need = re.search(r'^need\s*=\s*"([^"]+)"', brief, re.M)
+        self.need = need.group(1) if need else "none"
+        self.call = count_call(role, self.need)
+
+
+def count_call(role, need):
+    """This role's call number for the need, on this worker (1-based)."""
+    d = LOG_DIR / "counts"
+    d.mkdir(parents=True, exist_ok=True)
+    f = d / f"{role}-{need}"
+    n = int(f.read_text()) + 1 if f.exists() else 1
+    f.write_text(str(n))
+    return n
+
+
+def holds(cond, ctx):
+    if not cond:
+        return True
+    for part in cond.split(","):
+        part = part.strip()
+        kind, num = part[:1], part[1:]
+        if not num.isdigit():
+            continue
+        value = {"a": ctx.attempt, "r": ctx.run, "c": ctx.call}.get(kind)
+        if value == int(num):
+            return True
+    return False
+
+
+HAND_ONLY = {"before_fix", "bad_check", "out_of_scope", "false_premise", "sleep"}
+
+
+def behaviors(ctx, plan, entry=None):
+    """The behaviors this call shows: tokens, then the world's random rates."""
+    world = plan.get("world", {})
+    tokens = list((entry or {}).get("lab", [])) + list(world.get("script", {}).get(ctx.role, []))
+    active = set()
+    for tok in tokens:
+        name, _, cond = tok.partition("@")
+        if holds(cond, ctx):
+            active.add(name)
+    for name, pct in world.get("misbehave", {}).items():
+        if name in HAND_ONLY and ctx.role != "hand":
+            continue
+        if name == "residual" and ctx.role not in ("auditor", "judge"):
+            continue
+        if random.random() * 100 < float(pct):
+            active.add(name)
+    return active
+
+
+QUOTA = ('codex API error (429): {"type":"usage_limit_reached","message":"The usage limit has been '
+         'reached","plan_type":"prolite","limit_window_minutes":10080}')
+PREAMBLE = "All checks pass on this checkout. Final receipt:\n\n"
 
 
 def planner(brief):
@@ -150,13 +242,51 @@ def emit(mode, slices, plan):
     return "\n".join(out) + "\n"
 
 
+UNLANDED_LINE = re.compile(r"^### slice:(\S+) \(task ", re.M)
+
+
+def unlanded(plan, brief):
+    """rework_strict: the plan slices the brief names under "Slices that did
+    not land" (a real rework slicer has nothing else to go on)."""
+    section = brief.split("## Slices that did not land", 1)
+    if len(section) < 2:
+        return []
+    names = set(UNLANDED_LINE.findall(section[1].split("\n## ", 1)[0]))
+    left = [s for s in (slices_of(plan, brief) or []) if s["id"] in names]
+    ids = {s["id"] for s in left}
+    return [dict(s, deps=[d for d in s.get("deps", []) if d in ids]) for s in left]
+
+
+def missing_landed(plan, brief, slices):
+    """Files the plan says this slicer must see on its checkout (landed work),
+    that the checkout does not hold."""
+    need = need_of(brief)
+    wanted = list(plan.get("require_files", []))
+    for entry in plan.get("need", []) if isinstance(plan.get("need"), list) else []:
+        if entry.get("id") == need:
+            wanted += entry.get("require_files", [])
+    for s in slices or []:
+        wanted += s.get("require_files", [])
+    return [f for f in wanted if not Path(f).exists()]
+
+
 def slicer(brief):
     plan = scenario()
     mode = "rework" if re.search(r"\bmode\b[^\n]*\brework\b", brief) else "slice"
     if mode == "rework":
+        if plan.get("world", {}).get("rework_strict"):
+            left = unlanded(plan, brief)
+            if not left:
+                return ("+++\nanswer = \"escalate\"\nreason = 'lab stand-in (rework_strict): the brief "
+                        "names no slice that did not land, so there is nothing to cut'\n+++\nEscalated.\n")
+            return emit("rework", left, plan)
         left = holes(plan, brief)
         return emit("rework", left, plan) if left else rework_slicer(need_of(brief))
     slices = slices_of(plan, brief)
+    missing = missing_landed(plan, brief, slices)
+    if missing:
+        return ("+++\nanswer = \"escalate\"\nreason = 'lab stand-in: landed work is missing from this "
+                f"checkout: {', '.join(missing)}'\n+++\nEscalated.\n")
     if slices is None:
         return "+++\nanswer = \"escalate\"\nreason = 'lab stand-in: no LAB-NEED marker in the plan'\n+++\nEscalated.\n"
     out = ["+++", 'answer = "sliced"', f'mode = "{mode}"', ""]
@@ -178,7 +308,24 @@ def slicer(brief):
 REPAIR_MARK = re.compile(r"Attempt (\d+) of this slice failed")
 
 
-def hand(brief):
+def slice_of(plan, brief):
+    """The scenario slice whose LAB-EDIT line this brief carries, or None."""
+    edits = set(re.findall(r"^LAB-EDIT: .*$", brief, re.M))
+    lists = [plan.get("slice", [])] + [n.get("slice", []) for n in plan.get("need", []) if isinstance(n, dict)]
+    for slices in lists:
+        for s in slices:
+            if edits & set(re.findall(r"^LAB-EDIT: .*$", s.get("brief", ""), re.M)):
+                return s
+    return None
+
+
+def hand(brief, ctx, plan, acts, entry):
+    if "sleep" in acts:
+        time.sleep(float(plan.get("world", {}).get("sleep_secs", 60)))
+    if "false_premise" in acts:
+        return ("+++\nanswer = \"failed\"\nremaining = ['the work this slice builds on has not landed on this "
+                "checkout; once it lands the edit can be made']\n+++\nThe brief's premise is false here; "
+                "changed nothing.\n")
     edits = re.findall(r"^LAB-EDIT: (\S+) (.*)$", brief, re.M)
     repair = REPAIR_MARK.search(brief)
     changed = []
@@ -194,11 +341,26 @@ def hand(brief):
         changed.append(path)
     if not edits:
         return "+++\nanswer = \"failed\"\n+++\nNo LAB-EDIT line in the brief.\n"
+    if "out_of_scope" in acts:
+        extra = Path("lab-outside") / f"{(entry or {}).get('id', 'slice')}-a{ctx.attempt}.txt"
+        extra.parent.mkdir(parents=True, exist_ok=True)
+        extra.write_text("written outside the write scope by the lab stand-in\n")
+        changed.append(str(extra))
     listed = ", ".join(f'"{p}"' for p in changed)
-    return f"+++\nanswer = \"built\"\nchange = [{listed}]\n+++\nApplied the scenario's edit.\n"
+    checks = []
+    if "before_fix" in acts:
+        checks.append('[[check]]\ncmd = "./check.sh  (before fix)"\nresult = "fail"\nseconds = 1\n')
+    result = '"fail -- reproduced, then fixed"' if "bad_check" in acts else '"pass"'
+    checks.append(f'[[check]]\ncmd = "./check.sh"\nresult = {result}\nseconds = 1\n')
+    body = "\n".join(checks)
+    return f"+++\nanswer = \"built\"\nchange = [{listed}]\n\n{body}+++\nApplied the scenario's edit.\n"
 
 
-def auditor(_brief):
+def auditor(_brief, acts=frozenset()):
+    if "residual" in acts:
+        return ("+++\nanswer = \"residual\"\n\n[[finding]]\nid = \"LAB-1\"\n"
+                "content = 'lab stand-in residual finding: a small follow-up'\npaths = []\n"
+                "recheck_trigger = 'none'\n+++\nResidual.\n")
     return "+++\nanswer = \"clean_pass\"\n+++\nClean pass.\n"
 
 
@@ -232,6 +394,7 @@ NODE_ROLES = [
     ("plan", "planner"), ("admit", "admitter"), ("slice", "slicer"),
     ("rework", "slicer"), ("audit", "auditor"), ("judge", "judge"),
     ("sync", "merge"), ("merge", "merge"), ("cto", "cto"), ("research", "researcher"),
+    ("fix", "repairer"), ("repair", "repairer"),
 ]
 
 
@@ -242,7 +405,7 @@ def role_of(brief, model):
     if kind == "envelope-fix":
         fixed = re.search(r"Correction for pump step \S+ r\d+ (\S+?)\.", brief)
         node = fixed.group(1) if fixed else node
-    if kind == "hand" or front.get("slice") or "LAB-EDIT:" in brief:
+    if kind == "hand" or front.get("slice") or "LAB-EDIT:" in brief or node.startswith("slice:"):
         return "hand"
     for prefix, role in NODE_ROLES:
         if node.startswith(prefix):
@@ -252,9 +415,10 @@ def role_of(brief, model):
     return model.split("/", 1)[1] if model.startswith("lab/") else "unknown"
 
 
-def judge(brief):
-    """A judge sees the red rung's output: an injected failure is a real one."""
-    if re.search(r"check: injected \S+ failure", brief):
+def judge(brief, acts=frozenset()):
+    """A judge sees the red rung's output: an injected failure is a real one,
+    unless the scenario scripts a residual (the red is accepted as residual)."""
+    if "residual" not in acts and re.search(r"check: injected \S+ failure", brief):
         return "+++\nanswer = \"block\"\nreason = 'lab judge: the need rung failed'\n+++\nBlock.\n"
     return "+++\nanswer = \"residual\"\nreason = 'lab judge: residual'\n+++\nResidual.\n"
 
@@ -262,10 +426,17 @@ def judge(brief):
 def cto(brief):
     runs = re.search(r"^runs: (\d+)", brief, re.M)
     if runs and int(runs.group(1)) < 3:
-        return ("+++\nanswer = \"rework\"\n"
-                "reason = 'lab ruling: rework the slices that did not merge'\n+++\nRework.\n")
+        answer = scenario().get("world", {}).get("cto_answer", "rework")
+        return (f"+++\nanswer = \"{answer}\"\n"
+                f"reason = 'lab ruling: {answer}'\nnew_fact = 'lab: run {runs.group(1)} failed'\n+++\n{answer}.\n")
     return ("+++\nanswer = \"lock\"\n"
             "reason = 'lab ruling: run 3 or later with no new fact'\n+++\nLocked.\n")
+
+
+def repairer(_brief):
+    """A repair job: the lab's red main is an injected check failure, so the
+    honest repair is no change; the main rung decides."""
+    return "+++\nanswer = \"built\"\nchange = []\n+++\nNothing to change: the red was injected.\n"
 
 
 ROLES = {
@@ -277,7 +448,18 @@ ROLES = {
     "merge": merge,
     "judge": judge,
     "cto": cto,
+    "repairer": repairer,
 }
+
+
+def correction(brief):
+    """An envelope-fix job: rewrite only the envelope, keeping the facts. The
+    lab's broken envelopes come from bad_check, so the fix is a clean one."""
+    node = re.search(r"Correction for pump step \S+ r\d+ (\S+?)\.", brief)
+    if node and node.group(1).startswith("slice:"):
+        return ('+++\nanswer = "built"\nchange = []\n\n[[check]]\ncmd = "./check.sh"\nresult = "pass"\n'
+                "seconds = 1\n+++\nCorrected envelope.\n")
+    return None
 
 
 def main():
@@ -285,12 +467,39 @@ def main():
     brief = Path(brief_path).read_text() if brief_path else ""
     role = role_of(brief, model)
     log_call(role, model, brief_path, brief)
+    plan = scenario()
     try:
-        delay = float(scenario().get("world", {}).get("agent_secs", 0))
-    except (OSError, ValueError, tomllib.TOMLDecodeError):
+        delay = float(plan.get("world", {}).get("agent_secs", 0))
+    except (ValueError, TypeError):
         delay = 0.0
     time.sleep(delay)
-    answer = ROLES.get(role, lambda _b: fallback(role))(brief)
+    if front_matter(brief).get("job", {}).get("kind") == "envelope-fix":
+        fixed = correction(brief)
+        if fixed:
+            sys.stdout.write(fixed)
+            return 0
+    ctx = Ctx(role, brief)
+    entry = slice_of(plan, brief) if role == "hand" else None
+    acts = behaviors(ctx, plan, entry)
+    if role == "hand":
+        answer = hand(brief, ctx, plan, acts, entry)
+    else:
+        if role == "auditor":
+            answer = auditor(brief, acts)
+        elif role == "judge":
+            answer = judge(brief, acts)
+        else:
+            answer = ROLES.get(role, lambda _b: fallback(role))(brief)
+    with (LOG_DIR / "calls.log").open("a") as log:
+        log.write(f"  behaviors={sorted(acts)} attempt={ctx.attempt} run={ctx.run} call={ctx.call}\n")
+    if "quota" in acts:
+        sys.stderr.write(QUOTA + "\n")
+        return 1
+    if "silent" in acts:
+        sys.stderr.write("lab stand-in: the agent died without output\n")
+        return 1
+    if "preamble" in acts:
+        answer = PREAMBLE + answer
     sys.stdout.write(answer)
     return 0
 

@@ -28,10 +28,26 @@ for n in tomllib.load(open(sys.argv[1], "rb"))["need"]:
     args = ["--subject", n["subject"], "--body", " ".join(n["body"].split("\n"))]
     for d in n["done_when"]:
         args += ["--done-when", d]
-    print(n["id"], " ".join(shlex.quote(a) for a in args))
+    print(n["id"], n.get("after", "-"), " ".join(shlex.quote(a) for a in args))
 PY
 : > "$OUT/needs.txt"
-while read -r id args; do
+handle_of() { awk -v id="$1" '$1 == id {print $2}' "$OUT/needs.txt"; }
+landed_need() { # landed_need <handle>: 0 when its merge to main is done
+  local n
+  n=$(hub_vivi "sqlite3 $P/.vivi/pump/pump.db \"select count(*) from flow_steps where need='$1' and node like 'merge%' and state='done' and verdict='merged'\"" 2>/dev/null || echo 0)
+  [ "${n:-0}" -gt 0 ]
+}
+while read -r id after args; do
+  # `after = "<need id>"`: send this need only once that one has landed, so
+  # its read-only roles must see landed work on the target's main.
+  if [ "$after" != "-" ]; then
+    prior=$(handle_of "$after")
+    waited=0
+    until [ -n "$prior" ] && landed_need "$prior"; do
+      sleep 5; waited=$((waited + 5))
+      [ "$waited" -ge "$MAX" ] && break
+    done
+  fi
   H=$(hub_vivi "vivi need send --project $P --from operator --to hand --target app $args" | awk '/^created/{print $3}')
   hub_vivi "vivi pump send --project $P --need $H" > /dev/null
   echo "$id $H" >> "$OUT/needs.txt"
@@ -63,7 +79,7 @@ echo "result: $landed landed, $stuck stuck of $total after ${elapsed}s"
 echo "$landed $stuck $total $elapsed" > "$OUT/result.txt"
 
 # Artifacts: pump home, the lane, every step row with its need, the agent logs.
-docker exec vivi-lab-hub tar -C "$P/.vivi" -cf - pump mailspace.toml 2>/dev/null | tar -C "$OUT" -xf - || true
+docker exec vivi-lab-hub tar -C "$P/.vivi" -cf - pump mailspace.toml blobs 2>/dev/null | tar -C "$OUT" -xf - || true
 docker exec vivi-lab-hub cat /home/vivi/service.log > "$OUT/service.log" 2>/dev/null || true
 hub_vivi "git -C /srv/vivi/lanes/lab/app.git log --oneline --graph --all -200" > "$OUT/lane.txt" 2>&1 || true
 hub_vivi "sqlite3 -header $P/.vivi/pump/pump.db 'select need, node, state, verdict from flow_steps order by rowid'" > "$OUT/steps.txt" 2>&1 || true
@@ -72,3 +88,6 @@ for w in $(docker ps --format '{{.Names}}' --filter name=vivi-lab-worker-); do
   docker exec "$w" tar -C /home/worker -cf - sim-agent 2>/dev/null | tar -C "$OUT/agents/$w" -xf - || true
 done
 echo "artifacts: $OUT"
+if python3 -c "import tomllib,sys;sys.exit(0 if 'expect' in tomllib.load(open(sys.argv[1],'rb')) else 1)" "$LAB/scenarios/$SCENARIO/plan.toml"; then
+  python3 "$LAB/expect.py" "$LAB/scenarios/$SCENARIO/plan.toml" "$OUT" | tee "$OUT/expect.txt"
+fi

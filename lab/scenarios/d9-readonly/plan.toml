@@ -1,0 +1,37 @@
+# Defect 9: a need sliced after another landed must see the landed file on its read-only checkout (the target's main, not the lane's main).
+target = "app"
+
+[world]
+machines = 1
+slots = 4
+agent_secs = 0.3
+
+[expect]
+max_secs = 420
+landed = 2
+
+[[need]]
+id = "n1"
+subject = "lab d9-readonly: n1"
+done_when = ["the listed unit files exist and ./check.sh passes"]
+body = "LAB-NEED: n1"
+
+[[need.slice]]
+id = "u1"
+title = "Add unit u1"
+brief = "Create src/u1.sh.\nLAB-EDIT: src/u1.sh u1() { echo u1; }"
+write_scope = ["src/u1.sh"]
+
+[[need]]
+id = "n2"
+subject = "lab d9-readonly: n2"
+done_when = ["the listed unit files exist and ./check.sh passes"]
+body = "LAB-NEED: n2"
+after = "n1"
+require_files = ["src/u1.sh"]
+
+[[need.slice]]
+id = "u2"
+title = "Add unit u2"
+brief = "Create src/u2.sh.\nLAB-EDIT: src/u2.sh u2() { echo u2; }"
+write_scope = ["src/u2.sh"]

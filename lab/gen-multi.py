@@ -6,6 +6,8 @@ dependencies form a random graph.
     gen-multi.py <name> [--seed N] [--needs MIN MAX] [--slices MIN MAX]
                  [--machines M] [--slots S] [--agent-secs T]
                  [--task-fail-pct P] [--need-fail-pct P] [--stages STAGE=BOOL ...]
+                 [--misbehave NAME=PCT ...] [--cto-answer A] [--rework-strict]
+                 [--conflict-pct P] [--main-fail-pct P]
 
 Writes lab/scenarios/<name>/plan.toml and copies the shared lab repository.
 Each need is a `[[need]]` table with its own `[[need.slice]]` list. Every
@@ -69,6 +71,14 @@ def main():
     ap.add_argument("--task-fail-pct", type=float, default=0.0)
     ap.add_argument("--need-fail-pct", type=float, default=0.0)
     ap.add_argument("--stages", nargs="*", default=[], metavar="STAGE=BOOL")
+    # Stand-in misbehaviors at random rates (sim-agent's [world.misbehave]).
+    ap.add_argument("--misbehave", nargs="*", default=[], metavar="NAME=PCT")
+    ap.add_argument("--cto-answer", default="rework")
+    ap.add_argument("--rework-strict", action="store_true")
+    # Percent of slices that also write their need's shared notes file outside
+    # their scope: parallel slices of one need then conflict at the merge.
+    ap.add_argument("--conflict-pct", type=float, default=0.0)
+    ap.add_argument("--main-fail-pct", type=float, default=0.0)
     args = ap.parse_args()
     rng = random.Random(args.seed)
 
@@ -92,9 +102,14 @@ def main():
         f"agent_secs = {args.agent_secs}",
         f"task_fail_pct = {args.task_fail_pct}",
         f"need_fail_pct = {args.need_fail_pct}",
+        f"main_fail_pct = {args.main_fail_pct}",
+        f'cto_answer = "{args.cto_answer}"',
+        f"rework_strict = {'true' if args.rework_strict else 'false'}",
         f"stages = {{{stages}}}",
         "",
     ]
+    if args.misbehave:
+        lines += ["[world.misbehave]"] + [f"{k} = {float(v)}" for k, v in (x.split("=") for x in args.misbehave)] + [""]
     total, summary = 0, []
     for n in range(1, n_needs + 1):
         need = f"n{n}"
@@ -114,11 +129,13 @@ def main():
         for k in range(count):
             u = f"{need}u{k + 1}"
             dep_ids = ", ".join(f'"{need}u{j + 1}"' for j in deps[k])
+            shared = (f"\\nLAB-EDIT: notes/{need}-shared.txt {u}"
+                      if rng.random() * 100 < args.conflict_pct else "")
             lines += [
                 "[[need.slice]]",
                 f'id = "{u}"',
                 f'title = "Add unit {u}"',
-                f'brief = "Create src/{u}.sh.\\nLAB-EDIT: src/{u}.sh {u}() {{ echo {u}; }}"',
+                f'brief = "Create src/{u}.sh.\\nLAB-EDIT: src/{u}.sh {u}() {{ echo {u}; }}{shared}"',
                 f'write_scope = ["src/{u}.sh"]',
                 f"deps = [{dep_ids}]",
                 "",

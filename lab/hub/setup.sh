@@ -68,6 +68,10 @@ for i in $(seq 2 "$MACHINES"); do
   as_vivi $V config set --project "$P" "pools.w$i.remote_url" "$url"
 done
 as_vivi $V config set --project "$P" pump.rungs.timeout 120
+budget=$(python3 -c "import tomllib;print(tomllib.load(open('/lab/scenario/plan.toml','rb')).get('world',{}).get('budget',''))")
+if [ -n "$budget" ]; then
+  as_vivi $V config set --project "$P" pump.dispatch.budget "$budget"
+fi
 # Each rung runs the repository's check; the plan's [world] may give a rung a
 # random fail rate (task_fail_pct, need_fail_pct, main_fail_pct, in percent).
 for rung in task need main; do

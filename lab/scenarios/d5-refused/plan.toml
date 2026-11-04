@@ -1,0 +1,32 @@
+# Defects 5-7: a built hand with a failing '(before fix)' check on attempt 1 is refused; the retry keeps the pushed work, is told why, and the record names the pushed branch.
+target = "app"
+
+[world]
+machines = 1
+slots = 4
+agent_secs = 0.3
+
+[expect]
+landed = 1
+exceptions_present = ["flow-hand-reported-failure"]
+briefs_contain = { hand = "The pump refused it" }
+mail_absent = ['branch: vivi/unit/\S+ \(none: the hand left no changes\)']
+
+[[need]]
+id = "n1"
+subject = "lab d5-refused: n1"
+done_when = ["the listed unit files exist and ./check.sh passes"]
+body = "LAB-NEED: n1"
+
+[[need.slice]]
+id = "u1"
+title = "Add unit u1"
+brief = "Create src/u1.sh.\nLAB-EDIT: src/u1.sh u1() { echo u1; }"
+write_scope = ["src/u1.sh"]
+lab = ["before_fix@a1"]
+
+[[need.slice]]
+id = "u2"
+title = "Add unit u2"
+brief = "Create src/u2.sh.\nLAB-EDIT: src/u2.sh u2() { echo u2; }"
+write_scope = ["src/u2.sh"]

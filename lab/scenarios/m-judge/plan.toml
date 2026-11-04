@@ -1,0 +1,33 @@
+# Mechanics: a red need rung sends the run to the judge (decide.rs: only a failing rung does); a judge residual goes through the raise check to the merge.
+target = "app"
+
+[world]
+machines = 1
+slots = 4
+agent_secs = 0.3
+need_fail_pct = 100
+
+[world.script]
+judge = ["residual"]
+
+[expect]
+landed = 1
+steps_present = ["judge"]
+
+[[need]]
+id = "n1"
+subject = "lab m-judge: n1"
+done_when = ["the listed unit files exist and ./check.sh passes"]
+body = "LAB-NEED: n1"
+
+[[need.slice]]
+id = "u1"
+title = "Add unit u1"
+brief = "Create src/u1.sh.\nLAB-EDIT: src/u1.sh u1() { echo u1; }"
+write_scope = ["src/u1.sh"]
+
+[[need.slice]]
+id = "u2"
+title = "Add unit u2"
+brief = "Create src/u2.sh.\nLAB-EDIT: src/u2.sh u2() { echo u2; }"
+write_scope = ["src/u2.sh"]

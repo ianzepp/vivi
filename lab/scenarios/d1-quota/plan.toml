@@ -1,0 +1,34 @@
+# Defect 1: a spent provider quota on the planner's first call must hold the step (flow-env-failure), never feed envelope fixes.
+target = "app"
+
+[world]
+machines = 1
+slots = 4
+agent_secs = 0.3
+
+[world.script]
+planner = ["quota@c1"]
+
+[expect]
+max_secs = 180
+landed = 0
+exceptions_present = ["flow-env-failure"]
+exceptions_absent = ["flow-envelope-failed"]
+
+[[need]]
+id = "n1"
+subject = "lab d1-quota: n1"
+done_when = ["the listed unit files exist and ./check.sh passes"]
+body = "LAB-NEED: n1"
+
+[[need.slice]]
+id = "u1"
+title = "Add unit u1"
+brief = "Create src/u1.sh.\nLAB-EDIT: src/u1.sh u1() { echo u1; }"
+write_scope = ["src/u1.sh"]
+
+[[need.slice]]
+id = "u2"
+title = "Add unit u2"
+brief = "Create src/u2.sh.\nLAB-EDIT: src/u2.sh u2() { echo u2; }"
+write_scope = ["src/u2.sh"]
