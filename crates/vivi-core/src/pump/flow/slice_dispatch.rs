@@ -335,7 +335,7 @@ pub fn retry<S: JobStore, M: SliceMail>(
     failed: &PoolJob,
     repair: &Repair,
 ) -> Result<Retried, VivariumError> {
-    post_failed_attempt(ctx, &slice.task, failed);
+    post_failed_attempt(ctx, &slice.task, failed, repair.refusal.as_deref());
     let attempt = repair.attempt;
     if attempt >= MAX_ATTEMPTS {
         mark_exhausted(store, &slice.task)?;
@@ -592,7 +592,14 @@ fn landed_deviations<M: SliceMail>(
 
 /// Post the record of a failed attempt on the slice task, so the next
 /// attempt's brief carries it.
-fn post_failed_attempt(ctx: &Ctx, task: &str, job: &PoolJob) {
+fn post_failed_attempt(ctx: &Ctx, task: &str, job: &PoolJob, refusal: Option<&str>) {
+    if let Some(reason) = refusal {
+        let receipt = job.outcome.as_ref().map(|o| o.receipt.as_str());
+        let receipt = receipt.filter(|text| !text.is_empty());
+        let ending = Ending::refused(reason, receipt);
+        post_on_task(ctx, task, job, &ending, receipt.unwrap_or_default());
+        return;
+    }
     let (why, detail, receipt) = match &job.outcome {
         Some(outcome) => (
             match job.status {

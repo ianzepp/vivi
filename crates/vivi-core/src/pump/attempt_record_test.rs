@@ -387,3 +387,73 @@ fn agent_silent_reads_a_pool_summary_without_a_receipt_section() {
     ));
     assert!(!crate::pump::attempt_record::agent_silent(""));
 }
+
+/// The summary of hand attempt de2a92a6-a1 (2026-11-04 local pump): pushed,
+/// model on the pool line, and the base commit after `started from`.
+const PUSHED_SUMMARY: &str = "pool result ba29e2bb600a: finished\n\
+    pool studio  slot s1  model zai/glm-5.3-flash\n\
+    from 9d85bb4e526f75aa43e7084afcd8271122b4befb  branch vivi/unit/de2a92a6-a1\n\
+    push: pushed vivi/unit/de2a92a6-a1 2694a5191b\n\
+    agent exit 0 in 37s, job 40s, started from 9d85bb4e52\n\n\
+    --- receipt\nall checks pass";
+
+fn record_of(job: &PoolJob, ending: &Ending, receipt: &str) -> String {
+    let (_dir, ctx, _host) = setup();
+    assert!(post_on_task(&ctx, "t9", job, ending, receipt));
+    let records = records_for(&ctx, "t9");
+    assert_eq!(records.len(), 1, "{records:?}");
+    records[0].1.clone()
+}
+
+#[test]
+fn a_record_of_a_pushed_attempt_names_its_branch_commit_model_and_no_fake_start() {
+    let mut spec = JobSpec::new("slice-de2a92a6-a1", "hand", "hand", "s", "b");
+    spec.branch = Some(String::from("vivi/unit/de2a92a6-a1"));
+    let mut job = PoolJob::from(spec);
+    job.payload = serde_json::json!({"attempt": 1});
+    let text = record_of(
+        &job,
+        &Ending::failed("hand failed", "", Some(PUSHED_SUMMARY)),
+        PUSHED_SUMMARY,
+    );
+    assert!(
+        text.contains("branch: vivi/unit/de2a92a6-a1 at 2694a5191b (pushed"),
+        "{text}"
+    );
+    assert!(!text.contains("left no changes"), "{text}");
+    assert!(text.contains("model: zai/glm-5.3-flash\n"), "{text}");
+    assert!(text.contains("start: none\n"), "{text}");
+}
+
+#[test]
+fn a_record_of_an_attempt_with_no_changes_says_so() {
+    let receipt = PUSHED_SUMMARY.replace(
+        "push: pushed vivi/unit/de2a92a6-a1 2694a5191b",
+        "push: no_changes",
+    );
+    let job = PoolJob::from(JobSpec::new("slice-t9-a1", "hand", "hand", "s", "b"));
+    let text = record_of(
+        &job,
+        &Ending::failed("hand failed", "", Some(&receipt)),
+        &receipt,
+    );
+    assert!(
+        text.contains("branch: none (the hand left no changes)\n"),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_record_of_a_refused_attempt_names_the_refusal_not_an_agent_failure() {
+    let job = PoolJob::from(JobSpec::new("slice-t9-a1", "hand", "hand", "s", "b"));
+    let reason = "the envelope says built but reports failing checks: ./scripta/check (before fix)";
+    let text = record_of(
+        &job,
+        &Ending::refused(reason, Some(PUSHED_SUMMARY)),
+        PUSHED_SUMMARY,
+    );
+    assert!(text.contains("outcome: refused by the pump\n"), "{text}");
+    assert!(text.contains(reason), "{text}");
+    assert!(!text.contains("agent failed"), "{text}");
+    assert!(!text.contains("agent exit 0"), "{text}");
+}

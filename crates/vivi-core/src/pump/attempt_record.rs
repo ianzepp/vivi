@@ -69,6 +69,17 @@ impl Ending {
         Self::of(&format!("agent failed: {why}"), failing, receipt)
     }
 
+    /// An attempt the pump refused although its agent finished (a `built`
+    /// whose envelope reports a failing check): `reason` is the refusal.
+    #[must_use]
+    pub fn refused(reason: &str, receipt: Option<&str>) -> Self {
+        let failing = Failing {
+            command: None,
+            excerpt: tail(reason.trim_end(), EXCERPT_CHARS),
+        };
+        Self::of("refused by the pump", Some(failing), receipt)
+    }
+
     fn of(label: &str, failing: Option<Failing>, receipt: Option<&str>) -> Self {
         Self {
             label: label.to_owned(),
@@ -141,9 +152,54 @@ pub fn agent_secs(text: &str) -> Option<u64> {
 
 /// The dispatch time in a task receipt's summary line: the epoch seconds
 /// after `started from `.
+/// The dispatch time after `started from `, when that word is a number. The
+/// pool's summary also writes the base commit there (`started from
+/// 9d85bb4e52`), which is not a time and gives `None`.
 fn started_from(text: &str) -> Option<u64> {
     let (_, rest) = text.split_once(STARTED_MARKER)?;
-    leading_number(rest, |c| c.is_ascii_digit())
+    let word = rest.split_whitespace().next()?;
+    if !word.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    word.parse().ok()
+}
+
+/// The pool summary's lines: everything before the first section.
+fn summary(receipt: &str) -> &str {
+    receipt.split("\n\n--- ").next().unwrap_or_default()
+}
+
+/// The model the pool ran, from its `pool <name>  slot <s>  model <m>` line.
+fn summary_model(receipt: &str) -> Option<String> {
+    summary(receipt).lines().find_map(|line| {
+        let line = line.trim();
+        if !line.starts_with("pool ") {
+            return None;
+        }
+        let (_, rest) = line.split_once("  model ")?;
+        rest.split_whitespace().next().map(str::to_owned)
+    })
+}
+
+/// The record's branch line, from the runner's `push:` summary line: where
+/// the attempt's work was published, or why it was not.
+fn branch_line(receipt: &str, job_branch: Option<&str>) -> String {
+    let push = summary(receipt)
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("push: "));
+    let Some(push) = push else {
+        let branch = job_branch.unwrap_or("none");
+        return format!("branch: {branch} (no push result in the receipt)");
+    };
+    let mut words = push.split_whitespace();
+    let word = words.next().unwrap_or_default();
+    match (word, words.next(), words.next()) {
+        ("pushed" | "committed", Some(branch), Some(sha)) => {
+            format!("branch: {branch} at {sha} ({word}: the attempt's work is there)")
+        }
+        ("no_changes", ..) => String::from("branch: none (the hand left no changes)"),
+        _ => format!("branch: none (not published: {push})"),
+    }
 }
 
 /// The joined text of the stderr and runner-log tail sections of a task
@@ -230,7 +286,7 @@ struct Facts {
     model: String,
     pool: String,
     target: String,
-    branch: Option<String>,
+    branch: String,
     label: String,
     failing: Option<Failing>,
     message: String,
@@ -261,10 +317,14 @@ pub fn post_on_task(
             .get("attempt")
             .and_then(serde_json::Value::as_u64)
             .map_or(0, |n| u32::try_from(n).unwrap_or(u32::MAX)),
-        model: job.model.clone().unwrap_or_else(|| "None".to_owned()),
+        model: job
+            .model
+            .clone()
+            .or_else(|| summary_model(receipt))
+            .unwrap_or_else(|| "None".to_owned()),
         pool: job.pool.clone().unwrap_or_else(|| "?".to_owned()),
         target: job.target.clone().unwrap_or_default(),
-        branch: job.branch.clone(),
+        branch: branch_line(receipt, job.branch.as_deref()),
         label: ending.label.clone(),
         failing: ending.failing.clone(),
         message: tail(&parse_receipt(receipt).message, FINAL_MESSAGE_CHARS),
@@ -312,10 +372,8 @@ fn compose(facts: &Facts) -> String {
         "unit: {}  attempt: {}  model: {}  pool: {}  target: {}\n",
         facts.task, facts.attempt, facts.model, facts.pool, facts.target
     ));
-    out.push_str(&format!(
-        "branch: {} (none: the hand left no changes)\n",
-        facts.branch.as_deref().unwrap_or("none")
-    ));
+    out.push_str(&facts.branch);
+    out.push('\n');
     out.push_str(&format!("task: {}\nbase: \n", facts.task));
     if let Some(failing) = &facts.failing {
         out.push_str(&failing_block(failing));

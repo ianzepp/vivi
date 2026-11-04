@@ -25,6 +25,9 @@ pub(crate) struct Repair {
     pub from: Option<String>,
     /// What the attempt failed with.
     pub failure: String,
+    /// Why the pump refused an attempt whose agent finished; none for an
+    /// attempt that failed on its own.
+    pub refusal: Option<String>,
 }
 
 impl Repair {
@@ -63,6 +66,7 @@ impl Repair {
             attempt,
             from,
             failure: capped(&failure, FAILURE_CAP),
+            refusal: None,
         }
     }
 
@@ -75,6 +79,7 @@ impl Repair {
             attempt,
             from,
             failure: capped(&format!("The pump refused it: {reason}"), FAILURE_CAP),
+            refusal: Some(reason.to_owned()),
         }
     }
 
