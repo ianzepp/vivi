@@ -8,13 +8,14 @@ use crate::mailspace::shipped::SLICER_ROLE;
 use crate::pump::flow::def::FlowKind;
 use crate::pump::flow::fanout::{VERDICT_MERGED, VERDICT_NO_DEFECT, is_slice_row};
 use crate::pump::flow::handlers::{FlowMail, Registry};
-use crate::pump::flow::index::StepRow;
+use crate::pump::flow::index::{RunRow, StepRow};
 use crate::pump::flow::outcome::{self, StartAction, StartCx, StepHandler};
 use crate::pump::flow::step_inputs::make_read_only;
 use crate::pump::flow::verify_inputs::{
     admitted_plan, audit_context, branch_range, capped, cto_ruling, latest_of_class, rung_report,
 };
 use crate::pump::jobs::JobStore;
+use crate::pump::store::PumpStore;
 use crate::pump::store::step_payload::StepPayloadRow;
 use vivi_error::VivariumError;
 use vivi_mail::letter::roles::RoleKind;
@@ -91,9 +92,13 @@ fn brief(cx: &StartCx<'_>) -> Result<String, VivariumError> {
 }
 
 fn merged_slices(cx: &StartCx<'_>, need: &str, context_run: u32) -> Result<String, VivariumError> {
-    let mut steps = cx.store.steps_of(need, cx.run.run)?;
-    if context_run != cx.run.run {
-        steps.extend(cx.store.steps_of(need, context_run)?);
+    let mut runs = branch_runs(cx.store, cx.run)?;
+    if !runs.contains(&context_run) {
+        runs.push(context_run);
+    }
+    let mut steps = Vec::new();
+    for run in runs {
+        steps.extend(cx.store.steps_of(need, run)?);
     }
     let lines: Vec<String> = steps
         .iter()
@@ -107,6 +112,26 @@ fn merged_slices(cx: &StartCx<'_>, need: &str, context_run: u32) -> Result<Strin
         .map(|row| format!("- {} (task {})", row.node, row.task))
         .collect();
     Ok(none_if_empty(lines))
+}
+
+/// This run and every earlier run it continued through a rework restart. A
+/// rework restart keeps the need branch, so the slices those runs merged are
+/// all on the branch this run reworks, audited or not.
+fn branch_runs(store: &PumpStore, run: &RunRow) -> Result<Vec<u32>, VivariumError> {
+    let rows = store.runs_of(&run.need)?;
+    let mut runs = vec![run.run];
+    let mut current = run.run;
+    let mut entry = run.entry.clone();
+    while entry == REWORK_NODE && current > 1 {
+        current -= 1;
+        runs.push(current);
+        entry = rows
+            .iter()
+            .find(|row| row.run == current)
+            .map(|row| row.entry.clone())
+            .unwrap_or_default();
+    }
+    Ok(runs)
 }
 
 fn audit_section(rows: &[StepPayloadRow]) -> String {

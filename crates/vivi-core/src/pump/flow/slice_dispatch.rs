@@ -28,6 +28,7 @@ use crate::pump::flow::index::{StepRow, StepState};
 use crate::pump::flow::mail::{MailReader, MailspacePort, TaskStatus};
 use crate::pump::flow::need_branch;
 use crate::pump::flow::scope::{BlockedScope, ScopeState};
+use crate::pump::flow::slice_repair::Repair;
 use crate::pump::host::Ctx;
 use crate::pump::jobs::{self, JobSpec, JobStatus, JobStore, PoolJob};
 use crate::pump::need::unit_branch;
@@ -304,12 +305,13 @@ pub fn dispatch<S: JobStore, M: SliceMail>(
     slice: &StepRow,
     attempt: u32,
 ) -> Result<String, VivariumError> {
-    enqueue_hand(ctx, st, store, mail, need, slice, attempt, None)
+    enqueue_hand(ctx, st, store, mail, need, slice, attempt, None, None)
 }
 
 /// A failed attempt: post its record on the slice task, then queue the next
-/// attempt on the same task. After [`MAX_ATTEMPTS`] the slice is marked
-/// exhausted instead (the fanout then settles `failed`).
+/// attempt on the same task as a repair of the failed one ([`Repair`]). After
+/// [`MAX_ATTEMPTS`] the slice is marked exhausted instead (the fanout then
+/// settles `failed`).
 ///
 /// # Errors
 /// Returns [`VivariumError`] when queueing the next attempt or marking the
@@ -329,7 +331,19 @@ pub fn retry<S: JobStore, M: SliceMail>(
         mark_exhausted(store, &slice.task)?;
         return Ok(Retried::Exhausted);
     }
-    dispatch(ctx, st, store, mail, need, slice, attempt + 1).map(Retried::Dispatched)
+    let repair = Repair::of(failed, attempt);
+    enqueue_hand(
+        ctx,
+        st,
+        store,
+        mail,
+        need,
+        slice,
+        attempt + 1,
+        None,
+        Some(&repair),
+    )
+    .map(Retried::Dispatched)
 }
 
 /// Re-dispatch the same task with the SAME attempt number after a
@@ -355,7 +369,17 @@ pub fn redispatch_scope<S: JobStore, M: SliceMail>(
     {
         round += 1;
     }
-    let id = enqueue_hand(ctx, st, store, mail, need, slice, attempt, Some(round))?;
+    let id = enqueue_hand(
+        ctx,
+        st,
+        store,
+        mail,
+        need,
+        slice,
+        attempt,
+        Some(round),
+        None,
+    )?;
     store.set_scope_state(&slice.task, ScopeState::Clear)?;
     Ok(id)
 }
@@ -377,11 +401,21 @@ fn enqueue_hand<S: JobStore, M: SliceMail>(
     slice: &StepRow,
     attempt: u32,
     scope_round: Option<u32>,
+    repair: Option<&Repair>,
 ) -> Result<String, VivariumError> {
     let id = job_id(&slice.task, attempt, scope_round);
     let row = slice.job(&id, attempt);
     if !st.jobs().contains_key(&id) {
-        let mut spec = hand_spec(ctx, store, mail, need, slice, attempt, &id, scope_round)?;
+        let mut spec = hand_spec(
+            ctx,
+            store,
+            mail,
+            need,
+            slice,
+            (attempt, scope_round),
+            &id,
+            repair,
+        )?;
         row.stamp(need, &mut spec.payload);
         jobs::enqueue(st, spec)?;
     }
@@ -398,9 +432,9 @@ fn hand_spec<M: SliceMail>(
     mail: &M,
     need: &str,
     slice: &StepRow,
-    attempt: u32,
+    (attempt, scope_round): (u32, Option<u32>),
     id: &str,
-    scope_round: Option<u32>,
+    repair: Option<&Repair>,
 ) -> Result<JobSpec, VivariumError> {
     let role = ctx.routing.hand(&ctx.cfg.to).ok_or_else(|| {
         VivariumError::Config(format!(
@@ -419,13 +453,13 @@ fn hand_spec<M: SliceMail>(
     let scope = store.slice_scope(&slice.task)?.ok_or_else(|| {
         VivariumError::Parse(format!("slice task {} has no recorded scope", slice.task))
     })?;
-    let body = compose(
-        ctx,
-        &scope,
-        &landed_deviations(store, mail, need, &slice.task)?,
-        &task_body,
-    );
-    let from = hand_start(ctx, store, need, slice.run, target)?;
+    let deviations = landed_deviations(store, mail, need, &slice.task)?;
+    let mut body = compose(ctx, &scope, &deviations, &task_body);
+    let tip = hand_start(ctx, store, need, slice.run, target)?;
+    let from = repair.and_then(|r| r.from.clone()).unwrap_or(tip);
+    if let Some(repair) = repair {
+        body = format!("{body}\n\n{}", repair.section());
+    }
     let target_ctx = ctx.for_target(target);
     let cfg = target_ctx.as_ref().map_or(&*ctx.cfg, |target| &*target.cfg);
     let mut branch = unit_branch(&slice.task, attempt);

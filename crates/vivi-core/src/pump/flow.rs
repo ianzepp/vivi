@@ -46,6 +46,7 @@ pub mod rung_step;
 pub mod scope;
 pub mod slice_dispatch;
 pub mod slice_merge;
+pub(crate) mod slice_repair;
 pub mod step_error;
 pub mod step_inputs;
 pub mod step_pending;

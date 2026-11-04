@@ -291,6 +291,27 @@ fn a_rework_restart_run_reads_the_run_that_ended_at_the_cto() -> R {
 }
 
 #[test]
+fn a_rework_after_a_failed_build_lists_the_slices_the_kept_branch_holds() -> R {
+    let mut rig = rig()?;
+    // Run 1 built no audit: one slice merged, one ran out of attempts, and
+    // the CTO answered rework, which keeps the need branch.
+    rig.store.insert_run(&rig.run)?;
+    rig.store
+        .insert_step(NEED, &step("slice:s1", "t-s1", Some("merged")))?;
+    rig.store
+        .insert_step(NEED, &step("slice:s2", "t-s2", Some("failed")))?;
+    rig.store
+        .insert_step(NEED, &step("cto", "t-cto", Some("rework")))?;
+    rig.run.run = 2;
+    rig.run.entry = "rework1".into();
+    rig.store.insert_run(&rig.run)?;
+    let body = rework_brief(&rig)?;
+    assert!(body.contains("slice:s1 (task t-s1)"), "{body}");
+    assert!(!body.contains("slice:s2 (task t-s2)"), "{body}");
+    Ok(())
+}
+
+#[test]
 fn an_unlock_restart_names_the_missing_cto_ruling() -> R {
     let mut rig = rig()?;
     rig.seed()?;

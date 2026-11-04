@@ -257,6 +257,35 @@ fn a_red_receipt_posts_the_reason_and_queues_hand_attempt_two() -> R {
 }
 
 #[test]
+fn a_red_receipt_repairs_attempt_two_from_the_failed_commit() -> R {
+    let mut rig = rig()?;
+    let slice = rig.slice(JobStatus::Finished, RED, 1)?;
+    rig.apply()?;
+    let retry = &rig.jobs.jobs[&format!("slice-{}-a2", slice.task)];
+    assert_eq!(retry.from_ref.as_deref(), Some(HAND));
+    assert!(retry.body.contains("EARLIER ATTEMPT:"), "{}", retry.body);
+    assert!(retry.body.contains("test result: FAILED"), "{}", retry.body);
+    Ok(())
+}
+
+#[test]
+fn a_conflict_rebuilds_attempt_two_from_the_need_tip_with_the_paths() -> R {
+    let mut rig = rig()?;
+    let receipt = "CONFLICT (content): Merge conflict in src/a.rs\nagent exit 1 in 2s";
+    let slice = rig.slice(JobStatus::Finished, receipt, 1)?;
+    rig.apply()?;
+    let retry = &rig.jobs.jobs[&format!("slice-{}-a2", slice.task)];
+    assert_ne!(retry.from_ref.as_deref(), Some(HAND));
+    assert!(
+        retry.body.contains("starts from the need-branch tip"),
+        "{}",
+        retry.body
+    );
+    assert!(retry.body.contains("src/a.rs"), "{}", retry.body);
+    Ok(())
+}
+
+#[test]
 fn a_red_receipt_on_attempt_two_exhausts_the_slice() -> R {
     let mut rig = rig()?;
     let slice = rig.slice(JobStatus::Finished, RED, 2)?;
