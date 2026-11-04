@@ -329,3 +329,13 @@ fn real_run_gives_git_the_shared_ssh_connection() {
     );
     assert!(out.text.contains("ControlPersist="), "{}", out.text);
 }
+
+#[test]
+fn real_run_names_a_slow_command_in_the_log() {
+    let dir = tempdir().unwrap();
+    let host = RealHost::new(dir.path());
+    host.run("sleep 0.6; true", None, 10);
+    let log = fs::read_to_string(dir.path().join("log.txt")).unwrap_or_default();
+    assert!(log.contains("slow command "), "{log}");
+    assert!(log.contains("ms: sleep 0.6; true"), "{log}");
+}

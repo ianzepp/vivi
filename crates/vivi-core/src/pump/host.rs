@@ -65,7 +65,12 @@ impl Host for RealHost {
     }
 
     fn run(&self, cmd: &str, cwd: Option<&Path>, timeout_secs: u64) -> CmdOutput {
-        run_command(cmd, cwd, timeout_secs)
+        let started = Instant::now();
+        let out = run_command(cmd, cwd, timeout_secs);
+        if let Some(line) = slow_command_line(cmd, started.elapsed()) {
+            self.log(&line);
+        }
+        out
     }
 
     fn spawn(
@@ -739,6 +744,10 @@ fn run_command(cmd: &str, cwd: Option<&Path>, timeout_secs: u64) -> CmdOutput {
         handles.push(spawn_reader(Box::new(pipe), Arc::clone(&err_buf)));
     }
     let deadline = Instant::now() + Duration::from_secs(timeout_secs);
+    // Look again soon, then back off: a fixed 50 ms made every command,
+    // even a 5 ms ls-remote over a shared connection, cost at least 50 ms,
+    // and a pump tick runs scores of them.
+    let mut wait = Duration::from_millis(1);
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
@@ -761,14 +770,35 @@ fn run_command(cmd: &str, cwd: Option<&Path>, timeout_secs: u64) -> CmdOutput {
             kill_group(pgid);
             drop(child.wait());
             wait_readers(handles, Duration::from_secs(5));
-            let mut text = joined_output(&out_buf, &err_buf);
-            text.push_str("\n[timeout after ");
-            text.push_str(&timeout_secs.to_string());
-            text.push_str("s]");
-            return CmdOutput { code: 124, text };
+            return timed_out(&out_buf, &err_buf, timeout_secs);
         }
-        thread::sleep(Duration::from_millis(50));
+        thread::sleep(wait);
+        wait = (wait * 2).min(COMMAND_POLL_CAP);
     }
+}
+
+/// What a command killed at its timeout left, marked as timed out.
+fn timed_out(out_buf: &SharedBuf, err_buf: &SharedBuf, timeout_secs: u64) -> CmdOutput {
+    let mut text = joined_output(out_buf, err_buf);
+    text.push_str("\n[timeout after ");
+    text.push_str(&timeout_secs.to_string());
+    text.push_str("s]");
+    CmdOutput { code: 124, text }
+}
+
+/// The longest wait between looks at a running command.
+const COMMAND_POLL_CAP: Duration = Duration::from_millis(50);
+
+/// A command at least this slow is named in the pump log.
+const SLOW_COMMAND: Duration = Duration::from_millis(500);
+
+/// The log line for a command that took `took`, when it is slow: its time
+/// and the start of its command line.
+fn slow_command_line(cmd: &str, took: Duration) -> Option<String> {
+    (took >= SLOW_COMMAND).then(|| {
+        let shown: String = cmd.chars().take(160).collect();
+        format!("slow command {}ms: {shown}", took.as_millis())
+    })
 }
 
 /// Stdout then stderr as one lossy string.
