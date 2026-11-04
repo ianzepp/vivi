@@ -161,7 +161,7 @@ fn started_from(text: &str) -> Option<u64> {
     if !word.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
-    word.parse().ok()
+    leading_number(word, |c| c.is_ascii_digit())
 }
 
 /// The pool summary's lines: everything before the first section.
