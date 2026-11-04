@@ -10,7 +10,7 @@ use crate::pump::flow::fanout::{VERDICT_MERGED, VERDICT_NO_DEFECT, is_slice_row}
 use crate::pump::flow::handlers::{FlowMail, Registry};
 use crate::pump::flow::index::{RunRow, StepRow};
 use crate::pump::flow::outcome::{self, StartAction, StartCx, StepHandler};
-use crate::pump::flow::step_inputs::make_read_only;
+use crate::pump::flow::step_inputs::{make_read_only, step_replies};
 use crate::pump::flow::verify_inputs::{
     admitted_plan, audit_context, branch_range, capped, cto_ruling, latest_of_class, rung_report,
 };
@@ -26,6 +26,8 @@ const REWORK_NODE: &str = "rework1";
 const JOB_KIND: &str = "flow-rework";
 /// Most bytes of the admitted plan in the brief.
 const PLAN_CAP: usize = 60_000;
+/// Most bytes of a failed slice's last hand message in the brief.
+const FAILED_MESSAGE_CAP: usize = 1_500;
 /// Requirement statuses that are not gaps.
 const NOT_GAPS: [&str; 2] = ["SATISFIED", "NOT_APPLICABLE"];
 
@@ -65,15 +67,19 @@ fn brief(cx: &StartCx<'_>) -> Result<String, VivariumError> {
     }
     text.push_str(
         "Cut rework slices that go on the existing need branch and fix exactly the findings, \
-         requirement gaps and failing rung output below. Do not re-cut merged slices.\n\n",
+         requirement gaps, failing rung output and slices that did not land below. Do not \
+         re-cut merged slices.\n\n",
     );
     text.push_str("## Admitted plan\n\n");
     match plan {
         Some(plan) => text.push_str(&capped(&plan, PLAN_CAP)),
         None => text.push_str("(no admitted plan recorded)"),
     }
+    let slices = branch_slices(cx, need, context_run)?;
     text.push_str("\n\n## Slices already merged on the need branch\n\n");
-    text.push_str(&merged_slices(cx, need, context_run)?);
+    text.push_str(&merged_section(&slices));
+    text.push_str("\n\n## Slices that did not land\n\n");
+    text.push_str(&unlanded_section(cx, &slices));
     text.push_str("\n\n## Audit findings and requirement gaps\n\n");
     text.push_str(&audit_section(&rows));
     if let Some(reason) = latest_of_class(&rows, "judge").and_then(|row| front_str(row, "reason")) {
@@ -81,7 +87,9 @@ fn brief(cx: &StartCx<'_>) -> Result<String, VivariumError> {
     }
     text.push_str("\n\n## Failing rung output\n\n");
     text.push_str(&rung_section(&rows));
-    if context_run != cx.run.run {
+    // A run that restarted at rework1 always carries the ruling that started
+    // it, whether or not an earlier run reached an audit.
+    if context_run != cx.run.run || cx.run.entry == REWORK_NODE {
         text.push_str("\n\n## CTO ruling\n\n");
         match cto_ruling(cx.store, need, cx.run.run)? {
             Some(ruling) => text.push_str(&ruling),
@@ -91,7 +99,12 @@ fn brief(cx: &StartCx<'_>) -> Result<String, VivariumError> {
     Ok(text)
 }
 
-fn merged_slices(cx: &StartCx<'_>, need: &str, context_run: u32) -> Result<String, VivariumError> {
+/// Every slice row of the runs whose slices are on the kept need branch.
+fn branch_slices(
+    cx: &StartCx<'_>,
+    need: &str,
+    context_run: u32,
+) -> Result<Vec<StepRow>, VivariumError> {
     let mut runs = branch_runs(cx.store, cx.run)?;
     if !runs.contains(&context_run) {
         runs.push(context_run);
@@ -100,18 +113,47 @@ fn merged_slices(cx: &StartCx<'_>, need: &str, context_run: u32) -> Result<Strin
     for run in runs {
         steps.extend(cx.store.steps_of(need, run)?);
     }
-    let lines: Vec<String> = steps
+    Ok(steps.into_iter().filter(is_slice_row).collect())
+}
+
+fn landed(row: &StepRow) -> bool {
+    matches!(
+        row.verdict.as_deref(),
+        Some(VERDICT_MERGED | VERDICT_NO_DEFECT)
+    )
+}
+
+fn merged_section(slices: &[StepRow]) -> String {
+    let lines = slices
         .iter()
-        .filter(|row| is_slice_row(row))
-        .filter(|row| {
-            matches!(
-                row.verdict.as_deref(),
-                Some(VERDICT_MERGED | VERDICT_NO_DEFECT)
-            )
-        })
+        .filter(|row| landed(row))
         .map(|row| format!("- {} (task {})", row.node, row.task))
         .collect();
-    Ok(none_if_empty(lines))
+    none_if_empty(lines)
+}
+
+/// The slices that ended without landing (failed, or superseded by the
+/// restart), each with the last message its hand left: the reason the rework
+/// has to answer.
+fn unlanded_section(cx: &StartCx<'_>, slices: &[StepRow]) -> String {
+    let mut lines = Vec::new();
+    for row in slices.iter().filter(|row| !landed(row)) {
+        let verdict = row.verdict.as_deref().unwrap_or("open");
+        lines.push(format!("### {} (task {}, {verdict})", row.node, row.task));
+        // Best effort: an unreadable task leaves the slice listed, unexplained.
+        let message = match step_replies(cx.mail, &row.task) {
+            Ok(replies) => replies.into_iter().next(),
+            Err(error) => Some(format!("(its task could not be read: {error})")),
+        };
+        match message.filter(|text| !text.trim().is_empty()) {
+            Some(text) => lines.push(format!(
+                "Last hand message:\n{}",
+                capped(&text, FAILED_MESSAGE_CAP)
+            )),
+            None => lines.push(String::from("(no hand message recorded)")),
+        }
+    }
+    none_if_empty(lines)
 }
 
 /// This run and every earlier run it continued through a rework restart. A

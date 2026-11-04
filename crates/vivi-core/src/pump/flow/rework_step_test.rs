@@ -12,7 +12,9 @@ use crate::pump::flow::fake_mail::FakeMail;
 use crate::pump::flow::handlers::{Registry, shipped};
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::load::load;
+use crate::pump::flow::mail::MailWriter;
 use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
+use crate::pump::flow::step_inputs::POOL_RESULT_MARKER;
 use crate::pump::host::{Ctx, test_ctx};
 use crate::pump::jobs::{JobSpec, JobStore, PoolJob};
 use crate::pump::store::step_payload::StepPayloadRow;
@@ -249,7 +251,19 @@ fn the_rework_brief_carries_the_stored_finding_and_failing_test() -> R {
     assert!(body.contains("vivi/need/n1"), "{body}");
     assert!(body.contains("THE PLAN"), "{body}");
     assert!(body.contains("slice:s1 (task t-s1)"), "{body}");
-    assert!(!body.contains("t-s2"), "failed slice listed: {body}");
+    let merged = body
+        .split("## Slices already merged on the need branch")
+        .nth(1)
+        .and_then(|rest| rest.split("## Slices that did not land").next())
+        .unwrap_or_default();
+    assert!(
+        !merged.contains("t-s2"),
+        "failed slice listed as merged: {body}"
+    );
+    assert!(
+        body.contains("(task t-s2, failed)"),
+        "failed slice not named: {body}"
+    );
     assert!(body.contains("F-77"), "{body}");
     assert!(body.contains("src/cache.rs"), "{body}");
     assert!(body.contains("requirement R1 [MISSING]"), "{body}");
@@ -308,6 +322,52 @@ fn a_rework_after_a_failed_build_lists_the_slices_the_kept_branch_holds() -> R {
     let body = rework_brief(&rig)?;
     assert!(body.contains("slice:s1 (task t-s1)"), "{body}");
     assert!(!body.contains("slice:s2 (task t-s2)"), "{body}");
+    assert!(body.contains("### slice:s2 (task t-s2, failed)"), "{body}");
+    Ok(())
+}
+
+/// The rework of the 2026-11-04 local pump run (need cdf403aa r2): a README
+/// slice ran out of attempts because the command it documents had not landed,
+/// no audit ran, and head-cto answered rework. The brief must name the slice
+/// that did not land with its hand's last message, and the CTO ruling.
+#[test]
+fn a_rework_after_an_exhausted_slice_names_it_with_its_hand_message_and_the_ruling() -> R {
+    let mut rig = rig()?;
+    rig.store.insert_run(&rig.run)?;
+    rig.store
+        .insert_step(NEED, &step("slice:s1", "t-s1", Some("merged")))?;
+    let readme = rig
+        .mail
+        .send_step("pump", "pump", "slice:s3", "body", &[])?;
+    rig.mail.reply(
+        &readme,
+        &format!(
+            "{POOL_RESULT_MARKER}j-s3: finished\npool p  slot 1  model m\n\n--- receipt\n\
+             The stats command does not exist on this checkout; once it lands the README edits can be made."
+        ),
+    )?;
+    rig.store
+        .insert_step(NEED, &step("slice:s3", &readme, Some("superseded")))?;
+    rig.store
+        .insert_step(NEED, &step("cto", "t-cto", Some("rework")))?;
+    rig.store.record_step_payload(&payload(
+        "cto",
+        "cto",
+        "t-cto",
+        json!({ "front": { "answer": "rework", "reason": "README-AFTER-STATS" } }),
+    ))?;
+    rig.run.run = 2;
+    rig.run.entry = "rework1".into();
+    rig.store.insert_run(&rig.run)?;
+    let body = rework_brief(&rig)?;
+    assert!(body.contains("## Slices that did not land"), "{body}");
+    assert!(
+        body.contains(&format!("### slice:s3 (task {readme}, superseded)")),
+        "{body}"
+    );
+    assert!(body.contains("does not exist on this checkout"), "{body}");
+    assert!(body.contains("## CTO ruling"), "{body}");
+    assert!(body.contains("reason: README-AFTER-STATS"), "{body}");
     Ok(())
 }
 
