@@ -34,7 +34,8 @@ use vivi_error::VivariumError;
 
 /// How long a new slot's seed (fetch and seed commands) may take.
 const SEED_LIMIT: Duration = Duration::from_secs(30 * 60);
-/// How often a seeding slot is looked at.
+/// The longest wait between looks at a seeding slot (the first looks come
+/// sooner: [`super::collect::Backoff`]).
 const SEED_POLL: Duration = Duration::from_secs(2);
 
 /// Pool provider backed by a worker driver over SSH.
@@ -187,6 +188,7 @@ impl WorkerProvider {
     fn ready(&self, id: &str, request: &OpenRequest) -> Result<Hold, VivariumError> {
         request.progress.say("seeding the slot");
         let started = Instant::now();
+        let mut backoff = super::collect::Backoff::new(self.seed_poll);
         loop {
             let seen = self.ssh.machine(id)?;
             if seen.state == "stopped" {
@@ -202,7 +204,7 @@ impl WorkerProvider {
                     self.seed_limit.as_secs()
                 )));
             }
-            std::thread::sleep(self.seed_poll);
+            std::thread::sleep(backoff.wait());
         }
         self.ssh.seal(id, &ONCE_ENV, META_STATE, STATE_READY)?;
         self.ssh

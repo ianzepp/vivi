@@ -876,3 +876,16 @@ fn a_slot_claimed_under_another_identity_is_foreign() {
         "Fly unreachable".into()
     )));
 }
+
+#[test]
+fn a_backoff_looks_again_soon_then_backs_off_to_its_cap() {
+    let mut backoff = super::Backoff::new(Duration::from_secs(2));
+    let waits: Vec<u128> = (0..7).map(|_| backoff.wait().as_millis()).collect();
+    assert_eq!(waits, [100, 200, 400, 800, 1600, 2000, 2000]);
+    let mut short = super::Backoff::new(Duration::from_millis(30));
+    assert_eq!(
+        short.wait(),
+        Duration::from_millis(30),
+        "never above the cap"
+    );
+}

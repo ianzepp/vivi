@@ -96,6 +96,36 @@ impl Default for Pacing {
     }
 }
 
+/// The first wait of a [`Backoff`].
+const FIRST_POLL: Duration = Duration::from_millis(100);
+
+/// The waits of a poll that should see a fast change at once and a slow one
+/// without busy-looping: 100 ms, doubling, never above the cap. A fixed poll
+/// made every dispatch wait a whole interval for a slot that was ready in a
+/// fraction of it (the lab stress run: about 3 s per dispatch).
+#[derive(Debug, Clone)]
+pub(crate) struct Backoff {
+    next: Duration,
+    cap: Duration,
+}
+
+impl Backoff {
+    #[must_use]
+    pub(crate) fn new(cap: Duration) -> Self {
+        Self {
+            next: FIRST_POLL.min(cap),
+            cap,
+        }
+    }
+
+    /// The next wait.
+    pub(crate) fn wait(&mut self) -> Duration {
+        let wait = self.next;
+        self.next = (self.next * 2).min(self.cap);
+        wait
+    }
+}
+
 /// The `result` file: key=value lines.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct JobResult {

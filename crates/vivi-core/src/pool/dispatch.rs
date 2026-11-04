@@ -667,6 +667,7 @@ fn wait_stopped(
     pacing: &Pacing,
 ) -> Result<(), VivariumError> {
     let deadline = Instant::now() + pacing.ready_timeout;
+    let mut backoff = super::collect::Backoff::new(pacing.poll);
     loop {
         if provider.machine(id)?.state == "stopped" {
             return Ok(());
@@ -676,7 +677,7 @@ fn wait_stopped(
                 "slot {id} did not settle after the job was delivered"
             )));
         }
-        std::thread::sleep(pacing.poll);
+        std::thread::sleep(backoff.wait());
     }
 }
 
