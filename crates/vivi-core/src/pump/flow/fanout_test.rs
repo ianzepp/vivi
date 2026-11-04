@@ -395,6 +395,57 @@ fn settle_failed_when_a_slice_is_exhausted() -> R {
 }
 
 #[test]
+fn an_exhausted_slice_waits_for_its_independent_siblings() -> R {
+    let mut r = rig()?;
+    r.expand(&[slice("A", &[]), slice("B", &[]), slice("C", &[])])?;
+    mark_exhausted(&r.store, &r.task_of("B")?)?;
+    assert_eq!(
+        r.settle()?,
+        None,
+        "A and C are independent of B and still open"
+    );
+    r.close("A", "merged")?;
+    assert_eq!(r.settle()?, None, "C is still open");
+    r.close("C", "merged")?;
+    assert_eq!(r.settle()?, Some("failed"));
+    Ok(())
+}
+
+#[test]
+fn slices_downstream_of_an_exhausted_slice_count_as_settled() -> R {
+    let mut r = rig()?;
+    r.expand(&[
+        slice("A", &[]),
+        slice("B", &["A"]),
+        slice("C", &["B"]),
+        slice("D", &[]),
+    ])?;
+    mark_exhausted(&r.store, &r.task_of("A")?)?;
+    assert_eq!(
+        r.settle()?,
+        None,
+        "D does not depend on A and is still open"
+    );
+    r.close("D", "merged")?;
+    assert_eq!(
+        r.settle()?,
+        Some("failed"),
+        "B and C can never start: A, which they depend on, is exhausted"
+    );
+    Ok(())
+}
+
+#[test]
+fn settle_failed_when_every_slice_is_exhausted() -> R {
+    let mut r = rig()?;
+    r.expand(&[slice("A", &[]), slice("B", &[])])?;
+    mark_exhausted(&r.store, &r.task_of("A")?)?;
+    mark_exhausted(&r.store, &r.task_of("B")?)?;
+    assert_eq!(r.settle()?, Some("failed"));
+    Ok(())
+}
+
+#[test]
 fn a_scope_wait_slice_keeps_the_fanout_open() -> R {
     let mut r = rig()?;
     r.expand(&[slice("A", &[]), slice("B", &[])])?;

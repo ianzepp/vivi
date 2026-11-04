@@ -8,7 +8,7 @@
 //! Exhaustion is recorded as step state `Failed` on the slice row
 //! ([`mark_exhausted`]). A blocked-scope answer never sets it.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::pump::envelope::{EnvelopeError, parse};
 use crate::pump::flow::advance::start::SENTINEL_NODE;
@@ -437,8 +437,13 @@ pub fn mark_exhausted(store: &PumpStore, task: &str) -> Result<(), VivariumError
 /// Where the run's fanout stands: `Some("built")` when every slice task is
 /// closed `merged` or `no-defect` and at least one closed `merged`,
 /// `Some("unchanged")` when every slice closed `no-defect` (nothing merged),
-/// `Some("failed")` when any slice is exhausted, otherwise `None`. A run with
-/// no slices is `None`.
+/// `Some("failed")` when a slice is exhausted and every other slice is either
+/// built or downstream of an exhausted one, otherwise `None`. A run with no
+/// slices is `None`.
+///
+/// An exhausted slice holds only the slices that depend on it, directly or
+/// through other slices: those can never start, so they count as settled.
+/// Every independent slice still builds and merges before the fanout answers.
 ///
 /// A slice waiting on blocked-scope resolution (`scope-wait` or
 /// `scope-rework`) is neither built nor failed.
@@ -463,13 +468,15 @@ pub fn settle<M: MailReader>(
     }
     let mut slices = 0;
     let mut merged = 0;
-    let mut unsettled = false;
+    let mut exhausted = BTreeSet::new();
+    let mut unbuilt = Vec::new();
     for row in store.steps_of(&run.need, run.run)? {
         if !is_slice_row(&row) || !in_fanout(store, &row, open.as_deref())? {
             continue;
         }
         if row.state == StepState::Failed {
-            return Ok(Some(FAILED));
+            exhausted.insert(row.task);
+            continue;
         }
         let state = mail.task_state(&row.task)?;
         let closed = state.status == TaskStatus::Done;
@@ -484,7 +491,7 @@ pub fn settle<M: MailReader>(
         );
         let built = closed && matches!(verdict, Some(VERDICT_MERGED | VERDICT_NO_DEFECT));
         if waiting || !built {
-            unsettled = true;
+            unbuilt.push(row.task);
         }
         if closed && verdict == Some(VERDICT_MERGED) {
             merged += 1;
@@ -493,10 +500,57 @@ pub fn settle<M: MailReader>(
     if reslice_open(store, run, open.as_deref())? {
         return Ok(None);
     }
-    if slices == 0 || unsettled {
-        return Ok(None);
+    let blocked = downstream_of(store, &exhausted, &unbuilt)?;
+    let open = unbuilt.iter().any(|task| !blocked.contains(task));
+    Ok(answer(open, !exhausted.is_empty(), slices, merged))
+}
+
+/// The fanout word once the slices are counted: none while an independent
+/// slice is still open or there are no slices, `failed` when a slice is
+/// exhausted, else `built` or `unchanged`.
+fn answer(open: bool, exhausted: bool, slices: usize, merged: usize) -> Option<&'static str> {
+    if open {
+        None
+    } else if exhausted {
+        Some(FAILED)
+    } else if slices == 0 {
+        None
+    } else {
+        Some(if merged > 0 { BUILT } else { UNCHANGED })
     }
-    Ok(Some(if merged > 0 { BUILT } else { UNCHANGED }))
+}
+
+/// The tasks of `candidates` that depend on an exhausted slice, directly or
+/// through another candidate: their dependency never builds, so they never
+/// start.
+fn downstream_of(
+    store: &PumpStore,
+    exhausted: &BTreeSet<String>,
+    candidates: &[String],
+) -> Result<BTreeSet<String>, VivariumError> {
+    let mut deps = BTreeMap::new();
+    for task in candidates {
+        let link = store.slice_link(task)?;
+        deps.insert(
+            task.as_str(),
+            link.map(|link| link.deps).unwrap_or_default(),
+        );
+    }
+    let mut blocked = BTreeSet::new();
+    loop {
+        let before = blocked.len();
+        for (task, task_deps) in &deps {
+            if task_deps
+                .iter()
+                .any(|dep| exhausted.contains(dep) || blocked.contains(dep))
+            {
+                blocked.insert((*task).to_owned());
+            }
+        }
+        if blocked.len() == before {
+            return Ok(blocked);
+        }
+    }
 }
 
 /// True when a slicer job on one slice of `fanout` is still open: a reslice
