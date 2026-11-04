@@ -9,7 +9,7 @@ mod render;
 
 pub use compose::{
     ComposeDraft, FileAttachment, ReplyDraft, auto_html_body, build_compose_draft,
-    build_compose_draft_with_attachments, build_reply, build_reply_template, replace_from_header,
+    build_compose_draft_with_attachments, build_reply, build_reply_template,
     validate_message_headers,
 };
 pub use render::{render_message, to_json_message};

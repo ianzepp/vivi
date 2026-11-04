@@ -159,56 +159,6 @@ pub fn validate_message_headers(data: &[u8]) -> Result<(), VivariumError> {
     Ok(())
 }
 
-/// Replace the From header in a raw message with a new address.
-///
-/// # Errors
-/// Returns an error if `from` is empty or not a valid email address, the
-/// message is not UTF-8, has no header/body separator, or has no From header.
-pub fn replace_from_header(data: &[u8], from: &str) -> Result<Vec<u8>, VivariumError> {
-    let from = from.trim();
-    if from.is_empty() {
-        return Err(VivariumError::Message("--from cannot be empty".into()));
-    }
-    let _: lettre::message::Mailbox = from
-        .parse()
-        .map_err(|e| VivariumError::Message(format!("invalid --from address: {e}")))?;
-    let text = std::str::from_utf8(data)
-        .map_err(|e| VivariumError::Message(format!("message is not UTF-8: {e}")))?;
-    let newline = if text.contains("\r\n") { "\r\n" } else { "\n" };
-    let separator = format!("{newline}{newline}");
-    let (headers, body) = text
-        .split_once(&separator)
-        .ok_or_else(|| VivariumError::Message("message has no header/body separator".into()))?;
-
-    let mut found = false;
-    let mut skip_continuation = false;
-    let mut rewritten = Vec::new();
-    for line in headers.split(newline) {
-        if skip_continuation && (line.starts_with(' ') || line.starts_with('\t')) {
-            continue;
-        }
-        skip_continuation = false;
-        if line
-            .split_once(':')
-            .is_some_and(|(name, _)| name.eq_ignore_ascii_case("from"))
-        {
-            if !found {
-                rewritten.push(format!("From: {from}"));
-                found = true;
-                skip_continuation = true;
-            }
-            continue;
-        }
-        rewritten.push(line.to_string());
-    }
-    if !found {
-        return Err(VivariumError::Message("message has no From header".into()));
-    }
-    let rewritten = format!("{}{separator}{body}", rewritten.join(newline));
-    validate_message_headers(rewritten.as_bytes())?;
-    Ok(rewritten.into_bytes())
-}
-
 fn normalize_body(body: &str) -> String {
     let mut body = body.replace('\n', "\r\n");
     if !body.ends_with("\r\n") {
