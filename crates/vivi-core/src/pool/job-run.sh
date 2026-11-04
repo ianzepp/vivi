@@ -534,9 +534,11 @@ delete_target() {
   read -r DELETE_BEFORE current <<< "$current"
   DELETE_STATE=ref_mismatch
   [ "$current" = "$DELETE_REF" ] && [ "$DELETE_BEFORE" = "$DELETE_EXPECT" ] || return 0
-  DELETE_STATE=verify_failed
+  DELETE_STATE=push_refused
   publisher_git push -q --force-with-lease="$DELETE_REF:$DELETE_EXPECT" "$url" ":$DELETE_REF" || return 0
+  DELETE_STATE=verify_failed
   current=$(publisher_git ls-remote --heads "$url" "$DELETE_REF") || return 0
+  DELETE_STATE=still_present
   [ -z "$current" ] || return 0
   DELETE_AFTER=absent
   DELETE_STATE=deleted

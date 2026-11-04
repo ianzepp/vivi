@@ -637,6 +637,27 @@ fn need_branch_cleanup_is_expected_tip_guarded_and_replay_safe() {
 }
 
 #[test]
+fn a_cleanup_the_remote_refuses_says_push_refused() {
+    let rig = Rig::new(1).as_worktree();
+    let expected = rig.a_sha();
+    git(&rig.f.repo, &["branch", "vivi/need/refused", &expected]);
+    let hooks = git(&rig.f.repo, &["rev-parse", "--absolute-git-dir"]);
+    let hook = Path::new(hooks.trim()).join("hooks/pre-receive");
+    std::fs::write(&hook, "#!/bin/sh\necho refused >&2\nexit 1\n").unwrap();
+    std::fs::set_permissions(&hook, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let controls =
+        format!("DELETE_REF='refs/heads/vivi/need/refused'\nDELETE_EXPECT='{expected}'\n");
+    let result = rig.run_with_controls("true", true, "", None, &controls);
+    assert_eq!(
+        result.get("delete_state"),
+        "push_refused",
+        "{:?}",
+        result.fields
+    );
+    assert!(remote_has_ref(&rig.f.repo, "refs/heads/vivi/need/refused"));
+}
+
+#[test]
 fn unit_attempt_branch_cleanup_deletes_the_expected_tip() {
     let rig = Rig::new(1).as_worktree();
     let expected = rig.a_sha();
