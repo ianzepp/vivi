@@ -27,6 +27,18 @@ pub(super) use reload::{file_stamp, refresh_config};
 /// status. The board pass is bookkeeping; durable execution runs through
 /// dispatched pool jobs.
 pub fn tick(ctx: &Ctx, st: &mut State, boardpass: &mut BoardPass) -> Result<(), VivariumError> {
+    let mut phases = Phases::new();
+    let result = tick_phases(ctx, st, boardpass, &mut phases);
+    ctx.log(&phases.line());
+    result
+}
+
+fn tick_phases(
+    ctx: &Ctx,
+    st: &mut State,
+    boardpass: &mut BoardPass,
+    phases: &mut Phases,
+) -> Result<(), VivariumError> {
     write_status(ctx, st);
     boardpass.apply(ctx, st);
     tick_steps::soft_step(
@@ -34,9 +46,12 @@ pub fn tick(ctx: &Ctx, st: &mut State, boardpass: &mut BoardPass) -> Result<(), 
         "integration-branch",
         crate::pump::integration_branch::ensure_all(ctx),
     );
+    phases.mark("integration");
     collect_phase(ctx, st)?;
+    phases.mark("collect");
     tick_steps::soft_step(ctx, "flow", crate::pump::flow::tick::tick(ctx, st));
     save(ctx, st)?;
+    phases.mark("flow");
     let control = match crate::pump::control::read(&ctx.home) {
         Ok(control) => control,
         Err(error) => {
@@ -50,6 +65,7 @@ pub fn tick(ctx: &Ctx, st: &mut State, boardpass: &mut BoardPass) -> Result<(), 
     if control.mode == crate::pump::control::PumpMode::Paused {
         periodic(ctx, st, boardpass)?;
         write_status(ctx, st);
+        phases.mark("board");
         return Ok(());
     }
     if !ctx.mailspace.is_empty() {
@@ -62,15 +78,55 @@ pub fn tick(ctx: &Ctx, st: &mut State, boardpass: &mut BoardPass) -> Result<(), 
         );
         save(ctx, st)?;
     }
+    phases.mark("dispatch");
     periodic(ctx, st, boardpass)?;
     write_status(ctx, st);
+    phases.mark("board");
     Ok(())
 }
 
+/// How long each phase of one tick took, logged as one line
+/// (`tick took 2140ms: integration 12, collect 410, ...`) so a slow cycle
+/// names the phase that made it slow.
+struct Phases {
+    start: Instant,
+    last: Instant,
+    marks: Vec<(&'static str, u128)>,
+}
+
+impl Phases {
+    fn new() -> Self {
+        let now = Instant::now();
+        Self {
+            start: now,
+            last: now,
+            marks: Vec::new(),
+        }
+    }
+
+    /// End the phase `name` now.
+    fn mark(&mut self, name: &'static str) {
+        let now = Instant::now();
+        self.marks.push((name, (now - self.last).as_millis()));
+        self.last = now;
+    }
+
+    fn line(&self) -> String {
+        let parts: Vec<String> = self
+            .marks
+            .iter()
+            .map(|(name, ms)| format!("{name} {ms}"))
+            .collect();
+        format!(
+            "tick took {}ms: {}",
+            self.start.elapsed().as_millis(),
+            parts.join(", ")
+        )
+    }
+}
+
 fn collect_phase(ctx: &Ctx, st: &mut State) -> Result<(), VivariumError> {
-    let t_collect = Instant::now();
     collect::collect(ctx, st);
-    ctx.log(&format!("collect took {}s", t_collect.elapsed().as_secs()));
     save(ctx, st)?;
     write_status(ctx, st);
     Ok(())

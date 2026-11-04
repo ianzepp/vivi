@@ -233,10 +233,10 @@ fn a_tick_runs_the_steps_in_pump_py_order() {
     assert!(reconcile < sync);
 }
 
-/// A tick logs how long its collect phase took, so a slow
-/// main loop shows up in `<home>/log.txt`.
+/// A tick logs how long it took and each of its phases, so a slow main loop
+/// shows up in `<home>/log.txt` with the phase that made it slow.
 #[test]
-fn a_tick_logs_the_collect_duration() {
+fn a_tick_logs_its_duration_by_phase() {
     let (_dir, ctx, host) = setup();
     host.reply(
         "pool reconcile",
@@ -246,11 +246,14 @@ fn a_tick_logs_the_collect_duration() {
     let mut st = State::default();
     put(&mut st, "a-1", unit(Status::Inflight, Some("1a2b3c4d")));
     tick(&ctx, &mut st);
-    assert!(
-        host.logs().iter().any(|l| l.starts_with("collect took ")),
-        "no collect duration in {:?}",
-        host.logs()
-    );
+    let line = host
+        .logs()
+        .into_iter()
+        .find(|l| l.starts_with("tick took "))
+        .unwrap_or_else(|| panic!("no tick duration in {:?}", host.logs()));
+    for phase in ["integration ", "collect ", "flow ", "dispatch ", "board "] {
+        assert!(line.contains(phase), "{phase}missing from {line}");
+    }
 }
 
 #[test]
