@@ -234,12 +234,20 @@ fn failure(job: &PoolJob) -> Option<String> {
             Some(format!("cleanup of {reference} ended {:?}", job.status))
         }
         JobStatus::Finished => {
-            let deleted = job
+            let receipt = job
                 .outcome
                 .as_ref()
-                .and_then(|outcome| outcome.runner_delete())
-                .is_some_and(|receipt| receipt.succeeded());
-            (!deleted).then(|| format!("cleanup of {reference} did not delete the ref"))
+                .and_then(|outcome| outcome.runner_delete());
+            match receipt {
+                Some(receipt) if receipt.succeeded() => None,
+                Some(receipt) => Some(format!(
+                    "cleanup of {reference} did not delete the ref: runner delete {}, before {}, after {}",
+                    receipt.state, receipt.before, receipt.after
+                )),
+                None => Some(format!(
+                    "cleanup of {reference} did not delete the ref: the job left no runner delete receipt"
+                )),
+            }
         }
         JobStatus::Pending | JobStatus::Dispatched => None,
     }

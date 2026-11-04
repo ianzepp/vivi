@@ -384,3 +384,28 @@ fn a_failed_cleanup_raises_the_alarm_once() -> Result<(), VivariumError> {
     assert_eq!(rig.exceptions().matches(PRUNE_FAILED).count(), 6);
     Ok(())
 }
+
+#[test]
+fn a_failed_cleanup_names_what_the_runner_found() -> Result<(), VivariumError> {
+    let mut rig = rig()?;
+    let refused = format!("agent exit 0\nrunner delete: verify_failed refs/heads/x {SHA} {SHA} -");
+    for job in [
+        ended("prune-n1-r1-refused", JobStatus::Finished, &refused),
+        ended("prune-n1-r1-silent", JobStatus::Finished, "agent exit 0"),
+    ] {
+        rig.jobs.jobs.insert(job.id.clone(), job);
+    }
+    rig.tick()?;
+    let text = rig.exceptions();
+    assert!(
+        text.contains(&format!(
+            "runner delete verify_failed, before {SHA}, after -"
+        )),
+        "{text}"
+    );
+    assert!(
+        text.contains("the job left no runner delete receipt"),
+        "{text}"
+    );
+    Ok(())
+}
