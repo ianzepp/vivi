@@ -37,7 +37,7 @@ Keep the document concrete. Name files and functions, not themes. Do not pad it,
 
 ## Reply format
 
-Your final reply is one Markdown message. It opens with TOML front matter between two `+++` fence lines, and the plan document is the body below it. The pump reads the front matter to decide what happens next. General rules and the full table for every role are in [the envelope reference](../envelope.md).
+Your final reply is one Markdown message. It opens with TOML front matter between two `+++` fence lines, and the plan document is the body below it. The pump reads the front matter to decide what happens next.
 
 Front matter for the planner:
 

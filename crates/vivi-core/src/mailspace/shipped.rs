@@ -9,11 +9,11 @@ pub const PUMP_PLANNER_CHARTER: &str =
 
 /// The shipped charter of the `merge` role.
 pub const MERGE_CHARTER: &str =
-    include_str!("../../../../skills/tugboat/references/charters/merge.md");
+    include_str!("../../../../skills/vivi/references/charters/merge.md");
 
 /// The shipped charter of the `auditor` role.
 pub const AUDITOR_CHARTER: &str =
-    include_str!("../../../../skills/tugboat/references/charters/auditor.md");
+    include_str!("../../../../skills/vivi/references/charters/auditor.md");
 
 /// The role the research flow sends a need to for analysis.
 pub const RESEARCHER_ROLE: &str = "researcher";
@@ -47,7 +47,7 @@ pub const HEAD_CTO_ROLE: &str = "head-cto";
 
 /// The shipped charter of the [`HEAD_CTO_ROLE`] role.
 pub const HEAD_CTO_CHARTER: &str =
-    include_str!("../../../../skills/tugboat/references/charters/head-cto.md");
+    include_str!("../../../../skills/vivi/references/charters/head-cto.md");
 
 /// The shipped charter text for a shipped role name, or `None` for any other.
 #[must_use]

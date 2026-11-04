@@ -94,7 +94,7 @@ fn an_auditor_role_is_read_only_and_takes_its_band_model_and_reasoning() {
 #[test]
 fn builtin_auditor_uses_the_shipped_charter_and_stays_read_only_with_a_model_override() {
     let auditor = RoleFacts::builtin_auditor();
-    assert!(auditor.charter.contains("# Auditor"));
+    assert_eq!(auditor.charter, crate::mailspace::shipped::AUDITOR_CHARTER);
     assert_eq!(auditor.kind.as_deref(), Some("auditor"));
     let resolved = resolve(
         &pool(),
@@ -426,7 +426,7 @@ fn a_charter_gives_the_headings_in_order_over_the_pool_rules() {
     assert_eq!(
         prompt,
         "# Standing charter (role scribe)\n\nWrite the letters.\n\n---\n\n\
-         You run in a pool slot with no `vivi` command and no mailspace. Where the charter tells you to read or settle your handle with `vivi`, read your brief instead and end with your receipt on standard output; the runner records your result and the Mind settles the handle.\n\n\
+         You run in a pool slot with no `vivi` command and no mailspace. Where the charter tells you to read or settle your handle with `vivi`, read your brief instead and end with your receipt on standard output; the runner records your result and whoever dispatched the job settles the handle.\n\n\
          # Pool rules (these bound the charter)\n\nWork the brief. Never weaken a test.\n"
     );
     let charter = prompt.find("# Standing charter (role scribe)").unwrap();
@@ -457,7 +457,7 @@ fn the_bridge_note_does_not_tell_the_worker_to_settle_its_handle() {
             "You run in a pool slot with the vivi tools of the project server \
              (MCP server `vivi`). Your task handle is in your brief: read it \
              with `show` and `thread`, report with `reply`; the runner records \
-             your result and the pump or Mind settles the handle."
+             your result and whoever dispatched the job settles the handle."
         ),
         "got: {bridged}"
     );

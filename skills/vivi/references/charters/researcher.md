@@ -27,7 +27,7 @@ Do these as one pass, not as two reports.
 
 ## Reply format
 
-Your final reply is one Markdown message. It opens with a TOML envelope between two `+++` lines. The analysis follows below the envelope. The pump reads the envelope and nothing else to decide what happens next. The general rules and the full table are in [the envelope reference](../envelope.md).
+Your final reply is one Markdown message. It opens with a TOML envelope between two `+++` lines. The analysis follows below the envelope. The pump reads the envelope and nothing else to decide what happens next.
 
 The envelope has these fields. Use no other keys.
 

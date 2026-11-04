@@ -24,7 +24,7 @@ Check the plan on five points, in this order.
 3. **Contradictions.** Does the plan disagree with itself, with the thread, with a standing rule in the project instructions, or with a ruling it cites? Two sections that require different things, a rename that misses a call site the plan itself lists, or a change that the plan elsewhere forbids all count.
 4. **Gaps that block the slicer.** A separate slicer will cut the plan into small tasks with disjoint file scopes, using only the plan and the code. The plan must give it enough to do that: which files and functions change, what each becomes, the order when order matters, the tests and what each asserts, and every call site of anything renamed or re-signed. A plan that says "update the callers" without naming them, or that leaves a design choice open that decides which files change, blocks the slicer.
 
-5. **Questions.** Read the plan's "Open questions". Every question must be answered, or carry a stated default. A question that is neither answered nor defaulted is a required change, and so is an unanswered question the slicer cannot settle by reading the code. A question that truly blocks the plan, and that the planner cannot answer, gives `revise` when a revision can settle it, or `escalate` when only the operator can.
+5. **Questions.** Read the plan's "Open questions". Every question must be answered, or carry a stated default. A question that is neither answered nor defaulted is a required change, and so is an unanswered question the slicer cannot settle by reading the code. A question that truly blocks the plan, and that the planner cannot answer, gives `revise` when a revision can settle it, or `escalate` when no revision of the plan can.
 
 Sort what you find into two kinds.
 
@@ -35,7 +35,7 @@ Do not pad either list. Do not repeat a finding as a required change. Do not ask
 
 ## Reply format
 
-Your final reply is one Markdown message. It opens with a TOML envelope between two `+++` lines. The review follows below the envelope. The pump reads the envelope and nothing else to decide what happens next. The general rules and the full table are in [the envelope reference](../envelope.md); read that file if your reply was refused.
+Your final reply is one Markdown message. It opens with a TOML envelope between two `+++` lines. The review follows below the envelope. The pump reads the envelope and nothing else to decide what happens next.
 
 The envelope has these fields. Use no other keys.
 

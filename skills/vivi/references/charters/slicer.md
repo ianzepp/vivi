@@ -51,7 +51,7 @@ There is no `proof` field and no `after` field. An unknown key makes the whole r
 
 ## Return the slices
 
-Your final reply is a Markdown document that opens with TOML front matter between two `+++` lines. The general rules, the full role table and a correction procedure are in [the reply envelope](../envelope.md); read it if a reply was refused.
+Your final reply is a Markdown document that opens with TOML front matter between two `+++` lines. Every field you may use is listed below; a reply with any other key is refused.
 
 The front matter holds:
 

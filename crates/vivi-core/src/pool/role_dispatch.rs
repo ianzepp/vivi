@@ -352,13 +352,13 @@ pub fn standing_prompt(
         "You run in a pool slot with the vivi tools of the project server \
          (MCP server `vivi`). Your task handle is in your brief: read it \
          with `show` and `thread`, report with `reply`; the runner records \
-         your result and the pump or Mind settles the handle."
+         your result and whoever dispatched the job settles the handle."
     } else {
         "You run in a pool slot with no `vivi` command and no mailspace. \
          Where the charter tells you to read or settle your handle with \
          `vivi`, read your brief instead and end with your receipt on \
-         standard output; the runner records your result and the Mind \
-         settles the handle."
+         standard output; the runner records your result and whoever \
+         dispatched the job settles the handle."
     };
     let prompt = format!(
         "# Standing charter (role {role})\n\n{charter}\n\n---\n\n{note}\n\n\

@@ -117,7 +117,7 @@ fn builtin_auditor_marker_replaces_the_recipient_charter_for_one_task() {
 
     assert_eq!(role.kind.as_deref(), Some("auditor"));
     assert!(role.read_only.unwrap_or(false));
-    assert!(role.charter.contains("# Auditor"));
+    assert_eq!(role.charter, vivi_core::mailspace::shipped::AUDITOR_CHARTER);
     assert!(!role.charter.contains("Hand-only standing instructions"));
 }
 
