@@ -273,3 +273,31 @@ fn fake_host_treats_an_unscripted_done_need_list_as_empty() {
     let output = host.run("vivi need list --status done --to mind --json", None, 1);
     assert_eq!((output.code, output.text.as_str()), (0, "[]"));
 }
+
+#[test]
+fn real_log_keeps_lines_whole_when_threads_log_at_once() {
+    let dir = tempdir().unwrap();
+    let host = std::sync::Arc::new(RealHost::new(dir.path()));
+    let threads: Vec<_> = (0..8)
+        .map(|t| {
+            let host = host.clone();
+            thread::spawn(move || {
+                for i in 0..200 {
+                    host.log(&format!("board reply t{t} line {i} rc=0 sent abcdef12"));
+                }
+            })
+        })
+        .collect();
+    for handle in threads {
+        handle.join().unwrap();
+    }
+    let text = fs::read_to_string(dir.path().join("log.txt")).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 8 * 200, "every logged line is its own line");
+    for line in lines {
+        assert!(
+            line.ends_with(" rc=0 sent abcdef12") && line.matches("board reply").count() == 1,
+            "a log line ran into another: {line:?}"
+        );
+    }
+}

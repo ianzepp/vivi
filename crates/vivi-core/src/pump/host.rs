@@ -806,8 +806,11 @@ fn append_line(path: &Path, line: &str) {
     if let Some(parent) = path.parent() {
         drop(fs::create_dir_all(parent));
     }
+    // One write of the whole line: `writeln!` may write the text and the
+    // newline separately, and lines logged at once from two threads then run
+    // together.
     if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
-        drop(writeln!(file, "{line}"));
+        drop(file.write_all(format!("{line}\n").as_bytes()));
     }
 }
 
