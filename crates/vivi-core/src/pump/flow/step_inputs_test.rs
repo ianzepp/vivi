@@ -331,3 +331,64 @@ fn read_only_job_resolves_the_budget_from_the_node_class() -> R {
     assert!(matches!(err, VivariumError::Config(_)), "{err}");
     Ok(())
 }
+
+fn sandbox_config() -> PumpConfig {
+    let mut cfg = PumpConfig::default();
+    cfg.targets.insert(
+        String::from("sandbox"),
+        crate::pump::config::PumpTarget {
+            path: String::from("pump-sandbox"),
+            main: String::from("vivi/main"),
+            ..crate::pump::config::PumpTarget::default()
+        },
+    );
+    cfg
+}
+
+/// The 2026-11-04 local pump: target `sandbox` integrates on `vivi/main`
+/// while `[pump] main` stays the default `main` (the upstream mirror). A
+/// slicer started from `main` saw a tree without the landed work.
+#[test]
+fn a_read_only_job_starts_from_its_targets_main_not_the_workspace_main() -> R {
+    let rig = rig_with(sandbox_config())?;
+    assert_eq!(rig.ctx.cfg.main, "main");
+    let step = row("slice", "t1", StepState::Running);
+    let spec = read_only_job(
+        &rig.ctx,
+        &rig.run,
+        &step,
+        &NodeClass::Planner,
+        "pump-planner",
+        "brief",
+    )?;
+    assert_eq!(spec.from_ref.as_deref(), Some("vivi/main"));
+    Ok(())
+}
+
+#[test]
+fn a_read_only_job_naming_a_target_starts_from_that_targets_main() -> R {
+    let mut cfg = sandbox_config();
+    cfg.targets.insert(
+        String::from("radix"),
+        crate::pump::config::PumpTarget {
+            path: String::from("radix"),
+            main: String::from("peer/pump"),
+            ..crate::pump::config::PumpTarget::default()
+        },
+    );
+    let rig = rig_with(cfg)?;
+    let step = row("plan", "t1", StepState::Running);
+    let mut spec = role_job(
+        &rig.ctx,
+        &rig.run,
+        &step,
+        "planner",
+        RoleKind::Planner,
+        "pump-planner",
+        "b",
+    );
+    spec.target = Some(String::from("radix"));
+    make_read_only(&rig.ctx, &mut spec);
+    assert_eq!(spec.from_ref.as_deref(), Some("peer/pump"));
+    Ok(())
+}

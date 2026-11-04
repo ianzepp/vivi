@@ -132,12 +132,25 @@ pub fn read_only_job(
     Ok(spec)
 }
 
-/// Makes `spec` a read-only job: all targets beside the checkout, the main ref
-/// as the start point.
+/// Makes `spec` a read-only job: all targets beside the checkout, and the
+/// main ref of the target its own checkout comes from as the start point.
 pub fn make_read_only(ctx: &Ctx, spec: &mut JobSpec) {
     spec.read_only = true;
-    spec.from_ref = Some(ctx.cfg.main.clone());
+    spec.from_ref = Some(read_only_start(&ctx.cfg, spec.target.as_deref()));
     spec.extra_targets = targets(ctx);
+}
+
+/// The start ref of a read-only job's own checkout: the main of its target
+/// (the job's own, else the primary target the dispatcher gives a job with
+/// none), the same rule its extra checkouts follow. The workspace-level
+/// `[pump] main` is only the legacy single-repository fallback: with targets
+/// it names the upstream mirror, not the integration branch the work is on.
+fn read_only_start(cfg: &crate::pump::config::PumpConfig, target: Option<&str>) -> String {
+    let target = target.map(str::to_owned).or_else(|| cfg.primary_target());
+    match target.and_then(|id| cfg.for_target(&id)) {
+        Some(target_cfg) => target_cfg.dispatch_from().to_owned(),
+        None => cfg.dispatch_from().to_owned(),
+    }
 }
 
 #[cfg(test)]
