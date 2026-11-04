@@ -9,7 +9,7 @@ Merging a slice onto its need branch, and merging a need into main, are machine 
 ## The work
 
 1. Read the project's own agent instructions (`AGENTS.md`, `CLAUDE.md`, `README.md`, whichever exist) once.
-2. Merge the named main tip into the checkout of the need branch, once. Do not rewrite the need branch, rebase it, or merge anything else.
+2. Merge the named main tip into the checkout of the need branch, once. The result must contain that tip: the runner checks the merged ancestry against the named main tip before it publishes. Do not rewrite the need branch, rebase it, or merge anything else.
 3. Resolve conflict hunks only. For each conflicted file, keep what the need meant and what main meant, side by side. Change nothing outside the conflict markers, except what a resolution strictly needs to compile (an import, a renamed call).
 4. If a resolution needs a design choice (a behavior choice, a changed signature, a moved responsibility, a rewrite beyond the hunk), do not make it. Leave the branch as it was and answer `conflict` with the paths and the reason.
 5. Run a check only when the brief names one. Report each one you ran.

@@ -123,10 +123,10 @@ fn mailspace_init_provisions_the_merge_role_and_default_charter_idempotently() {
         .collect::<Vec<_>>()
         .join(" ");
     for term in [
-        "front matter `[job]` table has `kind = \"sync\"`",
+        "`[job]` table has `kind = \"sync\"`",
         "`merged` or `conflict`",
-        "observed target SHA",
-        "expected merged ancestry",
+        "The result must contain that tip",
+        "checks the merged ancestry against the named main tip",
     ] {
         assert!(charter.contains(term), "charter lacks {term:?}:\n{charter}");
     }
