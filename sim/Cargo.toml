@@ -1,0 +1,23 @@
+# The pump simulator: drives the real pump against a simulated world on a
+# virtual clock. It is its own workspace, so `cargo build` and `cargo test` at
+# the vivi root never compile it. Run it from here: `cargo run --release`.
+[package]
+name = "vivi-sim"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Deterministic pump simulator: scenario directories run against vivi's pump on a virtual clock"
+license = "MIT"
+
+[workspace]
+
+[[bin]]
+name = "vivi-sim"
+path = "src/main.rs"
+
+[dependencies]
+vivi-core = { path = "../crates/vivi-core" }
+vivi-error = { path = "../crates/vivi-error" }
+serde = { version = "1", features = ["derive"] }
+tempfile = "3"
+toml = "0.8"

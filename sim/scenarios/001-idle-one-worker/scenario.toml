@@ -1,0 +1,21 @@
+name = "idle-one-worker"
+description = """
+The baseline. One pump, one worker pool with one slot, a ready local mailspace
+and no work. A day of virtual time (4,320 passes of the real run loop) must pass
+with no exceptions, no tick errors and no commands, in a few seconds of real
+time. Measured 2026-11-03: 1.15 s on the laptop.
+"""
+
+[world]
+workers = 1
+slots = 1
+
+[run]
+virtual_hours = 24
+tick_secs = 20
+
+[expect]
+exceptions = 0
+tick_errors = 0
+commands = 0
+max_wall_secs = 5
