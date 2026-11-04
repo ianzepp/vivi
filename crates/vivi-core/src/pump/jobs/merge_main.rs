@@ -98,6 +98,37 @@ pub fn with_attempt(mut job: JobSpec, target: &str, attempt: u32) -> JobSpec {
     job
 }
 
+/// Cut a build merge-main job from main's current tip just before it is
+/// dispatched. The tip is read when the job is queued, and merge-main jobs of
+/// one target go one at a time (`rank::single_flight`), so a job queued behind
+/// others that land first would be cut from a main that has already moved:
+/// it loses the compare-and-swap, queues again behind the rest, and with many
+/// needs finishing together few would ever land. A build merge tests nothing
+/// on the old base (its main rung runs after the land), so the newer tip is
+/// as good. A repair merge is never moved: its CAS base is the main its
+/// attempt was tested on. Returns the new tip when the job moved; a failed
+/// read keeps the job as it is, and the compare-and-swap still guards it.
+pub(crate) fn refresh_base(ctx: &Ctx, job: &mut PoolJob) -> Option<String> {
+    let build = job.payload.get("kind").and_then(serde_json::Value::as_str) == Some("build");
+    if job.kind != "merge" || !build || !job.id.starts_with("merge-main-") {
+        return None;
+    }
+    let tctx = ctx.for_target(job.target.as_deref()?)?;
+    let Ok(Some(tip)) =
+        crate::pump::flow::verify::remote_tip(&tctx, &tctx.cfg.remote, &tctx.cfg.main)
+    else {
+        return None;
+    };
+    if job.from_ref.as_deref() == Some(tip.as_str()) {
+        return None;
+    }
+    job.from_ref = Some(tip.clone());
+    if let Some(map) = job.payload.as_object_mut() {
+        map.insert("main_tip".to_owned(), serde_json::json!(tip));
+    }
+    Some(tip)
+}
+
 /// True when a finished merge-main job lost the compare-and-swap because main
 /// moved after the observed tip.
 ///

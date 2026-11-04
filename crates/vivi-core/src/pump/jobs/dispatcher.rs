@@ -34,7 +34,19 @@ pub fn dispatch_pending(ctx: &Ctx, st: &mut impl JobStore) -> Result<Vec<String>
         .map(|(_, job)| job.clone())
         .collect();
     pending.sort_by_key(|job| dispatch_order(job, &priorities));
-    let pending = rank::single_flight(pending, st.jobs());
+    let mut pending = rank::single_flight(pending, st.jobs());
+    for job in &mut pending {
+        if let Some(tip) = super::merge_main::refresh_base(ctx, job) {
+            ctx.log(&format!(
+                "merge-main {}: main moved while it was queued; cut from {tip}",
+                job.id
+            ));
+            if let Some(stored) = st.jobs_mut().get_mut(&job.id) {
+                stored.from_ref.clone_from(&job.from_ref);
+                stored.payload = job.payload.clone();
+            }
+        }
+    }
     let mut started = Vec::new();
     let width = (ctx.cfg.dispatch.parallel as usize).max(1);
     for chunk in pending.chunks(width) {

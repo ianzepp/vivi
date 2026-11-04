@@ -1,4 +1,4 @@
-use super::{MergeMainResult, classify, main_moved, spec, with_attempt};
+use super::{MergeMainResult, classify, main_moved, refresh_base, spec, with_attempt};
 use crate::pump::config::PumpConfig;
 use crate::pump::host::{Ctx, test_ctx};
 use crate::pump::jobs::{JobOutcome, JobStatus, PoolJob};
@@ -264,4 +264,73 @@ fn main_moved_is_false_for_timeout_lost_and_unfinished_jobs() {
     assert!(!main_moved(&job_with(JobStatus::Lost, None)));
     assert!(!main_moved(&job_with(JobStatus::Dispatched, None)));
     assert!(!main_moved(&job_with(JobStatus::Finished, None)));
+}
+
+/// A queued merge-main job of a `kind` run, cut from `TIP`, and a host whose
+/// main is at `main` (`None`: the read fails).
+fn queued(
+    kind: &str,
+    main: Option<&str>,
+) -> (
+    tempfile::TempDir,
+    Ctx,
+    std::sync::Arc<crate::pump::host::FakeHost>,
+    PoolJob,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let (ctx, host) = test_ctx(dir.path(), PumpConfig::default());
+    let (_merge_dir, merge) = merge_ctx();
+    let mut job = PoolJob::from(spec(&merge, "default", "n1", NEED_TIP, TIP, "step1").unwrap());
+    job.payload["kind"] = serde_json::json!(kind);
+    match main {
+        Some(main) => host.reply(
+            "ls-remote origin main",
+            0,
+            &format!("{main}\trefs/heads/main\n"),
+        ),
+        None => host.reply("ls-remote origin main", 128, "fatal: unreachable"),
+    }
+    (dir, ctx, host, job)
+}
+
+#[test]
+fn a_queued_build_merge_is_cut_from_the_main_that_moved_while_it_waited() {
+    let (_dir, ctx, _host, mut job) = queued("build", Some(NEWER_TIP));
+
+    assert_eq!(refresh_base(&ctx, &mut job).as_deref(), Some(NEWER_TIP));
+
+    assert_eq!(job.from_ref.as_deref(), Some(NEWER_TIP));
+    assert_eq!(job.payload["main_tip"], serde_json::json!(NEWER_TIP));
+    assert_eq!(
+        job.with,
+        vec![String::from(NEED_TIP)],
+        "it still merges the need tip"
+    );
+    assert_eq!(job.publish_contains.as_deref(), Some(NEED_TIP));
+}
+
+#[test]
+fn a_build_merge_on_the_current_main_or_with_an_unreadable_main_is_left_alone() {
+    for main in [Some(TIP), None] {
+        let (_dir, ctx, _host, mut job) = queued("build", main);
+        let before = job.clone();
+
+        assert_eq!(refresh_base(&ctx, &mut job), None);
+
+        assert_eq!(job.from_ref, before.from_ref);
+        assert_eq!(job.payload, before.payload);
+    }
+}
+
+#[test]
+fn a_repair_merge_keeps_the_main_its_attempt_was_tested_on() {
+    let (_dir, ctx, host, mut job) = queued("repair", Some(NEWER_TIP));
+
+    assert_eq!(refresh_base(&ctx, &mut job), None);
+
+    assert_eq!(job.from_ref.as_deref(), Some(TIP));
+    assert!(
+        !host.commands().iter().any(|c| c.contains("ls-remote")),
+        "a repair merge reads no main tip"
+    );
 }

@@ -302,3 +302,47 @@ fn a_repair_merge_main_waits_only_for_the_ordinary_merge_in_flight() -> R {
     assert_eq!(status_of(&rig, &newer.id)?, JobStatus::Pending);
     Ok(())
 }
+
+/// Merges to main of one target go one at a time, and each is cut from main's
+/// tip when it is dispatched, not when it was queued: a merge that waited
+/// behind another is cut from the main that one made, so it does not lose the
+/// compare-and-swap and queue again (seen in the lab: 30 needs finishing
+/// together, merges cut minutes stale, few landing).
+#[test]
+fn a_merge_main_queued_behind_another_is_cut_from_the_main_that_one_made() -> R {
+    let mut rig = ordinary_at_merge()?;
+    let first = open_job(&rig, "merge")?;
+    script_task_handles(&rig);
+    jobs::dispatch_pending(&rig.ctx, &mut rig.jobs)?;
+    assert_eq!(status_of(&rig, &first.id)?, JobStatus::Dispatched);
+    let second = second_ordinary_at_merge(&mut rig)?;
+    assert_eq!(
+        second.from_ref.as_deref(),
+        Some(MAIN),
+        "queued at the old main"
+    );
+    jobs::dispatch_pending(&rig.ctx, &mut rig.jobs)?;
+    assert_eq!(status_of(&rig, &second.id)?, JobStatus::Pending);
+
+    // The first merge lands and main moves.
+    rig.git("main", MERGED);
+    let publish = format!("runner publish: pushed refs/heads/main {MERGED} {MERGED}");
+    rig.finish(
+        &first.id,
+        JobStatus::Finished,
+        &push_receipt(0, "", &publish, ""),
+    )?;
+    script_task_handles(&rig);
+    jobs::dispatch_pending(&rig.ctx, &mut rig.jobs)?;
+
+    let sent = rig
+        .jobs
+        .jobs
+        .get(&second.id)
+        .ok_or_else(|| VivariumError::Message("the second merge job is gone".into()))?;
+    assert_eq!(sent.status, JobStatus::Dispatched);
+    assert_eq!(sent.from_ref.as_deref(), Some(MERGED));
+    assert_eq!(sent.payload["main_tip"], serde_json::json!(MERGED));
+    assert_eq!(sent.publish_contains.as_deref(), Some(TIP));
+    Ok(())
+}
