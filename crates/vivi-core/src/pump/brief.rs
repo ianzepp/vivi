@@ -31,7 +31,7 @@ Checks:
 
 Time and the reply:
 - Aim to finish in 5 minutes. Hard stop at 9 minutes. If you cannot finish, leave the tree in the best passing state and say exactly what is left.
-- Report what you changed, what each check returned, and anything left undone. A `[[follow_up]]` entry goes inside the front matter, with `optional = true` when it is nice to have.
+- Report what you changed, what each check returned on the final tree, and anything left undone. A failure you reproduced before the change goes in the prose, never in `[[check]]`. A `[[follow_up]]` entry goes inside the front matter, with `optional = true` when it is nice to have.
 ";
 
 /// The hand rules in force: [`DEFAULT_HAND_RULES`] when `cfg.hand_rules` is
