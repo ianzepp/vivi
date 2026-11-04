@@ -118,6 +118,7 @@ where
 {
     let def_for = |run: &RunRow| def_of(ctx, run);
     let decide = |node: &FlowNode, inputs: &[JoinInput]| registry.decide(store, node, inputs);
+    let mut timing = FlowTiming::new();
     boundary(
         ctx,
         "answers",
@@ -126,9 +127,11 @@ where
     for run in store.finishing_runs()? {
         resume_run(ctx, store, mail, &run);
     }
+    timing.mark("answers");
     let unapplied = unapplied_step_jobs(st, store)?;
     for run in store.live_runs()? {
         let unit = format!("{} r{}", run.need, run.run);
+        let started = std::time::Instant::now();
         let result = def_of(ctx, &run).and_then(|def| {
             RunCx {
                 ctx,
@@ -143,7 +146,9 @@ where
             .run(&unapplied)
         });
         boundary(ctx, &unit, result);
+        timing.run(&unit, started.elapsed());
     }
+    timing.mark("runs");
     let left = unapplied_step_jobs(st, store)?;
     settle_orphans(ctx, st, store, &left);
     boundary(
@@ -151,10 +156,64 @@ where
         "overdue orphans",
         orphans::overdue_orphans(ctx, &*st, store),
     );
+    timing.mark("orphans");
     for phase in registry.phases() {
         boundary(ctx, phase.name(), phase.run(ctx, st, store, mail));
+        timing.mark(phase.name());
     }
+    ctx.log(&timing.line());
     Ok(())
+}
+
+/// Where one flow tick's time went, logged as one line: each part in
+/// milliseconds, the number of live runs and the slowest of them.
+struct FlowTiming {
+    last: std::time::Instant,
+    parts: Vec<(&'static str, u128)>,
+    runs: usize,
+    slowest: Option<(String, u128)>,
+}
+
+impl FlowTiming {
+    fn new() -> Self {
+        Self {
+            last: std::time::Instant::now(),
+            parts: Vec::new(),
+            runs: 0,
+            slowest: None,
+        }
+    }
+
+    fn mark(&mut self, name: &'static str) {
+        let now = std::time::Instant::now();
+        self.parts.push((name, (now - self.last).as_millis()));
+        self.last = now;
+    }
+
+    fn run(&mut self, unit: &str, took: std::time::Duration) {
+        self.runs += 1;
+        let ms = took.as_millis();
+        if self.slowest.as_ref().is_none_or(|(_, worst)| ms > *worst) {
+            self.slowest = Some((unit.to_owned(), ms));
+        }
+    }
+
+    fn line(&self) -> String {
+        let parts: Vec<String> = self
+            .parts
+            .iter()
+            .map(|(name, ms)| format!("{name} {ms}"))
+            .collect();
+        let slowest = self
+            .slowest
+            .as_ref()
+            .map_or_else(String::new, |(unit, ms)| format!(", slowest {unit} {ms}ms"));
+        format!(
+            "flow took: {} ({} runs{slowest})",
+            parts.join(", "),
+            self.runs
+        )
+    }
 }
 
 /// The flows checked at startup.
