@@ -95,6 +95,46 @@ fn cases() -> Vec<Case> {
             want: Some(("provider", None)),
         },
         Case {
+            name: "stderr section line codex 429 usage_limit_reached (2026-11-04 local pump)",
+            why: "finished",
+            detail: "read_only_unchanged",
+            receipt: receipt(
+                1,
+                "",
+                "codex API error (429): {\"type\":\"usage_limit_reached\",\"message\":\"The usage limit has been reached\",\"plan_type\":\"prolite\",\"limit_window_minutes\":10080}",
+            ),
+            want: Some(("provider", None)),
+        },
+        Case {
+            name: "stderr section line openai insufficient_quota",
+            why: "failed",
+            detail: "",
+            receipt: receipt(
+                1,
+                "",
+                "Error: 429 {\"error\":{\"code\":\"insufficient_quota\"}}",
+            ),
+            want: Some(("provider", None)),
+        },
+        Case {
+            name: "negative: transient 429 rate limit is retried, not held",
+            why: "failed",
+            detail: "",
+            receipt: receipt(
+                1,
+                "",
+                "zai API error (429): rate limit exceeded, retry later",
+            ),
+            want: None,
+        },
+        Case {
+            name: "negative: agent message mentions usage_limit_reached",
+            why: "finished",
+            detail: "pushed",
+            receipt: receipt(0, "classify usage_limit_reached as a provider failure", ""),
+            want: None,
+        },
+        Case {
             name: "negative: agent message mentions Connection error",
             why: "failed",
             detail: "unit ended",

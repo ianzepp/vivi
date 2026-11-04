@@ -4,7 +4,7 @@ use std::fs;
 
 use tempfile::{TempDir, tempdir};
 
-use super::{BUDGET_UNRAISABLE, Collected, collect};
+use super::{AGENT_SILENT, BUDGET_UNRAISABLE, Collected, collect};
 use crate::pool::dispatch::BUDGET_RANGE;
 use crate::pump::config::PumpConfig;
 use crate::pump::envelope::EnvelopeError;
@@ -482,4 +482,56 @@ fn run_three_without_new_fact_after_two_corrections_is_failed() {
     let mut f = fixture();
     let got = cto_run(&mut f, "j1-c2", 3, "answer = \"slice\"\nreason = 'r'\n");
     assert_eq!(got, Collected::Failed);
+}
+
+/// The result letter of a role job whose agent exited 1 and printed nothing
+/// (a spent provider quota on 2026-11-04): front matter, the pool summary and
+/// the tail sections, but no `--- receipt` section.
+const SILENT: &str = "+++\n[pool]\nevent = \"pool_collected\"\n+++\n\n\
+    pool result 59e22a65daf7: finished\npool mini-plan  slot s1  model codex/gpt-6.1-sol\n\
+    from 9d85bb4e52  read-only (nothing is committed or pushed)\nresult: read_only_unchanged\n\
+    agent exit 1 in 17s, job 19s, started from 9d85bb4e52\n\n\
+    --- facts\n$ pi --version  (exit 0)\n  1.2.0\n\n\
+    --- stderr tail\ncodex API error (429): too many requests\n\n\
+    --- runner log tail\nagent_rc 1 agent_s 17";
+
+#[test]
+fn a_silent_agent_takes_the_attempt_rule_not_a_correction() {
+    let mut f = fixture();
+    let first = run(
+        &mut f,
+        &job("j1", JobStatus::Finished, SILENT),
+        1,
+        &NodeClass::Planner,
+    );
+    assert_eq!(first, Collected::Retry);
+    let second = run(
+        &mut f,
+        &job("j1-a2", JobStatus::Finished, SILENT),
+        2,
+        &NodeClass::Planner,
+    );
+    assert_eq!(second, Collected::Failed);
+    let log = exceptions(&f);
+    assert!(log.contains(AGENT_SILENT), "{log}");
+    assert!(log.contains("printed nothing"), "{log}");
+}
+
+#[test]
+fn a_reply_that_quotes_a_pool_summary_is_still_parsed() {
+    let mut f = fixture();
+    let receipt = format!(
+        "{}\n\n--- receipt\n{PLANNED}",
+        SILENT.split("\n\n--- facts").next().unwrap()
+    );
+    let got = run(
+        &mut f,
+        &job("j1", JobStatus::Finished, &receipt),
+        1,
+        &NodeClass::Planner,
+    );
+    assert!(
+        matches!(got, Collected::Outcome(ref word, _) if word == "planned"),
+        "{got:?}"
+    );
 }

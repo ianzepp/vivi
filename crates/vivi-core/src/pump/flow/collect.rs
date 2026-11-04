@@ -8,7 +8,7 @@
 
 use serde_json::json;
 
-use crate::pump::attempt_record::hand_message;
+use crate::pump::attempt_record::{agent_silent, hand_message};
 use crate::pump::envelope::correct::{self, correction_n};
 use crate::pump::envelope::{EnvelopeError, split};
 use crate::pump::flow::budget_retry;
@@ -26,6 +26,8 @@ pub const MAX_CORRECTIONS: u32 = 2;
 /// From this run on, a head-cto answer other than `lock` needs a `new_fact`.
 const NEW_FACT_RUN: u32 = 3;
 
+/// Exception kind: the agent printed nothing, so there is no reply to parse.
+pub const AGENT_SILENT: &str = "flow-agent-silent";
 /// Exception kind: the envelope never parsed.
 pub const ENVELOPE_FAILED: &str = "flow-envelope-failed";
 /// Exception kind: the envelope's answer contradicts the machine receipt.
@@ -82,6 +84,23 @@ pub fn collect<M: MailWriter>(
         return budget_kill(ctx, job, step);
     }
     if job.status != JobStatus::Finished {
+        return lost(step);
+    }
+    // An agent that printed nothing gave no reply: the pool summary is not an
+    // envelope to correct. It takes the attempt rule, like a lost job.
+    if job
+        .outcome
+        .as_ref()
+        .is_some_and(|outcome| agent_silent(&outcome.receipt))
+    {
+        ctx.exception(
+            AGENT_SILENT,
+            &step.task,
+            &format!(
+                "{} job {} attempt {}: the agent printed nothing; expected a reply envelope",
+                step.node, job.id, step.attempt
+            ),
+        );
         return lost(step);
     }
     let message = final_message(job);

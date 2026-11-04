@@ -170,14 +170,19 @@ fn endpoint(detail: &str, receipt: &str) -> Option<HostFailure> {
 }
 
 /// Provider/transport trouble: the agent ended against a dead or dropped
-/// upstream connection, not a unit bug.
+/// upstream connection, or against a spent provider quota (a retry on the
+/// same model cannot succeed until the quota resets), not a unit bug. A
+/// transient rate limit is not matched: the attempt rule retries it.
 fn provider(detail: &str, receipt: &str) -> Option<HostFailure> {
-    const MARKERS: [&str; 5] = [
+    const MARKERS: [&str; 8] = [
         "Connection error",
         "Connection refused",
         "Connection timed out",
         "connection reset by peer",
         "Connection closed",
+        "usage_limit_reached",
+        "insufficient_quota",
+        "exceeded your current quota",
     ];
     for line in scan_scope(detail, receipt).lines() {
         if MARKERS.iter().any(|marker| line.contains(marker)) {

@@ -370,3 +370,20 @@ fn a_failed_send_is_logged_and_the_post_reports_false_after_one_try() {
     );
     assert_eq!(mails_to(&host, "t9").len(), 1, "one try per attempt end");
 }
+
+#[test]
+fn agent_silent_reads_a_pool_summary_without_a_receipt_section() {
+    let summary = "pool result j1: finished\npool p  slot s  model m\nagent exit 1 in 2s, job 3s, started from abc";
+    assert!(crate::pump::attempt_record::agent_silent(&format!(
+        "{summary}\n\n--- stderr tail\nboom"
+    )));
+    assert!(crate::pump::attempt_record::agent_silent(summary));
+    assert!(!crate::pump::attempt_record::agent_silent(&format!(
+        "{summary}\n\n--- receipt\n+++\nanswer = \"planned\"\n+++"
+    )));
+    // A bare message (no pool summary) is the hand's message whole, never silent.
+    assert!(!crate::pump::attempt_record::agent_silent(
+        "ANSWER: planned"
+    ));
+    assert!(!crate::pump::attempt_record::agent_silent(""));
+}

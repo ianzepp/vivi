@@ -175,6 +175,17 @@ fn split_sections(text: &str) -> (&str, impl Iterator<Item = (&str, &str)>) {
     (head, sections)
 }
 
+/// Whether a pool task receipt shows an agent that printed nothing: the
+/// pool's summary is there (`pool result ...`) but no `--- receipt` section
+/// follows, which the pool writes exactly when the agent's output is not
+/// empty. [`hand_message`] would hand back the pool summary as the message.
+#[must_use]
+pub fn agent_silent(text: &str) -> bool {
+    let (head, mut sections) = split_sections(text);
+    head.lines().any(|line| line.starts_with("pool result "))
+        && !sections.any(|(title, _)| title == SECTION_RECEIPT)
+}
+
 /// The hand's final message from a full pool task receipt.
 #[must_use]
 pub fn hand_message(text: &str) -> String {
