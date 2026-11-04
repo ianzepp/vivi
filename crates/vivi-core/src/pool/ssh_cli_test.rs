@@ -12,6 +12,7 @@ fn unshared(host: &str) -> SshCli {
         host: host.to_string(),
         extra: Vec::new(),
         control_dir: None,
+        owns_control_dir: true,
     }
 }
 
@@ -38,14 +39,20 @@ fn forwards_and_configured_remote_commands_cannot_change_the_call() {
     assert!(args.contains(&"RemoteCommand=none".to_string()));
 }
 
+/// The pump runs `vivi pool ...` as one subprocess per call, so a connection
+/// shared only inside one process was never reused: every call logged in
+/// again (the lab stress run: about 57 SSH logins per pump cycle). Runners in
+/// every process share one connection per destination.
 #[test]
-fn calls_share_one_connection_through_a_private_socket_that_ends_with_the_runner() {
+fn calls_share_one_connection_per_destination_with_every_vivi_process_of_this_user() {
     let cli = SshCli::new("pharos");
-    let dir = cli.control_dir.clone().expect("a private directory");
+    let dir = cli.control_dir.clone().expect("the shared directory");
+    assert_eq!(Some(dir.clone()), shared_control_dir());
     let args = cli.options();
     assert!(args.contains(&"ControlMaster=auto".to_string()));
-    let path = format!("ControlPath={}", dir.join("m").display());
+    let path = format!("ControlPath={}", dir.join("%C").display());
     assert!(args.contains(&path), "{path}: {args:?}");
+    assert!(args.contains(&format!("ControlPersist={PERSIST_SECS}")));
     let mode = std::fs::metadata(&dir).unwrap();
     assert_eq!(
         std::os::unix::fs::PermissionsExt::mode(&mode.permissions()) & 0o777,
@@ -53,7 +60,18 @@ fn calls_share_one_connection_through_a_private_socket_that_ends_with_the_runner
     );
     assert!(dir.as_os_str().len() < 80, "short enough for a socket path");
     drop(cli);
-    assert!(!dir.exists(), "the socket directory is removed");
+    assert!(dir.exists(), "the shared directory outlives one runner");
+}
+
+#[test]
+fn a_pinned_runner_keeps_a_private_socket_that_ends_with_it() {
+    let cli = SshCli::pinned("h", 2222, std::path::Path::new("/dev/null"));
+    let dir = cli.control_dir.clone().expect("a private directory");
+    assert_ne!(Some(dir.clone()), shared_control_dir());
+    let path = format!("ControlPath={}", dir.join("m").display());
+    assert!(cli.options().contains(&path));
+    drop(cli);
+    assert!(!dir.exists(), "the private directory is removed");
 }
 
 #[test]
@@ -75,13 +93,26 @@ fn a_missing_ssh_binary_is_named() {
 }
 
 #[test]
-fn two_runners_in_one_process_each_get_a_connection_of_their_own() {
+fn two_runners_for_one_host_share_its_connection() {
     let (a, b) = (SshCli::new("h"), SshCli::new("h"));
-    let (da, db) = (
-        a.control_dir.clone().unwrap(),
-        b.control_dir.clone().unwrap(),
-    );
-    assert_ne!(da, db);
-    drop(a);
-    assert!(db.exists(), "ending one leaves the other's socket");
+    assert_eq!(a.options(), b.options());
+}
+
+#[test]
+fn a_socket_directory_others_can_enter_or_a_symlink_is_never_shared() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let root = tempfile::tempdir().unwrap();
+    let uid = std::fs::metadata(root.path()).unwrap().uid();
+    let private = root.path().join("private");
+    std::fs::create_dir(&private).unwrap();
+    std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(private_to(&private, uid));
+    assert!(!private_to(&private, uid + 1), "someone else's directory");
+    let open = root.path().join("open");
+    std::fs::create_dir(&open).unwrap();
+    std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(!private_to(&open, uid), "others can enter it");
+    let link = root.path().join("link");
+    std::os::unix::fs::symlink(&private, &link).unwrap();
+    assert!(!private_to(&link, uid), "a symlink");
 }

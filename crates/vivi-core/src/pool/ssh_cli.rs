@@ -2,8 +2,12 @@
 //!
 //! Every call is `ssh` with the options a batch job needs (no prompt, a
 //! connect timeout, no forwards, no terminal) and one remote command. Calls
-//! to the same host share one connection through a private control socket in
-//! the user's temporary directory; the master ends with the provider.
+//! to the same host share one connection through a control socket in a
+//! directory every vivi process of this user shares (see
+//! [`shared_control_dir`]), so the pump's many short `vivi pool ...`
+//! subprocesses reuse one login per host; the connection ends after
+//! [`PERSIST_SECS`] idle. Without that directory a runner keeps a private one
+//! whose connection ends with it.
 //! [`Runner`] is the seam tests replace: its one argument is the remote
 //! command line.
 
@@ -19,7 +23,7 @@ use vivi_error::VivariumError;
 /// Seconds `ssh` waits to connect before it gives up (no key, no route).
 const CONNECT_TIMEOUT_SECS: &str = "10";
 /// Seconds an idle shared connection lives on after the last call.
-const PERSIST_SECS: &str = "60";
+pub(crate) const PERSIST_SECS: &str = "60";
 /// Longest control socket directory a Unix socket path can take with room to
 /// spare (the limit is about 104 bytes on some systems, and `ssh` appends a
 /// random suffix while binding).
@@ -37,6 +41,9 @@ pub struct SshCli {
     /// Directory holding the shared connection's control socket; none when
     /// no private directory could be made and every call connects on its own.
     control_dir: Option<PathBuf>,
+    /// Whether `control_dir` is this runner's own (removed, with its
+    /// connection, when the runner drops) rather than the shared one.
+    owns_control_dir: bool,
 }
 
 impl SshCli {
@@ -44,19 +51,32 @@ impl SshCli {
     /// private socket directory can be made.
     #[must_use]
     pub fn new(host: &str) -> Self {
+        let (control_dir, owns_control_dir) = match shared_control_dir() {
+            Some(dir) => (Some(dir), false),
+            None => (control_dir(), true),
+        };
         Self {
             host: host.to_string(),
             extra: Vec::new(),
-            control_dir: control_dir(),
+            control_dir,
+            owns_control_dir,
         }
     }
 
     /// A runner for `host` on `port` that trusts exactly the host keys in the
     /// file `known_hosts` and nothing else: strict checking, no other
     /// known-hosts file, no learning. A changed or missing key fails the call.
+    /// Its connection is never shared.
     #[must_use]
     pub fn pinned(host: &str, port: u16, known_hosts: &std::path::Path) -> Self {
-        let mut cli = Self::new(host);
+        // A private socket: a shared connection to the same address opened
+        // without the pin would carry this runner's calls past its check.
+        let mut cli = Self {
+            host: host.to_string(),
+            extra: Vec::new(),
+            control_dir: control_dir(),
+            owns_control_dir: true,
+        };
         cli.extra = vec![
             "-p".to_string(),
             port.to_string(),
@@ -112,17 +132,58 @@ impl SshCli {
         .to_vec();
         options.extend(self.extra.iter().cloned());
         if let Some(dir) = &self.control_dir {
-            options.extend([
-                "-o".to_string(),
-                "ControlMaster=auto".to_string(),
-                "-o".to_string(),
-                format!("ControlPath={}", dir.join("m").display()),
-                "-o".to_string(),
-                format!("ControlPersist={PERSIST_SECS}"),
-            ]);
+            options.extend(control_options(&self.control_path(dir)));
         }
         options
     }
+
+    /// The control socket in `dir`: one per destination in the shared
+    /// directory (`%C`, ssh's hash of host, port and user), the single `m` in
+    /// a private one.
+    fn control_path(&self, dir: &std::path::Path) -> PathBuf {
+        dir.join(if self.owns_control_dir { "m" } else { "%C" })
+    }
+}
+
+/// `ssh` options that share one connection per destination through
+/// `control_path`, kept open [`PERSIST_SECS`] after the last call.
+#[must_use]
+pub(crate) fn control_options(control_path: &std::path::Path) -> [String; 6] {
+    [
+        "-o".to_string(),
+        "ControlMaster=auto".to_string(),
+        "-o".to_string(),
+        format!("ControlPath={}", control_path.display()),
+        "-o".to_string(),
+        format!("ControlPersist={PERSIST_SECS}"),
+    ]
+}
+
+/// The control socket directory every vivi process of this user shares:
+/// `vivi-ssh-<uid>` in the temporary directory (or `/tmp` when that path is
+/// too long for a socket), made mode 0700. None unless it is a real directory
+/// owned by this user with no access for anyone else: a socket there lets its
+/// user run commands as this user on the remote host.
+#[must_use]
+pub(crate) fn shared_control_dir() -> Option<PathBuf> {
+    let mut base = std::env::temp_dir();
+    if base.as_os_str().len() > MAX_CONTROL_DIR {
+        base = PathBuf::from("/tmp");
+    }
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    let uid = unsafe { libc::geteuid() };
+    let dir = base.join(format!("vivi-ssh-{uid}"));
+    drop(std::fs::DirBuilder::new().mode(0o700).create(&dir));
+    private_to(&dir, uid).then_some(dir)
+}
+
+/// Whether `dir` is a real directory (not a symlink) owned by `uid` that no
+/// one else can enter.
+fn private_to(dir: &std::path::Path, uid: u32) -> bool {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    std::fs::symlink_metadata(dir).is_ok_and(|meta| {
+        meta.is_dir() && meta.uid() == uid && meta.permissions().mode() & 0o077 == 0
+    })
 }
 
 /// A fresh private directory for the control socket, or none (calls then
@@ -168,6 +229,11 @@ impl Runner for SshCli {
 impl Drop for SshCli {
     /// End the shared connection and remove its socket directory.
     fn drop(&mut self) {
+        // The shared directory's connections serve other processes too; they
+        // end on their own once idle.
+        if !self.owns_control_dir {
+            return;
+        }
         let Some(dir) = self.control_dir.take() else {
             return;
         };

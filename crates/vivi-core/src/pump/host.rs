@@ -617,14 +617,47 @@ pub fn test_ctx(dir: &Path, cfg: PumpConfig) -> (Ctx, Arc<FakeHost>) {
 /// A byte buffer shared with a reader thread.
 type SharedBuf = Arc<Mutex<Vec<u8>>>;
 
-/// Build the `bash -c <cmd>` command for `cmd`.
+/// Build the `bash -c <cmd>` command for `cmd`. Its Git reaches remotes over
+/// the shared SSH connections ([`git_ssh_command`]).
 fn bash_command(cmd: &str, cwd: Option<&Path>) -> Command {
     let mut command = Command::new("bash");
     command.arg("-c").arg(cmd);
     if let Some(dir) = cwd {
         command.current_dir(dir);
     }
+    if let Some(ssh) = git_ssh_command() {
+        command.env("GIT_SSH_COMMAND", ssh);
+    }
     command
+}
+
+/// The `GIT_SSH_COMMAND` the pump's commands run with: plain `ssh` sharing
+/// one connection per host through the control sockets the pool's own SSH
+/// calls use. A tick asks the lanes for ref tips dozens of times, and each
+/// fresh login cost about 185 ms in the lab, most of a 20-30 s pump cycle.
+/// None when the operator set `GIT_SSH_COMMAND` or `GIT_SSH`, or no private
+/// socket directory exists.
+fn git_ssh_command() -> Option<&'static str> {
+    static COMMAND: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    COMMAND
+        .get_or_init(|| {
+            if std::env::var_os("GIT_SSH_COMMAND").is_some()
+                || std::env::var_os("GIT_SSH").is_some()
+            {
+                return None;
+            }
+            let dir = crate::pool::ssh_cli::shared_control_dir()?;
+            let options = crate::pool::ssh_cli::control_options(&dir.join("%C"));
+            Some(format!(
+                "ssh {}",
+                options
+                    .iter()
+                    .map(|o| shell_quote(o))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ))
+        })
+        .as_deref()
 }
 
 /// Drain `reader` into `buf` until EOF; a full pipe can never hang the caller.

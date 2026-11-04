@@ -301,3 +301,31 @@ fn real_log_keeps_lines_whole_when_threads_log_at_once() {
         );
     }
 }
+
+/// The pump's Git reaches remotes over one shared SSH connection per host
+/// (the lab stress run: about 57 fresh logins per 20-30 s pump cycle, at about
+/// 185 ms each). An operator's own `GIT_SSH_COMMAND` or `GIT_SSH` wins.
+#[test]
+fn real_run_gives_git_the_shared_ssh_connection() {
+    let dir = tempdir().unwrap();
+    let host = RealHost::new(dir.path());
+    let out = host.run("printf %s \"$GIT_SSH_COMMAND\"", None, 10);
+    if std::env::var_os("GIT_SSH_COMMAND").is_some() || std::env::var_os("GIT_SSH").is_some() {
+        assert_eq!(
+            out.text,
+            std::env::var("GIT_SSH_COMMAND").unwrap_or_default(),
+            "the operator's own setting is left as it is"
+        );
+        return;
+    }
+    let shared = crate::pool::ssh_cli::shared_control_dir().expect("a shared socket directory");
+    assert!(out.text.starts_with("ssh "), "{}", out.text);
+    assert!(out.text.contains("ControlMaster=auto"), "{}", out.text);
+    assert!(
+        out.text
+            .contains(&format!("ControlPath={}", shared.join("%C").display())),
+        "{}",
+        out.text
+    );
+    assert!(out.text.contains("ControlPersist="), "{}", out.text);
+}
