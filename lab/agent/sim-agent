@@ -40,7 +40,8 @@ role's N-th call for the need (counted on this worker). Behaviors:
   residual       auditor: answers residual with one finding; judge: residual
 World switches: cto_answer = "rework"|"slice"|"plan" (head-cto before run 3),
 rework_strict = true (the rework slicer cuts only the slices its brief lists
-under "Slices that did not land"), and require_files on a slice or need (the
+under "Slices that did not land", or one fix slice when every slice landed),
+and require_files on a slice or need (the
 slicer escalates unless its checkout holds them: landed work it must see).
 """
 import os
@@ -275,11 +276,11 @@ def slicer(brief):
     mode = "rework" if re.search(r"\bmode\b[^\n]*\brework\b", brief) else "slice"
     if mode == "rework":
         if plan.get("world", {}).get("rework_strict"):
+            # Every slice landed and the need is red (a failing rung or the
+            # judge's block): one fix slice, as a real slicer would cut from
+            # the findings.
             left = unlanded(plan, brief)
-            if not left:
-                return ("+++\nanswer = \"escalate\"\nreason = 'lab stand-in (rework_strict): the brief "
-                        "names no slice that did not land, so there is nothing to cut'\n+++\nEscalated.\n")
-            return emit("rework", left, plan)
+            return emit("rework", left, plan) if left else rework_slicer(need_of(brief))
         left = holes(plan, brief)
         return emit("rework", left, plan) if left else rework_slicer(need_of(brief))
     slices = slices_of(plan, brief)
