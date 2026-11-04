@@ -428,6 +428,10 @@ def cto(brief):
     runs = re.search(r"^runs: (\d+)", brief, re.M)
     if runs and int(runs.group(1)) < 3:
         answer = scenario().get("world", {}).get("cto_answer", "rework")
+        if answer == "rework" and "rework is unavailable" in brief:
+            # The brief says there is no need branch yet: a CTO that reads
+            # it plans again.
+            answer = "plan"
         return (f"+++\nanswer = \"{answer}\"\n"
                 f"reason = 'lab ruling: {answer}'\nnew_fact = 'lab: run {runs.group(1)} failed'\n+++\n{answer}.\n")
     return ("+++\nanswer = \"lock\"\n"
