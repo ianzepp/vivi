@@ -21,6 +21,7 @@ use crate::pump::jobs::{JobSpec, JobStore, PoolJob};
 use crate::pump::store::step_payload::StepPayloadRow;
 use crate::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
 use vivi_error::VivariumError;
+use vivi_mail::letter::roles::{Slicer, SlicerAnswer, SlicerMode, parse_role_reply};
 
 type R = Result<(), VivariumError>;
 
@@ -382,6 +383,12 @@ fn a_rework_restart_run_reads_the_run_that_ended_at_the_cto() -> R {
     assert!(body.contains("## CTO ruling"), "{body}");
     assert!(body.contains("reason: R-WHY"), "{body}");
     assert!(body.contains("new_fact: X-FACT"), "{body}");
+    assert_slicer_footer(&body, SlicerMode::Rework, "default");
+    assert!(
+        body.find("new_fact: X-FACT").unwrap()
+            < body.find("The actual reply starts immediately").unwrap(),
+        "footer precedes the CTO ruling: {body}"
+    );
 
     Ok(())
 }
@@ -540,6 +547,47 @@ fn rework_brief(rig: &Rig) -> Result<String, VivariumError> {
     Ok(shipped_rework_job(rig)?.body.clone())
 }
 
+fn assert_slicer_footer(body: &str, mode: SlicerMode, target: &str) {
+    let footer = crate::pump::envelope::format::slicer(mode, target, "slice-n1-example");
+    assert!(body.ends_with(&footer), "missing complete footer: {body}");
+    let parsed: Vec<_> = envelopes(&footer)
+        .iter()
+        .filter_map(|example| parse_role_reply::<Slicer>(example).ok())
+        .collect();
+    assert_eq!(parsed.len(), 2, "{footer}");
+    let sliced = &parsed[0].front;
+    assert_eq!(sliced.answer, SlicerAnswer::Sliced);
+    assert_eq!(sliced.mode, mode);
+    assert_eq!(sliced.slice.len(), 1);
+    assert_eq!(sliced.slice[0].id, "slice-n1-example");
+    assert_eq!(sliced.slice[0].target, target);
+    assert!(!sliced.slice[0].title.trim().is_empty());
+    assert!(!sliced.slice[0].brief.trim().is_empty());
+    assert!(!sliced.slice[0].write_scope.is_empty());
+    assert!(sliced.slice[0].deps.is_empty());
+    assert_eq!(parsed[1].front.answer, SlicerAnswer::Escalate);
+    assert_eq!(parsed[1].front.mode, mode);
+}
+
+fn envelopes(text: &str) -> Vec<String> {
+    let mut inside = false;
+    let mut current = String::new();
+    let mut found = Vec::new();
+    for line in text.lines() {
+        if line == "+++" {
+            if inside {
+                found.push(format!("+++\n{}\n+++", current.trim_end()));
+                current.clear();
+            }
+            inside = !inside;
+        } else if inside {
+            current.push_str(line);
+            current.push('\n');
+        }
+    }
+    found
+}
+
 /// The target `sandbox` beside the primary `default`: a job bound to the need
 /// branch's own target, not the primary one.
 fn two_targets() -> PumpConfig {
@@ -626,6 +674,7 @@ fn a_rework_slicer_follows_the_target_stored_on_the_need_branch() -> R {
     assert_eq!(job.target.as_deref(), Some("sandbox"));
     assert_eq!(job.from_ref.as_deref(), Some(TIP));
     assert!(job.read_only);
+    assert_slicer_footer(&job.body, SlicerMode::Rework, "sandbox");
     assert!(
         job.extra_targets.contains(&String::from("default")),
         "{:?}",

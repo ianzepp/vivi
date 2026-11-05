@@ -4,6 +4,7 @@
 //! slice and gets no handler here.
 
 use crate::mailspace::shipped::SLICER_ROLE;
+use crate::pump::envelope::format;
 use crate::pump::flow::def::{FlowKind, NodeClass};
 use crate::pump::flow::handlers::{FlowMail, Registry};
 use crate::pump::flow::index::{StepRow, StepState};
@@ -11,6 +12,7 @@ use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
 use crate::pump::flow::step_inputs;
 use crate::pump::jobs::JobStore;
 use vivi_error::VivariumError;
+use vivi_mail::letter::roles::SlicerMode;
 
 /// The node this handler owns.
 const SLICE_NODE: &str = "slice";
@@ -36,13 +38,24 @@ impl StepHandler for SliceStep {
 /// The slicer's brief: mode, ids, targets, slice size and the admitted plan.
 fn brief(cx: &StartCx<'_>) -> Result<String, VivariumError> {
     let plan = admitted_plan(cx)?;
-    Ok(format!(
+    let targets = step_inputs::targets(cx.ctx);
+    let target = targets.first().ok_or_else(|| {
+        VivariumError::Config(String::from("slice brief has no configured target"))
+    })?;
+    let mut text = format!(
         "mode: slice\nneed: {}\nrun: {}\ntargets: {}\nslice size: aim for 5 to {} minutes per slice\n\nadmitted plan:\n{plan}",
         cx.run.need,
         cx.run.run,
-        step_inputs::targets(cx.ctx).join(", "),
+        targets.join(", "),
         cx.ctx.cfg.slice.minutes(),
-    ))
+    );
+    text.push_str("\n\n");
+    text.push_str(&format::slicer(
+        SlicerMode::Slice,
+        target,
+        &format!("slice-{}-example", cx.run.need),
+    ));
+    Ok(text)
 }
 
 /// The newest reply of the newest Done planner step: `plan2` when a run

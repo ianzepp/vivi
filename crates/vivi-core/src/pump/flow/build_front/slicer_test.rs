@@ -18,6 +18,7 @@ use crate::pump::state::State;
 use crate::pump::store::{DB_FILENAME, PumpStore};
 use crate::routing::RoutedRole;
 use vivi_error::VivariumError;
+use vivi_mail::letter::roles::{Slicer, SlicerAnswer, SlicerMode, parse_role_reply};
 
 type R = Result<(), VivariumError>;
 
@@ -132,7 +133,79 @@ fn start_is_a_read_only_slicer_job_with_the_plan_and_default_minutes() -> R {
         "{}",
         spec.body
     );
+    assert_slicer_footer(&spec.body, SlicerMode::Slice, "default");
+    assert!(
+        spec.body.find("admitted plan:\nPLAN-ONE").unwrap()
+            < spec
+                .body
+                .find("The actual reply starts immediately")
+                .unwrap(),
+        "footer precedes the admitted plan: {}",
+        spec.body
+    );
     Ok(())
+}
+
+#[test]
+fn configured_target_is_used_in_the_slice_example() -> R {
+    let mut cfg = PumpConfig::default();
+    cfg.targets.insert(
+        String::from("sandbox"),
+        crate::pump::config::PumpTarget {
+            path: String::from("pump-sandbox"),
+            main: String::from("vivi/main"),
+            ..crate::pump::config::PumpTarget::default()
+        },
+    );
+    let mut rig = rig_with(cfg)?;
+    planner_done(&mut rig, "plan", Some("PLAN-ONE"))?;
+
+    let spec = start(&rig)?;
+
+    assert!(spec.body.contains("targets: sandbox"), "{}", spec.body);
+    assert_slicer_footer(&spec.body, SlicerMode::Slice, "sandbox");
+    Ok(())
+}
+
+fn assert_slicer_footer(body: &str, mode: SlicerMode, target: &str) {
+    let footer = crate::pump::envelope::format::slicer(mode, target, "slice-n1-example");
+    assert!(body.ends_with(&footer), "missing complete footer: {body}");
+    let parsed: Vec<_> = envelopes(&footer)
+        .iter()
+        .filter_map(|example| parse_role_reply::<Slicer>(example).ok())
+        .collect();
+    assert_eq!(parsed.len(), 2, "{footer}");
+    let sliced = &parsed[0].front;
+    assert_eq!(sliced.answer, SlicerAnswer::Sliced);
+    assert_eq!(sliced.mode, mode);
+    assert_eq!(sliced.slice.len(), 1);
+    assert_eq!(sliced.slice[0].id, "slice-n1-example");
+    assert_eq!(sliced.slice[0].target, target);
+    assert!(!sliced.slice[0].title.trim().is_empty());
+    assert!(!sliced.slice[0].brief.trim().is_empty());
+    assert!(!sliced.slice[0].write_scope.is_empty());
+    assert!(sliced.slice[0].deps.is_empty());
+    assert_eq!(parsed[1].front.answer, SlicerAnswer::Escalate);
+    assert_eq!(parsed[1].front.mode, mode);
+}
+
+fn envelopes(text: &str) -> Vec<String> {
+    let mut inside = false;
+    let mut current = String::new();
+    let mut found = Vec::new();
+    for line in text.lines() {
+        if line == "+++" {
+            if inside {
+                found.push(format!("+++\n{}\n+++", current.trim_end()));
+                current.clear();
+            }
+            inside = !inside;
+        } else if inside {
+            current.push_str(line);
+            current.push('\n');
+        }
+    }
+    found
 }
 
 #[test]

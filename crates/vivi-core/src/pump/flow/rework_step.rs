@@ -8,6 +8,7 @@
 use serde_json::Value;
 
 use crate::mailspace::shipped::SLICER_ROLE;
+use crate::pump::envelope::format;
 use crate::pump::flow::def::FlowKind;
 use crate::pump::flow::fanout::{VERDICT_MERGED, VERDICT_NO_DEFECT, is_slice_row};
 use crate::pump::flow::handlers::{FlowMail, Registry};
@@ -23,6 +24,7 @@ use crate::pump::store::PumpStore;
 use crate::pump::store::step_payload::StepPayloadRow;
 use vivi_error::VivariumError;
 use vivi_mail::letter::roles::RoleKind;
+use vivi_mail::letter::roles::SlicerMode;
 
 /// The build node this handler overrides.
 const REWORK_NODE: &str = "rework1";
@@ -124,7 +126,17 @@ fn brief(cx: &StartCx<'_>, base: &SlicerBase) -> Result<String, VivariumError> {
             None => text.push_str("(no CTO ruling; an operator unlock restarted the run)"),
         }
     }
+    append_slicer_footer(&mut text, base, need);
     Ok(text)
+}
+
+fn append_slicer_footer(text: &mut String, base: &SlicerBase, need: &str) {
+    text.push_str("\n\n");
+    text.push_str(&format::slicer(
+        SlicerMode::Rework,
+        &base.target,
+        &format!("slice-{need}-example"),
+    ));
 }
 
 /// Every slice row of the runs whose slices are on the kept need branch.
