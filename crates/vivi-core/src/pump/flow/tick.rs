@@ -424,14 +424,26 @@ where
             if let Some(step) = rows.iter().find(|step| step.task == row.task) {
                 let result = self.apply_job(id, row);
                 self.step_unit(&row.task, &step.node, "collect", Some(id), result);
+                if !self.still_live()? {
+                    return Ok(());
+                }
             }
         }
         for step in self.scope_wait_rows()? {
             let result = self.release_one(&step);
             self.step_unit(&step.task, &step.node, "release", None, result);
+            if !self.still_live()? {
+                return Ok(());
+            }
         }
         self.settle_fanouts()?;
+        if !self.still_live()? {
+            return Ok(());
+        }
         self.start_steps()?;
+        if !self.still_live()? {
+            return Ok(());
+        }
         self.poll_waiting()?;
         if !self.still_live()? {
             return Ok(());
@@ -440,9 +452,12 @@ where
         self.check_overdue()
     }
 
-    /// Whether this run is still `live` after the step work: a job applied
-    /// this tick may have landed, restarted or withdrawn it, and an ended run
-    /// has no kind left to check and no overdue job to report.
+    /// Whether this run is still `live`: a result applied, a scope wait
+    /// released, a fanout settled or a step started this tick may have landed,
+    /// restarted or withdrawn it. An ended run opens no more work for its old
+    /// steps, so the tick stops collecting and scheduling at every such
+    /// boundary; an ended run has no kind left to check and no overdue job to
+    /// report.
     fn still_live(&self) -> Result<bool, VivariumError> {
         let rows = self.store.runs_of(&self.run.need)?;
         Ok(rows
@@ -835,3 +850,7 @@ mod registry_tests;
 #[cfg(test)]
 #[path = "tick_step_error_test.rs"]
 mod step_error_tests;
+
+#[cfg(test)]
+#[path = "tick_retired_test.rs"]
+mod retired_tests;

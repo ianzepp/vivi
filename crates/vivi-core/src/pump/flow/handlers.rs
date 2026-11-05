@@ -207,6 +207,9 @@ pub(crate) fn shipped<S: JobStore, M: FlowMail>(_ctx: &Ctx) -> Registry<S, M> {
     unlock::register(&mut registry);
     residual::register(&mut registry);
     build_front::register(&mut registry);
+    // Last: the dead-job sweep runs again after every phase that can ask for a
+    // restart, before the outer dispatch.
+    restart::register_cleanup(&mut registry);
     registry
 }
 

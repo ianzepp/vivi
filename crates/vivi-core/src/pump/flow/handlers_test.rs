@@ -6,6 +6,7 @@ use tempfile::{TempDir, tempdir};
 
 use super::{Registry, TickPhase};
 use crate::pump::config::PumpConfig;
+use crate::pump::flow::advance::restart;
 use crate::pump::flow::def::{FlowKind, FlowNode, NodeClass};
 use crate::pump::flow::fake_mail::FakeMail;
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
@@ -215,6 +216,38 @@ fn phases_come_back_in_registration_order() -> Result<(), VivariumError> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone();
     assert_eq!(ran, ["intake", "restart", "prune"]);
+    Ok(())
+}
+
+#[test]
+fn dead_run_cleanup_runs_after_every_phase_that_can_request_a_restart() -> Result<(), VivariumError>
+{
+    let rig = rig()?;
+    let registry = super::shipped::<Jobs, FakeMail>(&rig.ctx);
+    let names: Vec<&str> = registry.phases().iter().map(|p| p.name()).collect();
+    let at = |name: &str| {
+        names
+            .iter()
+            .position(|known| *known == name)
+            .unwrap_or_else(|| panic!("no phase {name} among {names:?}"))
+    };
+    // Recovery first: a restart left `restarting` by an earlier tick is resumed
+    // and its old jobs dropped before intake ranks the fresh needs.
+    assert!(at("restarts") < at("intake"), "{names:?}");
+    // Then the sweep repeats after every phase that can request a restart, so a
+    // restart those phases ask for retires the old run's jobs before dispatch.
+    for phase in [
+        "intake",
+        "branch-restarts",
+        "unlocks",
+        "operator-actions",
+        "thread-change",
+    ] {
+        assert!(
+            at(restart::CLEANUP) > at(phase),
+            "the dead-run cleanup must follow {phase}: {names:?}"
+        );
+    }
     Ok(())
 }
 

@@ -418,6 +418,57 @@ fn dead_runs_list_their_dispatched_jobs_once_and_late_results_close_out_quietly(
 }
 
 #[test]
+fn a_restarting_parent_retires_its_jobs_and_ignores_late_results() -> R {
+    let mut rig = rig()?;
+    rig.blocked_by("dep");
+    assert_eq!(rig.restart_at("rework1")?, RestartResult::Waiting);
+    let old_task = rig.store.steps_of(NEED, 1)?[0].task.clone();
+    let sentinel = rig.sentinel()?;
+    rig.add_job("j-pending", &old_task, 1)?;
+    rig.add_job("j-flying", &old_task, 1)?;
+    if let Some(job) = rig.jobs.jobs.get_mut("j-flying") {
+        job.status = JobStatus::Dispatched;
+    }
+
+    rig.tick()?;
+    assert_eq!(rig.state_of(1)?, run_state::RESTARTING);
+    assert!(
+        !rig.jobs.jobs.contains_key("j-pending"),
+        "a restarting parent keeps no pending job to dispatch later"
+    );
+    assert!(
+        rig.jobs.jobs.contains_key("j-flying"),
+        "dispatched ownership persists: the pool slot cannot be freed here"
+    );
+    let replies = rig.mail.notes(&sentinel, NoteWord::Abandoned)?;
+    assert_eq!(replies.len(), 1);
+    assert_eq!(replies[0].1.prose, "j-flying");
+
+    // A late terminal result of the parent is applied, never routed or raised.
+    if let Some(job) = rig.jobs.jobs.get_mut("j-flying") {
+        job.status = JobStatus::Finished;
+    }
+    rig.tick()?;
+    assert!(rig.jobs.jobs["j-flying"].applied_at.is_some());
+    assert_eq!(rig.state_of(1)?, run_state::RESTARTING);
+    assert_eq!(rig.store.runs_of(NEED)?.len(), 1, "no successor run");
+    assert!(
+        rig.store
+            .steps_of(NEED, 1)?
+            .iter()
+            .all(|row| row.state != StepState::Done),
+        "the late result advances no old step"
+    );
+    assert_eq!(
+        rig.mail.notes(&sentinel, NoteWord::Abandoned)?.len(),
+        1,
+        "the abandoned note is posted once"
+    );
+    assert_eq!(rig.exceptions(), "");
+    Ok(())
+}
+
+#[test]
 fn a_blocked_restart_waits_with_its_entry_and_starts_no_successor() -> R {
     let mut rig = rig()?;
     rig.blocked_by("dep");
