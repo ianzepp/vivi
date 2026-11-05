@@ -807,11 +807,11 @@ fn a_job_pins_the_stored_target_and_its_tip_when_it_is_not_the_primary_one() -> 
 // ---- the reslices phase ----
 
 const SPLIT_REPLY: &str = "+++\nanswer = \"sliced\"\nmode = \"split\"\n\n\
-[[slice]]\nid = \"A.1\"\ntitle = \"t1\"\nbrief = \"b1\"\ntarget = \"vivi\"\n\n\
-[[slice]]\nid = \"A.2\"\ntitle = \"t2\"\nbrief = \"b2\"\ntarget = \"vivi\"\n+++\n";
+[[slice]]\nid = \"A.1\"\ntitle = \"t1\"\nbrief = \"b1\"\ntarget = \"vivi\"\nwrite_scope = [\"crates/vivi-core/src\"]\n\n\
+[[slice]]\nid = \"A.2\"\ntitle = \"t2\"\nbrief = \"b2\"\ntarget = \"vivi\"\nwrite_scope = [\"crates/vivi-core/src\"]\n+++\n";
 
 const REWORK_REPLY: &str = "+++\nanswer = \"sliced\"\nmode = \"rework\"\n\n\
-[[slice]]\nid = \"A2\"\ntitle = \"t\"\nbrief = \"b\"\ntarget = \"vivi\"\n+++\n";
+[[slice]]\nid = \"A2\"\ntitle = \"t\"\nbrief = \"b\"\ntarget = \"vivi\"\nwrite_scope = [\"crates/vivi-core/src\"]\n+++\n";
 
 fn planted(id: &str) -> Slice {
     Slice {

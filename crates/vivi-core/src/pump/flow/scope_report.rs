@@ -43,12 +43,7 @@ pub(crate) fn changed(receipt: &str) -> Option<(usize, Vec<String>)> {
 /// entry (with or without a trailing slash) above it.
 #[must_use]
 pub(crate) fn covers(entry: &str, path: &str) -> bool {
-    let entry = entry.trim().trim_end_matches('/');
-    !entry.is_empty()
-        && (path == entry
-            || path
-                .strip_prefix(entry)
-                .is_some_and(|rest| rest.starts_with('/')))
+    crate::pump::flow::scope_policy::covers(entry, path)
 }
 
 /// The paths of `changed` that no entry of `scope` covers, in order.

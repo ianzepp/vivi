@@ -44,6 +44,7 @@ pub mod reslice_apply;
 pub mod rework_step;
 pub mod rung_step;
 pub mod scope;
+pub(crate) mod scope_policy;
 pub(crate) mod scope_report;
 pub mod slice_dispatch;
 pub mod slice_merge;

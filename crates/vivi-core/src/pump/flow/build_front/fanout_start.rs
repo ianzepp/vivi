@@ -80,19 +80,8 @@ fn latest_slices(
 /// duplicate id, unknown dependency or cycle. A store read error is an Err,
 /// not a problem.
 fn problems(cx: &StartCx<'_>, slices: &[Slice]) -> Result<Vec<String>, VivariumError> {
-    let known = step_inputs::targets(cx.ctx);
-    let mut out = Vec::new();
-    for slice in slices {
-        if !known.contains(&slice.target) {
-            out.push(format!(
-                "slice {} names unknown target {}",
-                slice.id, slice.target
-            ));
-        }
-        if slice.write_scope.iter().all(|path| path.trim().is_empty()) {
-            out.push(format!("slice {} has an empty write_scope", slice.id));
-        }
-    }
+    let mut out =
+        crate::pump::flow::scope_policy::declared_problems(slices, &step_inputs::targets(cx.ctx));
     if let Some(reason) = check_batch(cx.store, cx.run, slices)? {
         out.push(reason);
     }

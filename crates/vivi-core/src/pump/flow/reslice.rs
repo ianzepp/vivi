@@ -569,6 +569,12 @@ fn reply_of(
     if slicer.mode != wanted {
         return fail(format!("reply mode {:?} is not {wanted:?}", slicer.mode));
     }
+    let declared = crate::pump::flow::scope_policy::declared_problems(&slicer.slice, &targets(ctx));
+    if !declared.is_empty() {
+        let text = format!("reslice job {}: {}", job.id, declared.join("; "));
+        raise_once(ctx, SLICES_INVALID, &job.id, &text);
+        return Ok(None);
+    }
     if let Some(reason) = check_batch(store, run, &slicer.slice)? {
         let text = format!("reslice job {}: {reason}", job.id);
         raise_once(ctx, SLICES_INVALID, &job.id, &text);

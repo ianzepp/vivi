@@ -115,7 +115,7 @@ pub fn finish_grant(store: &PumpStore, task: &str) -> Result<(), VivariumError> 
 /// True when a scope entry holds `path`: the same path, or a directory entry
 /// (ending in `/`) that is a prefix of it.
 fn holds(entry: &str, path: &str) -> bool {
-    entry == path || (entry.ends_with('/') && path.starts_with(entry))
+    crate::pump::flow::scope_policy::covers(entry, path)
 }
 
 /// A request split by who holds its paths.
@@ -181,6 +181,15 @@ pub fn resolve(
             "design question: {}",
             req.reason
         )));
+    }
+    if req
+        .paths
+        .iter()
+        .any(|path| !crate::pump::flow::scope_policy::valid_path(path))
+    {
+        return Ok(Resolution::Rework(
+            "blocked-scope request contains an invalid repository path".to_owned(),
+        ));
     }
     let others = store.open_scopes_of_run(task, run)?;
     let Split {
