@@ -8,6 +8,7 @@ use tempfile::{TempDir, tempdir};
 use super::CtoStart;
 use crate::mailspace::pump_note::note_body;
 use crate::pump::config::PumpConfig;
+use crate::pump::envelope::format::role as shared_role_footer;
 use crate::pump::flow::def::{FlowKind, FlowNode, NodeClass};
 use crate::pump::flow::fake_mail::FakeMail;
 use crate::pump::flow::handlers::Registry;
@@ -21,6 +22,8 @@ use crate::pump::store::flow_links::SliceLink;
 use crate::pump::store::step_payload::StepPayloadRow;
 use crate::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
 use vivi_mail::letter::records::NoteWord;
+use vivi_mail::letter::review::{Cto, CtoAnswer};
+use vivi_mail::letter::roles::{RoleKind, parse_role_reply};
 
 const NEED: &str = "need-1";
 
@@ -143,6 +146,91 @@ fn two_runs(f: &Fixture, newest_answer: &str) -> RunRow {
     second
 }
 
+fn contextual_run_notice(body: &str) -> &str {
+    let end = body
+        .find("## Why the CTO was reached")
+        .expect("why section");
+    &body[..end]
+}
+
+fn assert_shared_footer(body: &str, late: bool) {
+    let expected = format!("\n## Reply format\n\n{}", shared_role_footer(RoleKind::Cto));
+    assert!(
+        body.ends_with(&expected),
+        "shared Cto footer must be final: {body}"
+    );
+    assert!(
+        body.contains("- research:")
+            && body.contains("- plan:")
+            && body.contains("- slice:")
+            && body.contains("- rework:")
+            && body.contains("- lock:")
+    );
+
+    let footer = body.strip_suffix(&expected).expect("footer suffix");
+    let shared = shared_role_footer(RoleKind::Cto);
+    let example = shared.split("Example:").nth(1).unwrap_or(&shared);
+    let example = example
+        .split("+++\n")
+        .nth(1)
+        .map(|tail| format!("+++\n{}", tail))
+        .expect("shared Cto example");
+    let parsed = parse_role_reply::<Cto>(&example).expect("valid Cto example");
+    assert!(
+        parsed
+            .front
+            .reason
+            .as_deref()
+            .is_some_and(|reason| !reason.trim().is_empty())
+    );
+    if late {
+        assert_ne!(parsed.front.answer, CtoAnswer::Lock);
+        assert!(
+            parsed
+                .front
+                .new_fact
+                .as_deref()
+                .is_some_and(|fact| !fact.trim().is_empty())
+        );
+    }
+    assert!(footer.contains("## Your words"));
+}
+
+#[test]
+fn complete_footer_is_final_for_early_and_late_runs_with_branch_context() {
+    for (run_num, with_branch) in [(1, false), (1, true), (3, false), (3, true)] {
+        let f = fixture();
+        let run = if run_num == 1 {
+            run_row(1, "plan", "live")
+        } else {
+            let first = run_row(1, "plan", "done");
+            f.store.insert_run(&first).unwrap();
+            run_row(3, "rework1", "live")
+        };
+        f.store.insert_run(&run).unwrap();
+        if with_branch {
+            f.store
+                .upsert_need_branch(&NeedBranchRow {
+                    need: NEED.into(),
+                    branch: format!("vivi/need/{NEED}"),
+                    base: None,
+                    status: "live".into(),
+                    run: run_num,
+                    target: "default".into(),
+                    priors: Vec::new(),
+                })
+                .unwrap();
+        }
+        let spec = start(&f, &run);
+        assert_shared_footer(&spec.body, run_num >= 3);
+        if with_branch {
+            assert!(spec.body.contains("A need-branch row is stored"));
+        } else {
+            assert!(spec.body.contains("No need-branch row is stored"));
+        }
+    }
+}
+
 fn start(f: &Fixture, run: &RunRow) -> JobSpec {
     let def = load(FlowKind::Build).unwrap();
     let cx = StartCx {
@@ -186,8 +274,9 @@ fn the_job_is_head_cto_with_run_count_and_step_verdicts() {
     assert!(spec.body.contains("audit1 t-audit1-r2 done verdict-two"));
     assert!(spec.body.contains("plan t-plan-r1 done planned"));
     assert!(!spec.body.contains("sentinel"));
-    assert!(!spec.body.contains("new_fact"));
+    assert!(!contextual_run_notice(&spec.body).contains("new_fact"));
     assert!(spec.body.contains("- lock:"));
+    assert_shared_footer(&spec.body, false);
 }
 
 #[test]
@@ -218,6 +307,7 @@ fn from_the_third_run_every_answer_but_lock_needs_a_new_fact() {
     let spec = start(&f, &third);
     assert!(spec.body.contains("runs: 3"));
     assert!(spec.body.contains("new_fact"));
+    assert_shared_footer(&spec.body, true);
 }
 
 #[test]

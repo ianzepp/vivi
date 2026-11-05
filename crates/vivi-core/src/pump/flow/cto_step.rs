@@ -122,6 +122,8 @@ fn brief(cx: &StartCx<'_>) -> Result<String, VivariumError> {
     out.push_str(&slice_attempt_records(cx)?);
     out.push_str(&branch_availability(cx)?);
     out.push_str(WORDS);
+    out.push_str("\n## Reply format\n\n");
+    out.push_str(&crate::pump::envelope::format::role(RoleKind::Cto));
     Ok(out)
 }
 
