@@ -69,6 +69,12 @@ fn bare_addresses(list: &str) -> Vec<String> {
         .collect()
 }
 
+/// Whether a stored message has no parseable To or Cc addresses.
+#[must_use]
+pub fn is_unaddressed(view: &StoredMessageView) -> bool {
+    recipients(view).is_empty()
+}
+
 /// The first bare lowercase address of a stored address list.
 pub(super) fn first_bare_address(list: &str) -> Option<String> {
     bare_addresses(list).into_iter().next()
@@ -132,6 +138,9 @@ impl Mailspace {
         let all = recipients(view);
         let remote = self.remote_recipients(view);
         if view.local_role == "sent" {
+            if is_unaddressed(view) {
+                return None;
+            }
             return Some(
                 remote
                     .first()

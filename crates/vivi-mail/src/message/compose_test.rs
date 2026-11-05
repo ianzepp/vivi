@@ -60,6 +60,43 @@ fn assert_no_hostname(eml: &str) {
 }
 
 #[test]
+fn compose_without_recipients_keeps_from_and_content() {
+    let draft = ComposeDraft {
+        from: "mind@abcd1234.local".into(),
+        to: Vec::new(),
+        cc: Vec::new(),
+        bcc: Vec::new(),
+        subject: "author only".into(),
+        body: "body text".into(),
+        html_body: None,
+    };
+    let attachment = FileAttachment {
+        filename: "note.txt".into(),
+        content_type: "text/plain".into(),
+        data: b"attachment".to_vec(),
+    };
+
+    let eml = build_compose_draft_with_attachments(&draft, &[attachment]).unwrap();
+    let parsed = mail_parser::MessageParser::default()
+        .parse(eml.as_bytes())
+        .unwrap();
+
+    assert_eq!(
+        parsed.from().unwrap().first().unwrap().address(),
+        Some("mind@abcd1234.local")
+    );
+    assert_eq!(parsed.subject(), Some("author only"));
+    assert_eq!(parsed.body_text(0).as_deref(), Some("body text\r\n"));
+    assert!(eml.contains("attachment"));
+}
+
+#[test]
+fn header_validation_still_requires_from() {
+    let error = validate_message_headers(b"Subject: no sender\r\n\r\nbody\r\n").unwrap_err();
+    assert!(error.to_string().contains("From"), "{error}");
+}
+
+#[test]
 fn message_id_right_hand_side_is_the_from_domain() {
     let eml = build_compose_draft(&draft("mind@abcd1234.local")).unwrap();
     assert_id_domain(&eml, "abcd1234.local");
