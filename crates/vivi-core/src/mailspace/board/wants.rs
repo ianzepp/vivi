@@ -14,6 +14,7 @@ use vivi_storage::storage::{Storage, StoredMessageView};
 pub(super) fn reopened_rows(
     storage: &Storage,
     account_identity: &HashMap<String, String>,
+    project_wide: bool,
 ) -> Result<Vec<StoredMessageView>, VivariumError> {
     let served: BTreeSet<String> = storage
         .item_metadata_values("serves")?
@@ -34,7 +35,7 @@ pub(super) fn reopened_rows(
         for mut row in storage.live_messages_for_content(&want.content_id)? {
             if row.local_role == "done"
                 && row.absorbed_at.is_none()
-                && account_identity.contains_key(&row.account)
+                && (project_wide || account_identity.contains_key(&row.account))
             {
                 row.local_role = "wants".into();
                 rows.push(row);

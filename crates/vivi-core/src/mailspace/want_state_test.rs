@@ -53,6 +53,39 @@ fn state(mailspace: &Mailspace, want: &str) -> WantState {
 }
 
 #[test]
+fn an_author_only_want_follows_its_serving_need() {
+    let (_tmp, mailspace) = space();
+    let want = mailspace
+        .send(SendRequest {
+            from: "mind".into(),
+            to: Vec::new(),
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: "unaddressed wish".into(),
+            body: want_body("q", "p"),
+            role: "wants".into(),
+            kind: Some("want".into()),
+            reply_to: None,
+        })
+        .unwrap()
+        .sent;
+    let initial = mailspace.want_state(&want).unwrap();
+    assert_eq!(initial.state, WantState::Open);
+    assert!(initial.serving.is_empty());
+
+    let serving = need(&mailspace, Some(&want), None);
+    assert_eq!(state(&mailspace, &want), WantState::Open);
+    close(&mailspace, &serving, None);
+    assert_eq!(state(&mailspace, &want), WantState::Done);
+    mailspace
+        .move_item("mind", &serving, "needs", None, "need reopen", None)
+        .unwrap();
+    let reopened = mailspace.want_state(&want).unwrap();
+    assert_eq!(reopened.state, WantState::Open);
+    assert_eq!(reopened.serving[0].handle, serving);
+}
+
+#[test]
 fn fold_follows_the_rule_table() {
     assert_eq!(fold(false, []), WantState::Open);
     assert_eq!(fold(true, []), WantState::Done);

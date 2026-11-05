@@ -28,6 +28,54 @@ fn send(mailspace: &Mailspace, role: &str, subject: &str) -> String {
         .handle
 }
 
+fn send_unaddressed(mailspace: &Mailspace, from: &str, role: &str, subject: &str) -> String {
+    mailspace
+        .send(SendRequest {
+            from: from.into(),
+            to: Vec::new(),
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: subject.into(),
+            body: vivi_mail::letter::fixture::body_for(role.trim_end_matches('s'), "body"),
+            role: role.into(),
+            kind: Some(role.trim_end_matches('s').into()),
+            reply_to: None,
+        })
+        .unwrap()
+        .sent
+}
+
+fn hold_work(
+    mailspace: &Mailspace,
+    account: &str,
+    role: &str,
+    kind: &str,
+    subject: &str,
+) -> String {
+    let body = vivi_mail::letter::fixture::body_for(kind, "body");
+    let bytes = format!(
+        "From: sender@remote.example\r\nTo: {account}\r\nSubject: {subject}\r\n\
+         Message-ID: <{subject}@remote.example>\r\nX-Vivi-Kind: {kind}\r\n\r\n{body}"
+    );
+    let storage = mailspace.storage().unwrap();
+    let stored = storage
+        .ingest_message(
+            &vivi_storage::storage::MessageIngestRequest {
+                account: account.into(),
+                local_role: role.into(),
+                read_state: false,
+                starred: false,
+                message_id_hint: None,
+                presented_id: None,
+                seed_hint: format!("{account}\0{subject}"),
+                remote: None,
+            },
+            bytes.as_bytes(),
+        )
+        .unwrap();
+    storage.display_handle(&stored.message_id).unwrap()
+}
+
 fn options() -> BoardOptions {
     BoardOptions {
         wants_cap: 10,
@@ -41,6 +89,140 @@ fn cto(board: &Board) -> &IdentityBoard {
         .iter()
         .find(|identity| identity.identity == "cto")
         .unwrap()
+}
+
+#[test]
+fn board_includes_author_only_and_non_roster_work() {
+    let (mailspace, _tmp) = roster();
+    let ceo_want = send_unaddressed(&mailspace, "ceo", "wants", "ceo wish");
+    let cto_task = send_unaddressed(&mailspace, "cto", "tasks", "cto task");
+    let addressed = send(&mailspace, "tasks", "addressed task");
+    let ghost = hold_work(&mailspace, "ghost", "needs", "need", "ghost need");
+    let foreign = hold_work(
+        &mailspace,
+        "agent@remote.example",
+        "tasks",
+        "task",
+        "foreign task",
+    );
+
+    let board = mailspace
+        .board(&BoardOptions {
+            with_process: true,
+            ..options()
+        })
+        .unwrap();
+    let ceo = board
+        .identities
+        .iter()
+        .find(|row| row.identity == "ceo")
+        .unwrap();
+    let cto = cto(&board);
+    let ghost_board = board
+        .identities
+        .iter()
+        .find(|row| row.identity == "ghost")
+        .unwrap();
+    let foreign_board = board
+        .identities
+        .iter()
+        .find(|row| row.identity == "agent@remote.example")
+        .unwrap();
+    assert_eq!(
+        ceo.wants
+            .iter()
+            .map(|item| item.handle.as_str())
+            .collect::<Vec<_>>(),
+        [ceo_want.as_str()]
+    );
+    assert_eq!(
+        cto.tasks
+            .iter()
+            .filter(|item| item.handle == cto_task)
+            .count(),
+        1
+    );
+    assert_eq!(
+        cto.tasks
+            .iter()
+            .filter(|item| item.handle == addressed)
+            .count(),
+        1
+    );
+    assert!(ceo.tasks.iter().all(|item| item.handle != addressed));
+    assert_eq!(ghost_board.needs[0].handle, ghost);
+    assert_eq!(foreign_board.tasks[0].handle, foreign);
+    assert_eq!(foreign_board.address, "agent@remote.example");
+    for non_roster in [ghost_board, foreign_board] {
+        assert!(non_roster.model.is_none() && non_roster.thinking.is_none());
+        assert!(non_roster.process.is_none());
+    }
+    assert_eq!(board.totals.wants_open, 1);
+    assert_eq!(board.totals.tasks_open, 3);
+    assert_eq!(board.totals.needs_open, 1);
+
+    let filtered = mailspace
+        .board(&BoardOptions {
+            for_identity: Some("ceo".into()),
+            ..options()
+        })
+        .unwrap();
+    assert_eq!(filtered.identities.len(), 1);
+    assert_eq!(filtered.identities[0].identity, "ceo");
+    assert_eq!(filtered.identities[0].wants[0].handle, ceo_want);
+    assert_eq!(filtered.totals.tasks_open, 0);
+    assert_eq!(filtered.totals.needs_open, 0);
+}
+
+#[test]
+fn unaddressed_want_follows_serving_needs() {
+    let (mailspace, _tmp) = roster();
+    let want = send_unaddressed(&mailspace, "ceo", "wants", "author-only wish");
+    let report = mailspace.want_state(&want).unwrap();
+    assert_eq!(report.state, crate::mailspace::want_state::WantState::Open);
+    assert!(report.serving.is_empty());
+
+    let need = serving_need(&mailspace, &want);
+    let board = mailspace.board(&options()).unwrap();
+    let author = board
+        .identities
+        .iter()
+        .find(|identity| identity.identity == "ceo")
+        .unwrap();
+    let item = &author.wants[0];
+    assert_eq!(item.handle, want);
+    assert_eq!(item.serving[0].handle, need);
+    assert_eq!(item.serving[0].state, "open");
+
+    close(&mailspace, &need);
+    assert_eq!(
+        mailspace.want_state(&want).unwrap().state,
+        crate::mailspace::want_state::WantState::Done
+    );
+    let board = mailspace.board(&options()).unwrap();
+    assert!(
+        board
+            .identities
+            .iter()
+            .find(|identity| identity.identity == "ceo")
+            .unwrap()
+            .wants
+            .is_empty()
+    );
+    mailspace
+        .move_item("ceo", &need, "needs", None, "need reopen", None)
+        .unwrap();
+    assert_eq!(
+        mailspace.want_state(&want).unwrap().state,
+        crate::mailspace::want_state::WantState::Open
+    );
+    let board = mailspace.board(&options()).unwrap();
+    let author = board
+        .identities
+        .iter()
+        .find(|identity| identity.identity == "ceo")
+        .unwrap();
+    assert_eq!(author.wants[0].serving[0].state, "open");
 }
 
 #[test]

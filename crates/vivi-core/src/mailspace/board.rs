@@ -1,13 +1,13 @@
 //! The mailspace board: open work per identity, goals, and optional graph,
 //! process and pump views. The CLI prints this model; a server serializes it.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use super::{GoalView, Mailspace};
+use super::{GoalView, Mailspace, effective_kind, is_unaddressed};
 use crate::role_schedule::{ScheduleReport, ScheduleState};
 use crate::role_status::ProcessReport;
 use vivi_error::VivariumError;
@@ -160,6 +160,7 @@ fn build_board(mailspace: &Mailspace, options: &BoardOptions) -> Result<Board, V
     let boards = build_identity_boards(
         mailspace,
         identities,
+        for_identity.is_none(),
         &cadence_runs,
         wants_cap,
         since,
@@ -183,6 +184,7 @@ fn build_board(mailspace: &Mailspace, options: &BoardOptions) -> Result<Board, V
 fn build_identity_boards(
     mailspace: &Mailspace,
     identities: Vec<String>,
+    project_wide: bool,
     cadence_runs: &BTreeMap<String, crate::pump::report::CadenceRunSummary>,
     wants_cap: usize,
     since: Option<DateTime<Utc>>,
@@ -190,16 +192,29 @@ fn build_identity_boards(
 ) -> Result<Vec<IdentityBoard>, VivariumError> {
     let storage = mailspace.storage()?;
     let scopes = board_identity_scopes(mailspace, &identities);
-    let account_identity = account_identity_map(&scopes);
+    let mut account_identity = account_identity_map(&scopes);
     let accounts = unique_scope_accounts(&scopes);
-    let mut messages = storage.list_messages_by_account_roles_raw(&accounts, &board_roles())?;
-    messages.extend(wants::reopened_rows(&storage, &account_identity)?);
+    let mut messages = if project_wide {
+        all_board_messages(&storage)?
+    } else {
+        storage.list_messages_by_account_roles_raw(&accounts, &board_roles())?
+    };
+    let mut events = board_events(&storage, &messages)?;
+    retain_board_work(&storage, &events, &mut messages)?;
+    messages.extend(wants::reopened_rows(
+        &storage,
+        &account_identity,
+        project_wide,
+    )?);
+    let identities = identities_with_holders(mailspace, identities, &messages, project_wide);
+    let scopes = board_identity_scopes(mailspace, &identities);
+    account_identity = account_identity_map(&scopes);
     apply_scoped_handles(&storage, &scopes, &account_identity, &mut messages)?;
     let ids: Vec<String> = messages
         .iter()
         .map(|message| message.message_id.clone())
         .collect();
-    let events = storage.list_mailspace_events_for_messages(&ids)?;
+    events = storage.list_mailspace_events_for_messages(&ids)?;
     let mut grouped = group_board_messages(messages, &account_identity);
     identities
         .into_iter()
@@ -217,6 +232,83 @@ fn build_identity_boards(
             )
         })
         .collect()
+}
+
+fn all_board_messages(storage: &Storage) -> Result<Vec<StoredMessageView>, VivariumError> {
+    let roles: HashSet<String> = ["tasks", "needs", "wants", "sent"]
+        .into_iter()
+        .map(String::from)
+        .collect();
+    Ok(storage
+        .list_messages()?
+        .into_iter()
+        .filter(|message| roles.contains(&message.local_role))
+        .collect())
+}
+
+fn board_events(
+    storage: &Storage,
+    messages: &[StoredMessageView],
+) -> Result<HashMap<String, Vec<MailspaceEvent>>, VivariumError> {
+    let ids: Vec<String> = messages
+        .iter()
+        .map(|message| message.message_id.clone())
+        .collect();
+    storage.list_mailspace_events_for_messages(&ids)
+}
+
+fn retain_board_work(
+    storage: &Storage,
+    events: &HashMap<String, Vec<MailspaceEvent>>,
+    messages: &mut Vec<StoredMessageView>,
+) -> Result<(), VivariumError> {
+    let mut work = Vec::new();
+    for mut message in messages.drain(..) {
+        let is_sent = message.local_role == "sent";
+        if is_sent && !is_unaddressed(&message) {
+            continue;
+        }
+        let item_events = events
+            .get(&message.message_id)
+            .map_or([].as_slice(), Vec::as_slice);
+        let kind = if is_sent {
+            let data = storage.read_listed_blob(&message.blob_relpath)?;
+            effective_kind(&message.local_role, &data, item_events)
+        } else {
+            effective_kind(&message.local_role, &[], item_events)
+        };
+        let Some(kind) = kind else {
+            continue;
+        };
+        if !matches!(kind.as_str(), "task" | "need" | "want") {
+            continue;
+        }
+        if is_sent {
+            message.local_role = format!("{kind}s");
+        }
+        work.push(message);
+    }
+    *messages = work;
+    Ok(())
+}
+
+fn identities_with_holders(
+    mailspace: &Mailspace,
+    mut identities: Vec<String>,
+    messages: &[StoredMessageView],
+    project_wide: bool,
+) -> Vec<String> {
+    if !project_wide {
+        return identities;
+    }
+    let known = account_identity_map(&board_identity_scopes(mailspace, &identities));
+    let holders: BTreeSet<String> = messages
+        .iter()
+        .filter(|message| !known.contains_key(&message.account))
+        .map(|message| message.account.clone())
+        .collect();
+    identities.extend(holders);
+    identities
 }
 
 /// The pump block: counts from `pump.db`, plus complete needs still open in
@@ -368,7 +460,7 @@ fn unique_scope_accounts(scopes: &[(String, Vec<String>)]) -> Vec<String> {
 }
 
 fn board_roles() -> Vec<String> {
-    ["tasks", "needs", "wants"]
+    ["tasks", "needs", "wants", "sent"]
         .into_iter()
         .map(String::from)
         .collect()
@@ -440,7 +532,7 @@ fn build_identity_board(
     };
     Ok(IdentityBoard {
         identity: identity.into(),
-        address: mailspace.address_for(identity),
+        address: board_address(mailspace, identity),
         model,
         thinking,
         actionable_open: tasks.len() + needs.len(),
@@ -452,6 +544,19 @@ fn build_identity_board(
         needs,
         wants,
     })
+}
+
+fn board_address(mailspace: &Mailspace, identity: &str) -> String {
+    if mailspace
+        .config
+        .identities
+        .iter()
+        .any(|known| known.name == identity)
+    {
+        mailspace.address_for(identity)
+    } else {
+        identity.to_string()
+    }
 }
 
 fn role_capacity(mailspace: &Mailspace, identity: &str) -> (Option<String>, Option<String>) {
@@ -479,10 +584,10 @@ fn role_process_status(
         .config
         .identities
         .iter()
-        .find(|known| known.name == identity);
-    let pid = role.and_then(|role| role.pid);
-    let host = role.and_then(|role| role.host.as_deref());
-    let harness = role.and_then(|role| role.harness.as_deref());
+        .find(|known| known.name == identity)?;
+    let pid = role.pid;
+    let host = role.host.as_deref();
+    let harness = role.harness.as_deref();
     Some(crate::role_status::probe_quick(pid, host, harness))
 }
 
