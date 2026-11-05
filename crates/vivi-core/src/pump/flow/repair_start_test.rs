@@ -8,6 +8,7 @@ use tempfile::{TempDir, tempdir};
 use super::RepairerStart;
 use crate::mailspace::pump_note::note_body;
 use crate::pump::config::PumpConfig;
+use crate::pump::envelope::format;
 use crate::pump::flow::advance::restart::restart;
 use crate::pump::flow::advance::start::start as start_run;
 use crate::pump::flow::def::FlowKind;
@@ -21,10 +22,13 @@ use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::store::step_payload::StepPayloadRow;
 use crate::pump::store::{DB_FILENAME, PumpStore};
 use crate::routing::RoutedRole;
+use std::collections::BTreeSet;
 use vivi_error::VivariumError;
 use vivi_mail::letter::fixture::repair_record_body;
 use vivi_mail::letter::records::{NoteWord, RecordFront, RecordKind};
 use vivi_mail::letter::render;
+use vivi_mail::letter::roles::{Repairer, RoleKind, parse_role_reply};
+use vivi_mail::letter::split;
 
 type R = Result<(), VivariumError>;
 
@@ -152,6 +156,51 @@ fn job(action: StartAction) -> Box<crate::pump::jobs::JobSpec> {
     }
 }
 
+fn envelopes(text: &str) -> Vec<String> {
+    let mut inside = false;
+    let mut current = String::new();
+    let mut found = Vec::new();
+    for line in text.lines() {
+        if line == "+++" {
+            if inside {
+                found.push(format!("+++\n{}\n+++", current.trim_end()));
+                current.clear();
+            }
+            inside = !inside;
+        } else if inside {
+            current.push_str(line);
+            current.push('\n');
+        }
+    }
+    found
+}
+
+fn assert_repairer_footer(body: &str) {
+    let footer = format::role(RoleKind::Repairer);
+    assert!(
+        body.ends_with(&footer),
+        "repairer footer is not final: {body}"
+    );
+    assert!(footer.contains("`cmd`, `result` = `pass` | `fail` | `skipped`"));
+    assert!(footer.contains("finite non-negative `seconds`"));
+    let examples = envelopes(&footer);
+    assert_eq!(examples.len(), 1, "{footer}");
+    let reply = parse_role_reply::<Repairer>(&examples[0]).unwrap();
+    assert_eq!(
+        reply.front.answer,
+        vivi_mail::letter::roles::RepairerAnswer::Built
+    );
+    let (front, _) = split(&examples[0]).unwrap();
+    let value: toml::Value = toml::from_str(front).unwrap();
+    let keys: BTreeSet<_> = value
+        .as_table()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(keys, BTreeSet::from(["answer", "change", "deviations"]));
+}
+
 #[test]
 fn attempt_one_cuts_a_repair_branch_from_the_main_tip() -> R {
     let rig = rig(true, &record())?;
@@ -170,6 +219,7 @@ fn attempt_one_cuts_a_repair_branch_from_the_main_tip() -> R {
     assert!(!spec.read_only);
     assert_eq!(spec.budget, 1800);
     assert!(spec.body.contains("Failing output:\nFAILED a::b"));
+    assert_repairer_footer(&spec.body);
     assert!(spec.body.contains(MAIN_A));
     assert!(!spec.body.contains("Prior attempt"));
     let row = rig.store.need_branch(NEED)?.expect("need_branches row");
@@ -208,6 +258,7 @@ fn attempt_two_reads_a_new_tip_and_names_the_rung_verdict() -> R {
     assert_eq!(spec.from_ref.as_deref(), Some(MAIN_B));
     assert_eq!(spec.branch.as_deref(), Some("vivi/repair/abcd1234-r1-a2"));
     assert!(spec.body.contains("Prior attempt"));
+    assert_repairer_footer(&spec.body);
     assert!(
         spec.body.contains("- rung1: Done, verdict fail"),
         "{}",

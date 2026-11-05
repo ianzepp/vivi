@@ -33,9 +33,9 @@ pub(crate) fn slicer(mode: SlicerMode, target: &str, id: &str) -> String {
 
 /// Render the narrowed auditor contract used after landed repairs.
 pub(crate) fn repair_audit() -> String {
-    let fields = "repair-audit auditor: answer = `clean_pass` | `residual`; repeated `[[finding]]` rows are optional and have exactly `id`, `content`, `paths`, `recheck_trigger`. Do not provide or invent a requirement inventory. A weakened-test finding ID starts with `weakened-test` (for example, `weakened-test-example`). Finding content, paths and trigger are literal free text where applicable.";
+    let fields = "repair-audit auditor: answer = `clean_pass` | `residual`; use `clean_pass` only when there are no findings and `residual` when findings are present. Repeated `[[finding]]` rows are optional and have exactly `id`, `content`, `paths`, `recheck_trigger`. Do not provide or invent a requirement inventory. IDs for findings about weakened, deleted, ignored or gated tests start with `weakened-test` (for example, `weakened-test-example`); the pump gives that prefix top priority. Finding content, paths and trigger are literal free text where applicable.";
     let clean = "Example clean pass (illustrative only):\n+++\nanswer = \"clean_pass\"\n+++";
-    let residual = "Example residual (illustrative only):\n+++\nanswer = \"residual\"\n[[finding]]\nid = 'weakened-test-example'\ncontent = 'A test was weakened and needs restoration.'\npaths = ['crates/example/src/example_test.rs']\nrecheck_trigger = 'Run the focused test after restoring its assertion.'\n+++";
+    let residual = "Example residual (illustrative only):\n+++\nanswer = \"residual\"\n[[finding]]\nid = 'weakened-test-example'\ncontent = 'Illustrative hypothetical: restore this test if an assertion was weakened.'\npaths = ['crates/example/src/example_test.rs']\nrecheck_trigger = 'Run the focused test after any such restoration.'\n+++";
     format!("{RULES}\n\n{fields}\n\n{clean}\n\n{residual}")
 }
 

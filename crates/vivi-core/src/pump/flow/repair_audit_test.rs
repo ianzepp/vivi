@@ -8,6 +8,7 @@ use tempfile::{TempDir, tempdir};
 use super::{job_id, register, run_key};
 use crate::mailspace::pump_note::note_body;
 use crate::pump::config::PumpConfig;
+use crate::pump::envelope::format;
 use crate::pump::flow::fake_mail::FakeMail;
 use crate::pump::flow::handlers::Registry;
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
@@ -17,13 +18,83 @@ use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::jobs::{JobOutcome, JobStatus, JobStore, PoolJob};
 use crate::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
 use crate::routing::{RoleRouting, RoutedRole};
+use std::collections::BTreeSet;
 use vivi_error::VivariumError;
 use vivi_mail::letter::fixture::repair_record_body;
 use vivi_mail::letter::records::{NoteWord, RecordFront, RecordKind};
 use vivi_mail::letter::render;
-use vivi_mail::letter::roles::RoleKind;
+use vivi_mail::letter::review::{Auditor, AuditorAnswer};
+use vivi_mail::letter::roles::{RoleKind, parse_role_reply};
+use vivi_mail::letter::split;
 
 type R = Result<(), VivariumError>;
+
+fn envelopes(text: &str) -> Vec<String> {
+    let mut inside = false;
+    let mut current = String::new();
+    let mut found = Vec::new();
+    for line in text.lines() {
+        if line == "+++" {
+            if inside {
+                found.push(format!("+++\n{}\n+++", current.trim_end()));
+                current.clear();
+            }
+            inside = !inside;
+        } else if inside {
+            current.push_str(line);
+            current.push('\n');
+        }
+    }
+    found
+}
+
+fn raw_front(example: &str) -> toml::Value {
+    let (front, _) = split(example).unwrap();
+    toml::from_str(front).unwrap()
+}
+
+fn assert_repair_audit_footer(body: &str) {
+    let footer = format::repair_audit();
+    assert!(body.ends_with(&footer), "audit footer is not final: {body}");
+    let examples = envelopes(&footer);
+    assert_eq!(examples.len(), 2, "{footer}");
+
+    let clean = parse_role_reply::<Auditor>(&examples[0]).unwrap();
+    assert_eq!(clean.front.answer, AuditorAnswer::CleanPass);
+    assert!(clean.front.requirement.is_empty());
+    assert!(clean.front.finding.is_empty());
+    let clean_front = raw_front(&examples[0]);
+    let clean_keys: BTreeSet<_> = clean_front
+        .as_table()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(clean_keys, BTreeSet::from(["answer"]));
+
+    let residual = parse_role_reply::<Auditor>(&examples[1]).unwrap();
+    assert_eq!(residual.front.answer, AuditorAnswer::Residual);
+    assert!(residual.front.requirement.is_empty());
+    assert_eq!(residual.front.finding.len(), 1);
+    assert!(residual.front.finding[0].id.starts_with("weakened-test"));
+    let residual_front = raw_front(&examples[1]);
+    let residual_table = residual_front.as_table().unwrap();
+    let keys: BTreeSet<_> = residual_table.keys().map(String::as_str).collect();
+    assert_eq!(keys, BTreeSet::from(["answer", "finding"]));
+    let finding = residual_table["finding"].as_array().unwrap()[0]
+        .as_table()
+        .unwrap();
+    let finding_keys: BTreeSet<_> = finding.keys().map(String::as_str).collect();
+    assert_eq!(
+        finding_keys,
+        BTreeSet::from(["content", "id", "paths", "recheck_trigger"])
+    );
+    assert!(footer.contains("Do not provide or invent a requirement inventory"));
+    assert!(footer.contains("only when there are no findings"));
+    assert!(footer.contains("when findings are present"));
+    assert!(footer.contains("IDs for findings about weakened, deleted, ignored or gated tests"));
+    assert!(footer.contains("hypothetical"));
+}
 
 const NEED: &str = "n1";
 const BASE: &str = "1111111111111111111111111111111111111111";
@@ -254,6 +325,7 @@ fn a_done_repair_run_with_fix_facts_enqueues_one_auditor_job() -> R {
         "{}",
         job.body
     );
+    assert_repair_audit_footer(&job.body);
     Ok(())
 }
 
@@ -296,6 +368,7 @@ fn an_open_record_adds_the_tested_tip_and_the_failing_tail() -> R {
     assert_eq!(job.target.as_deref(), Some("other"));
     assert!(job.body.contains("Tested tip: abc123"), "{}", job.body);
     assert!(job.body.contains("the failing tail"), "{}", job.body);
+    assert_repair_audit_footer(&job.body);
     Ok(())
 }
 
@@ -416,6 +489,7 @@ fn an_unreadable_open_record_names_the_range_only() -> R {
     let job = &rig.jobs.jobs[&job_id(NEED, 1)];
     assert_eq!(job.target.as_deref(), Some("vivi"));
     assert!(!job.body.contains("Failing output"), "{}", job.body);
+    assert_repair_audit_footer(&job.body);
     Ok(())
 }
 

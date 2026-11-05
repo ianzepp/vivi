@@ -16,7 +16,7 @@ use std::collections::BTreeSet;
 use serde_json::json;
 
 use crate::pump::attempt_record::hand_message;
-use crate::pump::envelope::refusal;
+use crate::pump::envelope::{format, refusal};
 use crate::pump::flow::fanout::VERDICT_MERGED;
 use crate::pump::flow::handlers::{FlowMail, Registry, TickPhase};
 use crate::pump::flow::index::run_state;
@@ -391,6 +391,8 @@ fn brief<M: FlowMail>(
         "\nCheck first for weakened, deleted, ignored or gated tests, then for \
          anything else the repair broke. Report findings in the auditor envelope.\n",
     );
+    text.push('\n');
+    text.push_str(&format::repair_audit());
     Ok((target, text))
 }
 

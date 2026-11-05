@@ -2,6 +2,7 @@
 //! main tip, and the need gets a `need_branches` row so prune can find it.
 
 use crate::mailspace::shipped::REPAIRER_ROLE;
+use crate::pump::envelope::format;
 use crate::pump::flow::def::{FlowKind, NodeClass};
 use crate::pump::flow::handlers::{FlowMail, Registry};
 use crate::pump::flow::index::StepRow;
@@ -119,6 +120,8 @@ fn brief(
     if attempt >= 2 {
         text.push_str(&prior_attempt(cx)?);
     }
+    text.push('\n');
+    text.push_str(&format::role(RoleKind::Repairer));
     Ok(text)
 }
 
