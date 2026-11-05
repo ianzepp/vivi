@@ -245,7 +245,7 @@ pub enum MergeAnswer {
 
 /// A merge step's envelope: the worker's claim and its judgment fields only.
 /// The published SHA and the merged fact come from the runner receipt.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Merge {
     pub answer: MergeAnswer,

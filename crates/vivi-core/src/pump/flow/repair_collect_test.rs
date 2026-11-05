@@ -225,6 +225,51 @@ fn a_built_job_with_a_pushed_branch_posts_the_attempt_facts_and_routes_to_the_ru
 }
 
 #[test]
+fn decimal_check_seconds_do_not_fail_a_published_repair() -> R {
+    let mut rig = rig()?;
+    let envelope = concat!(
+        "+++\n",
+        "answer = \"built\"\n",
+        "change = [\"crates/vivi-core/src/pump/flow/repair.rs\"]\n",
+        "\n",
+        "[[check]]\n",
+        "cmd = \"cargo check\"\n",
+        "result = \"pass\"\n",
+        "seconds = 0.0\n",
+        "\n",
+        "[[check]]\n",
+        "cmd = \"cargo test\"\n",
+        "result = \"pass\"\n",
+        "seconds = 12.5\n",
+        "+++\n",
+        "fixed",
+    );
+    rig.end(JobStatus::Finished, Some(receipt(&pushed(), envelope)));
+    rig.tick()?;
+    // Decimal check durations parse, the publish receipt holds, and the
+    // step routes to the rung as built.
+    let fix = rig.step("fix1")?;
+    assert_eq!(fix.state, StepState::Done);
+    assert_eq!(fix.verdict.as_deref(), Some("built"));
+    assert_eq!(rig.step("rung1")?.state, StepState::Pending);
+    // No envelope correction was queued: the pool keeps only the repairer
+    // job itself, of the ordinary repairer kind.
+    assert_eq!(rig.jobs.jobs.len(), 1, "{:?}", rig.jobs.jobs.keys());
+    assert!(
+        rig.jobs.jobs.values().all(|job| job.kind != KIND),
+        "{:?}",
+        rig.jobs.jobs.keys()
+    );
+    // And the collector raised no envelope-failed diagnostic.
+    assert!(
+        !rig.host_lines()
+            .iter()
+            .any(|line| line.contains(crate::pump::flow::collect::ENVELOPE_FAILED))
+    );
+    Ok(())
+}
+
+#[test]
 fn a_built_job_with_nothing_published_answers_failed() -> R {
     let mut rig = rig()?;
     rig.end(JobStatus::Finished, Some(receipt("", BUILT)));

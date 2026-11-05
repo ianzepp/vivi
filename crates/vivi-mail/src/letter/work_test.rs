@@ -143,6 +143,28 @@ fn missing_required_keys_are_refused() {
 }
 
 #[test]
+fn decimal_priority_and_run_are_refused() {
+    for priority in ["priority = 2.5\n", "priority = 2.0\n"] {
+        let front = format!("done_when = [\"done\"]\n{priority}");
+        match parse::<NeedFront>(&format!("+++\n{front}+++\n\nbody")) {
+            Err(LetterError::Toml { .. }) => {}
+            other => panic!("expected Toml for {front}, got {:?}", other.map(|e| e.body)),
+        }
+    }
+    for run in ["run = 3.5\n", "run = 3.0\n"] {
+        let front = format!("[step]\nneed = \"ab12\"\nnode = \"n\"\n{run}");
+        match parse::<TaskFront>(&format!("+++\n{front}+++\n\nbody")) {
+            Err(LetterError::Toml { .. }) => {}
+            other => panic!("expected Toml for {front}, got {:?}", other.map(|e| e.body)),
+        }
+    }
+    assert_eq!(full_need().priority, Some(-4));
+    assert_eq!(full_step().run, 3);
+    assert_eq!(round(&full_need()), full_need());
+    assert_eq!(round(&full_task()), full_task());
+}
+
+#[test]
 fn need_rules_name_the_key() {
     assert!(invalid::<NeedFront>("done_when = []\n").contains("done_when"));
     assert!(invalid::<NeedFront>("done_when = [\"a\", \" \"]\n").contains("done_when"));

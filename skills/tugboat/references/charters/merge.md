@@ -68,7 +68,8 @@ roles. The fields for this role are:
 - `design_change` (bool, default false): `true` when the conflict needs a design
   change. Use it with `conflict` only.
 - `[[check]]` tables, one per check you ran: `cmd`, `result` (`pass`, `fail` or
-  `skipped`), `seconds` (an integer).
+  `skipped`), `seconds` (a finite, non-negative number: integer or decimal,
+  e.g. `41.5`).
 
 Rules:
 

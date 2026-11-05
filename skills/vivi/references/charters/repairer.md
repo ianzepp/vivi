@@ -37,7 +37,7 @@ The envelope has these fields. Use no other keys.
   - `built`: you committed a fix that you believe turns the rung green.
   - `failed`: you could not find or make a fix. Say why in the notes.
 - `change`: a list of the paths you changed (reported only).
-- `[[check]]`: one table per check you ran, with `cmd`, `result` (`pass`, `fail` or `skipped`) and `seconds` (an integer).
+- `[[check]]`: one table per check you ran, with `cmd`, `result` (`pass`, `fail` or `skipped`) and `seconds` (a finite, non-negative number: integer or decimal, e.g. `41.5`).
 - `deviations`: a list of strings, one per place where you departed from the brief or made an assumption.
 
 Give no sha, ref, commit or exit code: the runner's publish receipt and git decide those. Write free text as TOML literal strings, `'...'`, which need no escapes. A literal string cannot contain a single quote, so rephrase the text if it would.

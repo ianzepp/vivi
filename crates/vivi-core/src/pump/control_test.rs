@@ -48,15 +48,18 @@ fn stopping_a_live_old_schema_pump_uses_the_legacy_stop_flag() {
     fs::create_dir_all(&home).unwrap();
     let project = project_with_pump_home(&home);
     let path = home.join(DB_FILENAME);
-    let store = PumpStore::open(&path).unwrap();
+    // The fixture owns the pump lock before it seeds, holding it for the whole
+    // simulated pump lifetime, so no sibling test's inherited descriptor can
+    // stand between seeding and the migration below.
+    let lock = File::create(home.join("lock")).unwrap();
+    lock.try_lock().unwrap();
+    let store = PumpStore::open_for_run(&path).unwrap();
     store.initialize_control("running").unwrap();
     drop(store);
     let conn = rusqlite::Connection::open(&path).unwrap();
     conn.pragma_update(None, "user_version", SCHEMA_VERSION - 1)
         .unwrap();
     drop(conn);
-    let lock = File::create(home.join("lock")).unwrap();
-    lock.try_lock().unwrap();
 
     set_project_mode(project.path(), PumpMode::Stopped).unwrap();
 
@@ -68,10 +71,16 @@ fn stopping_a_live_old_schema_pump_uses_the_legacy_stop_flag() {
         .unwrap();
     assert_eq!(version, SCHEMA_VERSION - 1);
     drop(conn);
-    drop(lock);
+
+    // The pump exits: release the lock explicitly. A duplicate of its
+    // descriptor stays open, as one inherited across fork and exec would, to
+    // prove initialization does not wait for every duplicate to close.
+    let inherited = lock.try_clone().unwrap();
+    lock.unlock().unwrap();
 
     assert_eq!(initialize(&home).unwrap().mode, PumpMode::Stopped);
     assert!(!home.join("STOP").exists());
+    drop(inherited);
 }
 
 #[test]
@@ -81,11 +90,11 @@ fn stopping_a_live_current_pump_writes_control_and_legacy_signal() {
     fs::create_dir_all(&home).unwrap();
     let project = project_with_pump_home(&home);
     let path = home.join(DB_FILENAME);
-    let store = PumpStore::open(&path).unwrap();
-    store.initialize_control("running").unwrap();
-    drop(store);
     let lock = File::create(home.join("lock")).unwrap();
     lock.try_lock().unwrap();
+    let store = PumpStore::open_for_run(&path).unwrap();
+    store.initialize_control("running").unwrap();
+    drop(store);
 
     set_project_mode(project.path(), PumpMode::Stopped).unwrap();
 
