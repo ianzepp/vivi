@@ -13,6 +13,12 @@ use crate::role_schedule::{self, state_label};
 use vivi_error::VivariumError;
 use vivi_util::duration::parse_duration_secs;
 
+mod check;
+mod command;
+
+pub use check::{CommandCheck, CommandExecution, fingerprint};
+pub use command::TargetChoice;
+
 /// The `state.extra` key holding the cadence state.
 pub const EXTRA_KEY: &str = "cadence";
 
@@ -56,6 +62,21 @@ pub struct RoleScan {
     pub last_signal_at: Option<String>,
     #[serde(default)]
     pub next_due_at: Option<u64>,
+    /// The role's configured shell command: a command check, not a model run.
+    #[serde(default)]
+    pub command: Option<String>,
+    /// The repository target the role itself names, before selection.
+    #[serde(default)]
+    pub target: Option<String>,
+    /// The selected target: the role's, else the pump's primary, else none.
+    #[serde(default)]
+    pub effective_target: Option<String>,
+    /// The main ref the selected target starts from.
+    #[serde(default)]
+    pub target_main: Option<String>,
+    /// The role names a target this pump does not configure.
+    #[serde(default)]
+    pub target_unavailable: bool,
 }
 
 /// One auto-run of a role: its durable job, task, timing, and outcome.
@@ -86,6 +107,9 @@ pub struct CadenceState {
     pub runs: BTreeMap<String, RoleRun>,
     #[serde(default)]
     pub scans: BTreeMap<String, RoleScan>,
+    /// Durable command-check state, separate from the replaceable runs.
+    #[serde(default)]
+    pub checks: BTreeMap<String, CommandCheck>,
 }
 
 /// Read the cadence state, falling back to defaults for absent or bad payloads.
@@ -115,6 +139,9 @@ pub fn backoff_secs(attempt: u32) -> u64 {
 /// read-only, whatever the role's configured kind or read-only override.
 #[must_use]
 pub fn launchable(role: &RoleScan, previous: Option<&RoleRun>, now: u64) -> bool {
+    if role.command.is_some() || role.target_unavailable {
+        return false;
+    }
     let Some(cadence) = role.cadence.as_deref() else {
         return false;
     };
@@ -163,6 +190,7 @@ pub fn prepare_due(ctx: &Ctx, st: &mut State) {
     let now = ctx.now();
     let mut cadence = state(st);
     complete_runs(st, &mut cadence, now);
+    command::absorb(st, &mut cadence, now);
     let Some(open) = crate::pump::record::open_mailspace(ctx) else {
         ctx.log("cadence scan skipped: no mailspace");
         set_state(st, &cadence);
@@ -171,6 +199,16 @@ pub fn prepare_due(ctx: &Ctx, st: &mut State) {
     let mailspace = open.lock();
     let scans = scan_roles(ctx, &mailspace, now);
     for scan in scans.values() {
+        if scan.command.is_some() {
+            if !command::ready(st, scan, cadence.checks.get(&scan.name), now) {
+                continue;
+            }
+            let Ok(role) = mailspace.role_view(&scan.name) else {
+                continue;
+            };
+            command::enqueue(ctx, st, &mut cadence, &role, scan, now);
+            continue;
+        }
         let previous = cadence.runs.get(&scan.name);
         if !launchable(scan, previous, now) {
             continue;
@@ -203,7 +241,15 @@ pub fn status_lines(ctx: &Ctx, st: &State) -> Vec<String> {
                 .runs
                 .get(name)
                 .map_or_else(|| String::from("none"), |run| run_status(run));
-            let status = if !scan.has_charter {
+            let status = if scan.target_unavailable {
+                "skipped-target-unavailable"
+            } else if scan.command.is_some() {
+                if command::ready(st, scan, cadence.checks.get(name), now) {
+                    "command-ready"
+                } else {
+                    "command-wait"
+                }
+            } else if !scan.has_charter {
                 "skipped-no-charter"
             } else if scan.open_wants >= MAX_OPEN_WANTS {
                 "skipped-open-wants-cap"
@@ -256,7 +302,7 @@ fn scan_roles(ctx: &Ctx, mailspace: &Mailspace, now: u64) -> BTreeMap<String, Ro
         };
         scans.insert(
             role.name.clone(),
-            role_scan(role, schedule, open_wants, open_needs, now),
+            role_scan(ctx, role, schedule, open_wants, open_needs, now),
         );
     }
     scans
@@ -277,6 +323,7 @@ pub(crate) fn open_want_count(mailspace: &Mailspace, role: &str) -> Result<usize
 }
 
 fn role_scan(
+    ctx: &Ctx,
     role: RoleView,
     schedule: role_schedule::ScheduleReport,
     open_wants: usize,
@@ -284,10 +331,19 @@ fn role_scan(
     now: u64,
 ) -> RoleScan {
     let next_due_at = next_due_at(&schedule, now);
+    let choice = command::target_choice(ctx, role.target.as_deref());
     RoleScan {
         name: role.name,
         kind: role.kind,
         status: role.status,
+        command: role.command,
+        target: role.target,
+        effective_target: match &choice {
+            command::TargetChoice::Named { id, .. } => Some(id.clone()),
+            command::TargetChoice::Legacy | command::TargetChoice::Unavailable { .. } => None,
+        },
+        target_main: Some(command::main_of(ctx, &choice)),
+        target_unavailable: command::unavailable(&choice),
         cadence: role.cadence,
         pool: role.pool,
         open_wants,
@@ -378,7 +434,8 @@ fn finish_cadence_spec(
     let mut spec = JobSpec::new(id, kind, role.name.clone(), subject, body);
     spec.budget = ctx.cfg.dispatch.budget;
     spec.read_only = true;
-    spec.from_ref = Some(ctx.cfg.main.clone());
+    let choice = command::target_choice(ctx, role.target.as_deref());
+    command::apply_target(&mut spec, ctx, &choice);
     spec.payload = serde_json::json!({
         "cadence": role.cadence,
         "scheduled_at": now,
@@ -445,8 +502,17 @@ fn cadence_run_text(role: &RoleView, now: u64) -> String {
 
 fn complete_runs(st: &mut State, cadence: &mut CadenceState, now: u64) {
     let mut apply = Vec::new();
-    for run in cadence.runs.values_mut() {
+    for (name, run) in &mut cadence.runs {
         if run.job.is_empty() {
+            continue;
+        }
+        // A command job is reported and settled by its own check state; the
+        // legacy run path must never consume it as a model result.
+        if cadence
+            .scans
+            .get(name)
+            .is_some_and(|scan| scan.command.is_some())
+        {
             continue;
         }
         if let Some(task) = st.jobs.get(&run.job).and_then(|job| job.task.clone()) {
