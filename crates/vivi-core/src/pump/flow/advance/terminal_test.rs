@@ -1,6 +1,8 @@
 //! Tests for `finish` (through `advance`) and [`super::withdraw`] over the
 //! fake mail port and a real pump store.
 
+use std::collections::BTreeMap;
+
 use serde_json::json;
 use tempfile::{TempDir, tempdir};
 
@@ -11,12 +13,14 @@ use crate::pump::flow::advance::terminal::Finished;
 use crate::pump::flow::advance::{Advanced, advance};
 use crate::pump::flow::def::{FlowDef, FlowKind, FlowNode};
 use crate::pump::flow::fake_mail::{Call, FakeMail};
+use crate::pump::flow::handlers::Registry;
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::load::load;
 use crate::pump::flow::mail::{MailReader, MailWriter, NeedStatus, TaskState, TaskStatus};
 use crate::pump::flow::outcome::Outcome;
-use crate::pump::flow::tick::OPERATOR_HOLD;
+use crate::pump::flow::tick::{OPERATOR_HOLD, tick_with};
 use crate::pump::host::{Ctx, test_ctx};
+use crate::pump::jobs::{JobStore, PoolJob};
 use crate::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
 use vivi_error::VivariumError;
 use vivi_mail::letter::fixture::{sentinel_body, step_body};
@@ -25,6 +29,21 @@ use vivi_mail::letter::work::StepFront;
 type R = Result<(), VivariumError>;
 
 const NEED: &str = "n1";
+
+#[derive(Default)]
+struct Jobs {
+    jobs: BTreeMap<String, PoolJob>,
+}
+
+impl JobStore for Jobs {
+    fn jobs(&self) -> &BTreeMap<String, PoolJob> {
+        &self.jobs
+    }
+
+    fn jobs_mut(&mut self) -> &mut BTreeMap<String, PoolJob> {
+        &mut self.jobs
+    }
+}
 
 struct Rig {
     _dir: TempDir,
@@ -461,6 +480,34 @@ fn a_blocked_restart_terminal_queues_the_restart_and_keeps_one_intent() -> R {
             .iter()
             .all(|r| r.verdict.as_deref() != Some(OPERATOR_HOLD)),
         "a prerequisite wait is not an operator hold"
+    );
+
+    // The prerequisite lands and one tick finishes the queued restart: the
+    // saved entry is used, exactly one successor appears, and no second
+    // operator action is asked for.
+    MailWriter::close_need(&mut rig.mail, "dep", "landed")?;
+    rig.mail.set_prerequisites(NEED, &[]);
+    let reopened = PumpStore::open(&rig._dir.path().join(DB_FILENAME))?;
+    assert_eq!(
+        reopened.restart_entry(NEED, 1)?.as_deref(),
+        Some("rework1"),
+        "the requested entry survives a reopened store"
+    );
+    let mut jobs = Jobs::default();
+    let mut registry = Registry::new();
+    crate::pump::flow::intake::register(&mut registry);
+    crate::pump::flow::advance::restart::register(&mut registry);
+    tick_with(&rig.ctx, &mut jobs, &reopened, &mut rig.mail, &registry)?;
+
+    let runs = reopened.runs_of(NEED)?;
+    assert_eq!(runs.len(), 2, "exactly one successor");
+    assert_eq!((runs[1].run, runs[1].entry.as_str()), (2, "rework1"));
+    assert_eq!(runs[1].state, "live");
+    assert_eq!(runs[0].state, "superseded");
+    assert_eq!(
+        reopened.steps_of(NEED, 2)?.len(),
+        2,
+        "one sentinel and one entry step"
     );
     Ok(())
 }

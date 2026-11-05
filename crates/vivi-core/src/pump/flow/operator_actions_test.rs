@@ -562,5 +562,22 @@ fn a_blocked_replan_waits_and_raises_no_refusal() -> R {
         alarms,
         "a spent letter raises nothing again"
     );
+
+    // The prerequisite lands: one intake tick starts the successor at the
+    // saved entry, with no second operator action and no new letter.
+    rig.mail.set_prerequisites(&need, &[]);
+    let mut flow = Registry::new();
+    crate::pump::flow::intake::register(&mut flow);
+    for phase in flow.phases() {
+        phase.run(&rig.ctx, &mut rig.jobs, &rig.store, &mut rig.mail)?;
+    }
+    let runs = rig.store.runs_of(&need)?;
+    assert_eq!(runs.len(), 2, "exactly one successor");
+    assert_eq!(
+        (runs[1].state.as_str(), runs[1].entry.as_str()),
+        ("live", "plan")
+    );
+    assert_eq!(runs[0].state, "superseded");
+    assert_eq!(rig.exceptions(), alarms, "the queue raises nothing new");
     Ok(())
 }

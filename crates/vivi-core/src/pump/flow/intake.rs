@@ -11,6 +11,11 @@
 //! ranking and consumes no slot, and a lower-ranked eligible need fills the
 //! slot meanwhile.
 //!
+//! A build parked `restarting` with a saved entry and no successor is a queued
+//! admission candidate of its own: it ranks with the fresh needs by the same
+//! key, its parent takes no cap slot, and the successor starts here at the
+//! saved entry after a fresh assessment, never in the restart phase.
+//!
 //! Assumption: the target of a repair-kind need is read from the `target` of
 //! the open pump record's front matter, which is written together with
 //! `kind = "repair"`.
@@ -19,11 +24,12 @@ use std::collections::BTreeMap;
 
 use chrono::DateTime;
 
+use crate::pump::flow::advance::restart::{RestartResult, finish_deferred};
 use crate::pump::flow::advance::start::{resume, start};
 use crate::pump::flow::build_prereq::assess;
 use crate::pump::flow::def::FlowKind;
 use crate::pump::flow::handlers::{FlowMail, Registry, TickPhase};
-use crate::pump::flow::index::run_state;
+use crate::pump::flow::index::{RunRow, run_state};
 use crate::pump::flow::kind;
 use crate::pump::flow::load::load;
 use crate::pump::flow::mail::{MailReader, NeedStatus};
@@ -65,6 +71,16 @@ pub(crate) struct Candidate {
     /// Record age key: the record's epoch seconds (older sorts first), or
     /// `u64::MAX` when the date does not parse.
     pub age: u64,
+    /// The saved restart this candidate finishes instead of starting run one.
+    pub restart: Option<Parked>,
+}
+
+/// A build parked `restarting`: the run its successor replaces and the entry
+/// the successor starts at.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Parked {
+    pub run: u32,
+    pub entry: String,
 }
 
 /// The needs to start, in rank order.
@@ -126,11 +142,49 @@ impl<S: JobStore, M: FlowMail> TickPhase<S, M> for Intake {
             .max_live_runs
             .map(|n| usize::try_from(n).unwrap_or(usize::MAX));
         let found = candidates(ctx, store, mail)?;
+        let parked: BTreeMap<String, Parked> = found
+            .iter()
+            .filter_map(|c| c.restart.clone().map(|p| (c.need.clone(), p)))
+            .collect();
         for need in select(found, active, cap, &busy) {
-            start(ctx, store, mail, &need, None)?;
+            match parked.get(&need) {
+                Some(saved) => start_parked(ctx, store, mail, &need, saved)?,
+                None => {
+                    start(ctx, store, mail, &need, None)?;
+                }
+            }
         }
         Ok(())
     }
+}
+
+/// Start the successor a parked restart asked for, at its saved entry, after a
+/// fresh prerequisite assessment; a restart still blocked stays queued.
+fn start_parked<M: FlowMail>(
+    ctx: &Ctx,
+    store: &PumpStore,
+    mail: &mut M,
+    need: &str,
+    saved: &Parked,
+) -> Result<(), VivariumError> {
+    let Some(old) = store
+        .runs_of(need)?
+        .into_iter()
+        .find(|r| r.run == saved.run)
+    else {
+        ctx.log(&format!(
+            "flow intake: need {need} r{} is gone, so its restart is dropped",
+            saved.run
+        ));
+        return Ok(());
+    };
+    if finish_deferred(ctx, store, mail, &old, &saved.entry)? == RestartResult::Waiting {
+        ctx.log(&format!(
+            "flow intake: need {need} r{} still waits before its successor",
+            saved.run
+        ));
+    }
+    Ok(())
 }
 
 /// Resume every `starting` run; past the stuck limit raise the alarm once.
@@ -168,6 +222,10 @@ fn resume_starting<M: FlowMail>(ctx: &Ctx, store: &PumpStore, mail: &mut M) {
 
 /// The count of non-repair runs under the cap and the targets of repair-kind
 /// runs in flight (repair runs use no cap slot).
+///
+/// A restarting parent takes no slot of its own: a committed successor is
+/// counted as that successor's run, and a parked build is counted only when
+/// its queue position is picked.
 fn in_flight<M: FlowMail>(
     store: &PumpStore,
     mail: &M,
@@ -178,12 +236,29 @@ fn in_flight<M: FlowMail>(
         for run in store.runs_in_state(state)? {
             if run.kind == FlowKind::Repair.name() {
                 busy.push(target_of(mail, &run.need)?);
-            } else {
+            } else if state != run_state::RESTARTING || !parent_takes_no_slot(store, &run)? {
                 active += 1;
             }
         }
     }
     Ok((active, busy))
+}
+
+/// Whether a restarting run occupies no slot of its own: its successor is
+/// already committed, or it is a build parked for intake at a saved entry.
+fn parent_takes_no_slot(store: &PumpStore, run: &RunRow) -> Result<bool, VivariumError> {
+    if has_successor(store, run)? {
+        return Ok(true);
+    }
+    Ok(run.kind == FlowKind::Build.name() && store.restart_entry(&run.need, run.run)?.is_some())
+}
+
+/// Whether a newer starting or live run of the same need exists, so the
+/// restart already started its successor.
+fn has_successor(store: &PumpStore, run: &RunRow) -> Result<bool, VivariumError> {
+    Ok(store.runs_of(&run.need)?.iter().any(|row| {
+        row.run > run.run && matches!(row.state.as_str(), run_state::STARTING | run_state::LIVE)
+    }))
 }
 
 /// Drop every queued wait whose need is done, whose record closed or was
@@ -221,8 +296,8 @@ fn stale<M: MailReader>(mail: &M, wait: &BuildWait) -> Result<bool, VivariumErro
     Ok(kind::of(Some(&body), &marks) != FlowKind::Build)
 }
 
-/// The needs with an open record, an open need state, no run in flight and
-/// an admitted build, with their rank inputs.
+/// The needs with an open record, an open need state and a slot they may
+/// fill, with their rank inputs.
 fn candidates<M: FlowMail>(
     ctx: &Ctx,
     store: &PumpStore,
@@ -232,54 +307,98 @@ fn candidates<M: FlowMail>(
     let mut found = Vec::new();
     warn_unreadable(ctx, mail)?;
     for (need, date) in mail.open_record_needs()? {
-        if has_run_in_flight(store, &need)? {
-            continue;
+        if let Some(candidate) = candidate(ctx, store, mail, &need, &date, &priorities)? {
+            found.push(candidate);
         }
-        let record = MailReader::open_record(mail, &need)?;
-        let handle = record.as_ref().map_or("", |(handle, _)| handle.as_str());
-        if mail.need_state(&need)? != NeedStatus::Open {
-            raise_once(
-                ctx,
-                RECORD_UNUSABLE,
-                &need,
-                &format!(
-                    "need {need} has open pump record {handle} but the need is done: expected \
-                     an open need; close the record with `vivi pump done {handle}`"
-                ),
-            );
-            continue;
-        }
-        if let Some(text) = mail.need_letter_error(&need)? {
-            raise_once(ctx, LETTER_INVALID, &need, &text);
-            continue;
-        }
-        let marks = mail.need_marks(&need)?;
-        let body = record.map(|(_, body)| body);
-        let flow_kind = kind::of(body.as_deref(), &marks);
-        if let Err(error) = load(flow_kind) {
-            raise_once(ctx, FLOW_INVALID, &need, &error.to_string());
-            continue;
-        }
-        let repair = flow_kind == FlowKind::Repair;
-        let target = match body.as_deref() {
-            Some(text) if repair => target_line(text),
-            _ => String::new(),
-        };
-        if repair && !known_target(ctx, &need, &target) {
-            continue;
-        }
-        if !admitted(ctx, store, mail, &need) {
-            continue;
-        }
-        found.push(Candidate {
-            repair,
-            target,
-            priority: priorities.get(&need).copied().unwrap_or(0),
-            age: age_of(&date),
-            need,
-        });
     }
     Ok(found)
+}
+
+/// One open-record need as a candidate, or `None` when the flow cannot act on
+/// it this tick: a done need, an invalid letter, an unusable record, a run in
+/// flight with no parked restart, or a blocked build.
+fn candidate<M: FlowMail>(
+    ctx: &Ctx,
+    store: &PumpStore,
+    mail: &M,
+    need: &str,
+    date: &str,
+    priorities: &BTreeMap<String, i64>,
+) -> Result<Option<Candidate>, VivariumError> {
+    let runs = store.runs_of(need)?;
+    let record = MailReader::open_record(mail, need)?;
+    let handle = record.as_ref().map_or("", |(handle, _)| handle.as_str());
+    if mail.need_state(need)? != NeedStatus::Open {
+        raise_once(ctx, RECORD_UNUSABLE, need, &done_text(need, handle));
+        return Ok(None);
+    }
+    if let Some(text) = mail.need_letter_error(need)? {
+        raise_once(ctx, LETTER_INVALID, need, &text);
+        return Ok(None);
+    }
+    let marks = mail.need_marks(need)?;
+    let body = record.map(|(_, body)| body);
+    let flow_kind = kind::of(body.as_deref(), &marks);
+    if let Err(error) = load(flow_kind) {
+        raise_once(ctx, FLOW_INVALID, need, &error.to_string());
+        return Ok(None);
+    }
+    let repair = flow_kind == FlowKind::Repair;
+    let target = match body.as_deref() {
+        Some(text) if repair => target_line(text),
+        _ => String::new(),
+    };
+    if repair && !known_target(ctx, need, &target) {
+        return Ok(None);
+    }
+    let restart = parked_restart(store, &runs, flow_kind)?;
+    if restart.is_none() && has_run_in_flight(&runs) {
+        return Ok(None);
+    }
+    if !admitted(ctx, store, mail, need) {
+        return Ok(None);
+    }
+    Ok(Some(Candidate {
+        need: need.to_string(),
+        repair,
+        target,
+        priority: priorities.get(need).copied().unwrap_or(0),
+        age: age_of(date),
+        restart,
+    }))
+}
+
+/// The saved restart a build is parked on: a `restarting` run with no
+/// committed successor and a recorded entry. A missing entry is not parked, so
+/// the restart phase keeps raising that corruption.
+fn parked_restart(
+    store: &PumpStore,
+    runs: &[RunRow],
+    flow_kind: FlowKind,
+) -> Result<Option<Parked>, VivariumError> {
+    if flow_kind != FlowKind::Build {
+        return Ok(None);
+    }
+    let Some(old) = runs.iter().find(|row| row.state == run_state::RESTARTING) else {
+        return Ok(None);
+    };
+    if has_successor(store, old)? {
+        return Ok(None);
+    }
+    Ok(store
+        .restart_entry(&old.need, old.run)?
+        .map(|entry| Parked {
+            run: old.run,
+            entry,
+        }))
+}
+
+/// The diagnostic of a done need that still holds an open pump record.
+fn done_text(need: &str, handle: &str) -> String {
+    format!(
+        "need {need} has open pump record {handle} but the need is done: expected an open need; \
+         close the record with `vivi pump done {handle}`"
+    )
 }
 
 /// Whether the shared build assessment admits `need` this tick. A blocked
@@ -326,13 +445,13 @@ fn known_target(ctx: &Ctx, need: &str, target: &str) -> bool {
     false
 }
 
-fn has_run_in_flight(store: &PumpStore, need: &str) -> Result<bool, VivariumError> {
-    Ok(store.runs_of(need)?.iter().any(|run| {
+fn has_run_in_flight(runs: &[RunRow]) -> bool {
+    runs.iter().any(|run| {
         matches!(
             run.state.as_str(),
             run_state::STARTING | run_state::LIVE | run_state::FINISHING | run_state::RESTARTING
         )
-    }))
+    })
 }
 
 fn target_of<M: FlowMail>(mail: &M, need: &str) -> Result<String, VivariumError> {
@@ -365,3 +484,7 @@ mod prereq_tests;
 #[cfg(test)]
 #[path = "intake_mail_test.rs"]
 mod mail_tests;
+
+#[cfg(test)]
+#[path = "intake_restart_test.rs"]
+mod restart_tests;

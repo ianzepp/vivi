@@ -85,6 +85,7 @@ fn rig() -> Result<Rig, VivariumError> {
     }
     let mut registry = Registry::new();
     register(&mut registry);
+    crate::pump::flow::intake::register(&mut registry);
     Ok(Rig {
         _dir: dir,
         ctx,
