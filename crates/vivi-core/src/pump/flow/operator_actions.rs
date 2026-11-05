@@ -290,6 +290,7 @@ fn copy_spec(job: &PoolJob, id: String) -> JobSpec {
     spec.publish_ref.clone_from(&job.publish_ref);
     spec.publish_expect.clone_from(&job.publish_expect);
     spec.publish_contains.clone_from(&job.publish_contains);
+    spec.publish_if.clone_from(&job.publish_if);
     spec.delete_ref.clone_from(&job.delete_ref);
     spec.delete_expect.clone_from(&job.delete_expect);
     spec.pool_candidates.clone_from(&job.pool_candidates);
