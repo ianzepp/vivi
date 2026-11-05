@@ -343,7 +343,7 @@ fn pulled_need(mailspace: &Mailspace, to: &str) -> String {
 }
 
 #[test]
-fn a_reply_to_a_remote_sender_needs_no_flags() {
+fn a_reply_to_a_remote_sender_needs_an_explicit_recipient() {
     let (_tmp, mailspace) = space(&["mind"]);
     let handle = pulled_need(&mailspace, &mailspace.address_for("mind"));
 
@@ -351,7 +351,7 @@ fn a_reply_to_a_remote_sender_needs_no_flags() {
         .reply(
             &handle,
             "mind",
-            Vec::new(),
+            vec!["alice@a1b2c3d4.local".into()],
             Vec::new(),
             None,
             "on it".into(),

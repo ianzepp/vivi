@@ -158,7 +158,7 @@ fn a_held_letter_the_push_never_recorded_is_bound_by_the_pull() {
 }
 
 #[test]
-fn a_reply_composed_on_b_with_no_flags_goes_back_to_the_sender_and_threads() {
+fn a_reply_composed_on_b_with_explicit_recipient_goes_back_to_the_sender_and_threads() {
     let server = FakeServer::new();
     let (a, b) = (alice(), bob());
     let (ca, cb) = (a.client(&server), b.client(&server));
@@ -171,7 +171,7 @@ fn a_reply_composed_on_b_with_no_flags_goes_back_to_the_sender_and_threads() {
         .reply(
             &handle,
             "mind",
-            Vec::new(),
+            vec![a.address("mind")],
             Vec::new(),
             None,
             "closed".into(),

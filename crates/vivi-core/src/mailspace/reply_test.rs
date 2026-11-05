@@ -179,6 +179,59 @@ fn a_note_with_an_invalid_front_is_refused_at_write_time() {
 }
 
 #[test]
+fn unaddressed_reply_links_without_delivery() {
+    let (_tmp, space, parent) = space_with_mail();
+    let reply = space
+        .reply(
+            &parent.handle,
+            "hand",
+            Vec::new(),
+            Vec::new(),
+            None,
+            "thread-only answer".into(),
+        )
+        .unwrap();
+    assert!(reply.delivered.is_empty());
+    assert!(reply.remote.is_empty());
+    let storage = space.storage().unwrap();
+    let sent = space.list("hand", "sent").unwrap();
+    assert_eq!(sent.len(), 1);
+    assert!(sent[0].read_state);
+    let bytes = storage.read_message(&sent[0].message_id).unwrap();
+    let parsed = mail_parser::MessageParser::default().parse(&bytes).unwrap();
+    assert!(parsed.to().is_none());
+    assert!(parsed.cc().is_none());
+    assert!(parsed.in_reply_to().as_text().is_some());
+    assert!(parsed.references().as_text().is_some());
+    let events = storage.list_mailspace_events(&sent[0].message_id).unwrap();
+    assert!(!events.iter().any(|event| event.event_type == "delivered"));
+    let parent_events = storage.list_mailspace_events(&parent.message_id).unwrap();
+    assert!(
+        parent_events
+            .iter()
+            .any(|event| event.event_type == "replied")
+    );
+    assert_eq!(
+        space.thread(&parent.handle, false, 10, 10).unwrap().len(),
+        2
+    );
+    assert_eq!(space.trace(&parent.handle, 10, 10).unwrap().nodes.len(), 2);
+
+    let cc_reply = space
+        .reply(
+            &parent.handle,
+            "hand",
+            Vec::new(),
+            vec!["mind".into()],
+            None,
+            "cc only".into(),
+        )
+        .unwrap();
+    assert_eq!(cc_reply.delivered.len(), 1);
+    assert_eq!(cc_reply.delivered[0].identity, "mind");
+}
+
+#[test]
 fn a_reply_to_a_self_addressed_item_is_kept_on_its_thread() {
     let tmp = tempfile::tempdir().unwrap();
     let mut space = Mailspace::init(Some(tmp.path())).unwrap();
@@ -206,15 +259,21 @@ fn a_reply_to_a_self_addressed_item_is_kept_on_its_thread() {
             "a reply as myself".into(),
         )
         .expect("replying to one's own item must not be refused");
-    assert!(
-        reply
-            .delivered
-            .iter()
-            .all(|copy| copy.identity == "operator"),
-        "no other identity receives a self reply"
-    );
-    assert!(
-        reply.delivered.len() <= 1,
-        "a self reply is stored like the item it answers"
-    );
+    assert!(reply.delivered.is_empty(), "no recipients were supplied");
+    assert!(reply.remote.is_empty());
+    let sent = space.list("operator", "sent").unwrap();
+    assert_eq!(sent.len(), 2);
+    assert!(sent.iter().all(|copy| copy.read_state));
+    let storage = space.storage().unwrap();
+    let raw = sent
+        .iter()
+        .map(|copy| storage.read_message(&copy.message_id).unwrap())
+        .find(|bytes| String::from_utf8_lossy(bytes).contains("a reply as myself"))
+        .unwrap();
+    let raw = String::from_utf8_lossy(&raw);
+    assert!(!raw.contains("\nTo:"), "{raw}");
+    assert!(!raw.contains("\nCc:"), "{raw}");
+    assert!(raw.contains("In-Reply-To:"), "{raw}");
+    let thread = space.thread(&item.sent, false, 10, 10).unwrap();
+    assert_eq!(thread.len(), 2);
 }
