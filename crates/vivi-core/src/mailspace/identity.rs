@@ -195,6 +195,7 @@ impl Mailspace {
         }
         let mut role = LocalIdentity::new(name.clone());
         apply_role_update(&mut role, update.clone())?;
+        self.check_role_target(&role, update.target.is_some())?;
         config_edit::apply(&self.config_path(), |doc| {
             config_edit::insert_identity(doc, &name, &identity_patch(&update, &role))
         })?;
@@ -213,6 +214,7 @@ impl Mailspace {
         let index = self.require_role_index(&name)?;
         let mut role = self.config.identities[index].clone();
         apply_role_update(&mut role, update.clone())?;
+        self.check_role_target(&role, update.target.is_some())?;
         config_edit::apply(&self.config_path(), |doc| {
             config_edit::upsert_identity(doc, &role.name, &identity_patch(&update, &role))
         })?;
@@ -657,6 +659,25 @@ impl Mailspace {
         self.config
             .identities
             .sort_by(|left, right| left.name.cmp(&right.name));
+    }
+
+    /// Refuse a proposed `target` the pump does not configure, before either
+    /// the file or the in-memory roster changes. Only a target the update
+    /// itself sets is checked: an inherited one is left alone here and reported
+    /// by the shared readiness validation instead, so overriding an inherited
+    /// role's other fields still works.
+    fn check_role_target(
+        &self,
+        role: &LocalIdentity,
+        sets_target: bool,
+    ) -> Result<(), VivariumError> {
+        let Some(target) = role.target.as_deref().filter(|_| sets_target) else {
+            return Ok(());
+        };
+        match crate::routing::role_target_issue(&self.config, &role.name, target) {
+            Some(issue) => Err(VivariumError::Config(issue.message)),
+            None => Ok(()),
+        }
     }
 
     fn find_role_index(&self, name_or_alias: &str) -> Option<usize> {

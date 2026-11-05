@@ -1,4 +1,24 @@
+use std::fs;
+use std::path::Path;
+
 use crate::mailspace::{Mailspace, RoleUpdate, config_edit, config_edit::PoolAdd};
+use vivi_error::VivariumError;
+
+/// A project holding the starter `[pump]` table, whose implicit `default`
+/// target is the only valid role target as long as no explicit target exists.
+fn pumped() -> (tempfile::TempDir, Mailspace) {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mailspace, _) = Mailspace::init_with_defaults(Some(tmp.path())).unwrap();
+    (tmp, mailspace)
+}
+
+/// Declare one `[pump.targets.<id>]` repository target in the project file.
+fn add_target(root: &Path, id: &str) {
+    let path = root.join(".vivi/mailspace.toml");
+    let mut raw = fs::read_to_string(&path).unwrap();
+    raw.push_str(&format!("\n[pump.targets.{id}]\npath = \"{id}\"\n"));
+    fs::write(&path, raw).unwrap();
+}
 
 #[test]
 fn ensure_merge_role_binds_the_first_local_pool() {
@@ -218,8 +238,7 @@ fn role_command_and_target_default_to_none_on_old_toml() {
 
 #[test]
 fn role_command_and_target_round_trip_through_the_config_file() {
-    let tmp = tempfile::tempdir().unwrap();
-    let mut mailspace = Mailspace::init(Some(tmp.path())).unwrap();
+    let (tmp, mut mailspace) = pumped();
     let command = concat!(
         "  printf '%s\\n' \"$1\" \\\n",
         "    --flag 'two words'  \n",
@@ -230,7 +249,7 @@ fn role_command_and_target_round_trip_through_the_config_file() {
             "hand",
             RoleUpdate {
                 command: Some(Some(command.into())),
-                target: Some(Some(String::from("want-42"))),
+                target: Some(Some(String::from("default"))),
                 ..RoleUpdate::default()
             },
         )
@@ -238,13 +257,12 @@ fn role_command_and_target_round_trip_through_the_config_file() {
     let reopened = Mailspace::open_root(tmp.path().to_path_buf()).unwrap();
     let view = reopened.role_view("hand").unwrap();
     assert_eq!(view.command.as_deref(), Some(command));
-    assert_eq!(view.target.as_deref(), Some("want-42"));
+    assert_eq!(view.target.as_deref(), Some("default"));
 }
 
 #[test]
 fn role_command_and_target_set_and_clear_individually() {
-    let tmp = tempfile::tempdir().unwrap();
-    let mut mailspace = Mailspace::init(Some(tmp.path())).unwrap();
+    let (tmp, mut mailspace) = pumped();
     mailspace.add_identity("hand").unwrap();
 
     mailspace
@@ -264,14 +282,14 @@ fn role_command_and_target_set_and_clear_individually() {
         .set_role(
             "hand",
             RoleUpdate {
-                target: Some(Some(String::from("task-9"))),
+                target: Some(Some(String::from("default"))),
                 ..RoleUpdate::default()
             },
         )
         .unwrap();
     let view = mailspace.role_view("hand").unwrap();
     assert_eq!(view.command.as_deref(), Some("echo command"));
-    assert_eq!(view.target.as_deref(), Some("task-9"));
+    assert_eq!(view.target.as_deref(), Some("default"));
 
     mailspace
         .set_role(
@@ -284,7 +302,7 @@ fn role_command_and_target_set_and_clear_individually() {
         .unwrap();
     let view = mailspace.role_view("hand").unwrap();
     assert!(view.command.is_none());
-    assert_eq!(view.target.as_deref(), Some("task-9"));
+    assert_eq!(view.target.as_deref(), Some("default"));
 
     mailspace
         .set_role(
@@ -307,14 +325,13 @@ fn role_command_and_target_set_and_clear_individually() {
 
 #[test]
 fn blank_or_nul_command_is_refused_without_mutation() {
-    let tmp = tempfile::tempdir().unwrap();
-    let mut mailspace = Mailspace::init(Some(tmp.path())).unwrap();
+    let (tmp, mut mailspace) = pumped();
     mailspace
         .add_role(
             "hand",
             RoleUpdate {
                 command: Some(Some(String::from("echo keep"))),
-                target: Some(Some(String::from("task-1"))),
+                target: Some(Some(String::from("default"))),
                 ..RoleUpdate::default()
             },
         )
@@ -326,7 +343,7 @@ fn blank_or_nul_command_is_refused_without_mutation() {
                 "hand",
                 RoleUpdate {
                     command: Some(Some(String::from(bad))),
-                    target: Some(Some(String::from("task-2"))),
+                    target: Some(Some(String::from("default"))),
                     ..RoleUpdate::default()
                 },
             )
@@ -334,13 +351,13 @@ fn blank_or_nul_command_is_refused_without_mutation() {
         assert!(matches!(error, vivi_error::VivariumError::Message(_)));
         let view = mailspace.role_view("hand").unwrap();
         assert_eq!(view.command.as_deref(), Some("echo keep"));
-        assert_eq!(view.target.as_deref(), Some("task-1"));
+        assert_eq!(view.target.as_deref(), Some("default"));
     }
 
     let reopened = Mailspace::open_root(tmp.path().to_path_buf()).unwrap();
     let view = reopened.role_view("hand").unwrap();
     assert_eq!(view.command.as_deref(), Some("echo keep"));
-    assert_eq!(view.target.as_deref(), Some("task-1"));
+    assert_eq!(view.target.as_deref(), Some("default"));
 }
 
 #[test]
@@ -351,18 +368,18 @@ fn inherited_command_and_target_override_and_an_inherited_clear_is_refused() {
     std::fs::write(
         base.join("mailspace.toml"),
         "base = true\nname = 'base'\n[[identities]]\nname = 'hand'\nkind = 'hand'\n\
-         command = 'echo base'\ntarget = 'task-1'\n",
+         command = 'echo base'\ntarget = 'default'\n",
     )
     .unwrap();
     let root = tmp.path().join("work/proj");
     let dir = root.join(".vivi");
     std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("mailspace.toml"), "name = 'proj'\n").unwrap();
+    std::fs::write(dir.join("mailspace.toml"), "name = 'proj'\n[pump]\n").unwrap();
 
     let mut mailspace = Mailspace::open_root(root.clone()).unwrap();
     let view = mailspace.role_view("hand").unwrap();
     assert_eq!(view.command.as_deref(), Some("echo base"));
-    assert_eq!(view.target.as_deref(), Some("task-1"));
+    assert_eq!(view.target.as_deref(), Some("default"));
 
     for update in [
         RoleUpdate {
@@ -378,7 +395,7 @@ fn inherited_command_and_target_override_and_an_inherited_clear_is_refused() {
         assert!(matches!(error, vivi_error::VivariumError::Message(_)));
         let view = mailspace.role_view("hand").unwrap();
         assert_eq!(view.command.as_deref(), Some("echo base"));
-        assert_eq!(view.target.as_deref(), Some("task-1"));
+        assert_eq!(view.target.as_deref(), Some("default"));
     }
 
     mailspace
@@ -386,7 +403,7 @@ fn inherited_command_and_target_override_and_an_inherited_clear_is_refused() {
             "hand",
             RoleUpdate {
                 command: Some(Some(String::from("echo project"))),
-                target: Some(Some(String::from("task-2"))),
+                target: Some(Some(String::from("default"))),
                 ..RoleUpdate::default()
             },
         )
@@ -394,5 +411,126 @@ fn inherited_command_and_target_override_and_an_inherited_clear_is_refused() {
     let reopened = Mailspace::open_root(root.clone()).unwrap();
     let view = reopened.role_view("hand").unwrap();
     assert_eq!(view.command.as_deref(), Some("echo project"));
-    assert_eq!(view.target.as_deref(), Some("task-2"));
+    assert_eq!(view.target.as_deref(), Some("default"));
+}
+
+#[test]
+fn a_named_target_the_pump_configures_is_accepted_and_written() {
+    let tmp = tempfile::tempdir().unwrap();
+    Mailspace::init_with_defaults(Some(tmp.path())).unwrap();
+    add_target(tmp.path(), "repo");
+    let mut mailspace = Mailspace::open_root(tmp.path().to_path_buf()).unwrap();
+    mailspace
+        .add_role(
+            "hand",
+            RoleUpdate {
+                target: Some(Some(String::from("repo"))),
+                ..RoleUpdate::default()
+            },
+        )
+        .unwrap();
+    let reopened = Mailspace::open_root(tmp.path().to_path_buf()).unwrap();
+    let view = reopened.role_view("hand").unwrap();
+    assert_eq!(view.target.as_deref(), Some("repo"));
+}
+
+#[test]
+fn the_implicit_default_target_is_refused_once_the_pump_names_targets() {
+    let (tmp, mut mailspace) = pumped();
+    mailspace.add_identity("hand").unwrap();
+    add_target(tmp.path(), "repo");
+    let mut mailspace = Mailspace::open_root(tmp.path().to_path_buf()).unwrap();
+    let config = tmp.path().join(".vivi/mailspace.toml");
+    let before = fs::read(&config).unwrap();
+    let error = mailspace
+        .set_role(
+            "hand",
+            RoleUpdate {
+                target: Some(Some(String::from("default"))),
+                ..RoleUpdate::default()
+            },
+        )
+        .unwrap_err();
+    assert!(matches!(error, VivariumError::Config(_)), "{error}");
+    assert_eq!(fs::read(&config).unwrap(), before);
+    assert!(mailspace.role_view("hand").unwrap().target.is_none());
+}
+
+#[test]
+fn an_unknown_target_is_refused_before_any_field_changes() {
+    let (tmp, mut mailspace) = pumped();
+    mailspace.add_identity("hand").unwrap();
+    let config = tmp.path().join(".vivi/mailspace.toml");
+    let before = fs::read(&config).unwrap();
+    let error = mailspace
+        .set_role(
+            "hand",
+            RoleUpdate {
+                model: Some(Some(String::from("a-model"))),
+                target: Some(Some(String::from("missing"))),
+                ..RoleUpdate::default()
+            },
+        )
+        .unwrap_err();
+    assert!(matches!(error, VivariumError::Config(_)), "{error}");
+    assert!(error.to_string().contains("missing"), "{error}");
+    assert_eq!(fs::read(&config).unwrap(), before);
+    let view = mailspace.role_view("hand").unwrap();
+    assert!(view.model.is_none(), "{:?}", view.model);
+    assert!(view.target.is_none(), "{:?}", view.target);
+    let reopened = Mailspace::open_root(tmp.path().to_path_buf()).unwrap();
+    let view = reopened.role_view("hand").unwrap();
+    assert!(view.model.is_none(), "{:?}", view.model);
+    assert!(view.target.is_none(), "{:?}", view.target);
+}
+
+#[test]
+fn a_role_target_is_refused_without_a_pump_table() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut mailspace = Mailspace::init(Some(tmp.path())).unwrap();
+    let error = mailspace
+        .add_role(
+            "hand",
+            RoleUpdate {
+                target: Some(Some(String::from("default"))),
+                ..RoleUpdate::default()
+            },
+        )
+        .unwrap_err();
+    assert!(matches!(error, VivariumError::Config(_)), "{error}");
+    let reopened = Mailspace::open_root(tmp.path().to_path_buf()).unwrap();
+    assert!(reopened.role_view("hand").is_err());
+}
+
+#[test]
+fn a_target_is_validated_under_both_the_alias_and_the_canonical_name() {
+    let (tmp, mut mailspace) = pumped();
+    mailspace.add_identity("hand").unwrap();
+    mailspace.rename_identity("hand", "dock").unwrap();
+    let config = tmp.path().join(".vivi/mailspace.toml");
+    let before = fs::read(&config).unwrap();
+    for name in ["hand", "dock"] {
+        let error = mailspace
+            .set_role(
+                name,
+                RoleUpdate {
+                    target: Some(Some(String::from("missing"))),
+                    ..RoleUpdate::default()
+                },
+            )
+            .unwrap_err();
+        assert!(matches!(error, VivariumError::Config(_)), "{error}");
+        assert_eq!(fs::read(&config).unwrap(), before);
+    }
+    mailspace
+        .set_role(
+            "hand",
+            RoleUpdate {
+                target: Some(Some(String::from("default"))),
+                ..RoleUpdate::default()
+            },
+        )
+        .unwrap();
+    let view = mailspace.role_view("dock").unwrap();
+    assert_eq!(view.target.as_deref(), Some("default"));
 }
