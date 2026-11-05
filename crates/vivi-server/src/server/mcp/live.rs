@@ -221,9 +221,8 @@ pub(super) fn dispatch(
     if let Some(answer) = through_origin(&hosted, root, name, arguments, hops) {
         return answer;
     }
-    // `done`, `reopen`, `mark`, `unmark` and `depend` take `--for <holder>` in the CLI:
-    // the role the command runs as, which must hold the item. The library
-    // applies the same authority rules to it as it does for the CLI.
+    // `done`, `reopen`, `mark` and `unmark` are holder-scoped; depend's
+    // `--for` selects the actor whose authorship/mind/operator authority applies.
     if matches!(name, "done" | "reopen" | "mark" | "unmark" | "depend") {
         if let Some(holder) = super::tools::opt_str(arguments, "for")? {
             hosted.actor = hosted.ms.resolve_identity(holder).map_err(|error| {
