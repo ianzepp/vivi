@@ -16,6 +16,13 @@ use vivi_core::mailspace::{Mailspace, RoleUpdate, SendRequest, folded_marks};
 use vivi_server::server::grants::{GrantLevel, GrantRecord};
 use vivi_server::server::{AppState, app_state, hosted, router};
 
+#[path = "support/mcp_unaddressed_authorship.rs"]
+mod mcp_unaddressed_authorship;
+#[path = "support/mcp_unaddressed_dependencies.rs"]
+mod mcp_unaddressed_dependencies;
+#[path = "support/mcp_unaddressed_lists.rs"]
+mod mcp_unaddressed_lists;
+
 fn scratch(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
         "vivi-server-mcp-hosted-{}-{name}",
@@ -581,9 +588,9 @@ async fn a_reply_threads_with_its_parent() {
         assert_eq!(messages.len(), 2, "{shown}");
         assert!(messages.iter().any(|m| m["body"] == "because"), "{shown}");
     }
-    // The reply went to the operator's inbox.
+    // An unaddressed public reply stays in the thread without delivering to the parent author.
     let inbox = fx.ms().list("operator", "inbox").unwrap();
-    assert_eq!(inbox.len(), 1);
+    assert!(inbox.is_empty());
 }
 
 #[tokio::test]

@@ -198,9 +198,6 @@ pub fn compose_send(
 ) -> Result<ComposedLetter, String> {
     let gated = gate_body(kind, body)?;
     let from = caller_address(identity)?;
-    if to.is_empty() {
-        return Err("send needs at least one to address".to_owned());
-    }
     let traveling_id = mint_traveling_id().map_err(|_| "entropy unavailable".to_owned())?;
     let prefix = identity.mailspace_prefix().unwrap_or("server");
     let mut eml = build_compose_draft(&ComposeDraft {
@@ -232,9 +229,26 @@ pub fn compose_send(
     })
 }
 
+pub fn reply_audience(identity: &IdentityRecord, parent: &ProjectRecord) -> Vec<String> {
+    let from = caller_address(identity).unwrap_or_default();
+    let parsed = parse_letter(&parent.raw_eml);
+    let mut to = Vec::new();
+    push_unique(&mut to, parent_from_address(&parsed, parent));
+    for address in parsed.to.iter().chain(parsed.cc.iter()) {
+        if !address.eq_ignore_ascii_case(&from) {
+            push_unique(&mut to, address.clone());
+        }
+    }
+    if to.is_empty() {
+        to.push(from);
+    }
+    to
+}
+
 pub fn compose_reply(
     identity: &IdentityRecord,
     parent: &ProjectRecord,
+    to: &[String],
     body: &str,
 ) -> Result<ComposedLetter, String> {
     let from = caller_address(identity)?;
@@ -245,22 +259,12 @@ pub fn compose_reply(
     };
     let gated = gate_body(header_kind, body)?;
     let parsed = parse_letter(&parent.raw_eml);
-    let mut to = Vec::new();
-    push_unique(&mut to, parent_from_address(&parsed, parent));
-    for address in parsed.to.iter().chain(parsed.cc.iter()) {
-        if !address.eq_ignore_ascii_case(&from) {
-            push_unique(&mut to, address.clone());
-        }
-    }
-    if to.is_empty() {
-        to.push(from.clone());
-    }
     let subject = reply_subject(&parsed.subject);
     let traveling_id = mint_traveling_id().map_err(|_| "entropy unavailable".to_owned())?;
     let prefix = identity.mailspace_prefix().unwrap_or("server");
     let mut eml = build_compose_draft(&ComposeDraft {
         from,
-        to: to.clone(),
+        to: to.to_vec(),
         cc: Vec::new(),
         bcc: Vec::new(),
         subject,

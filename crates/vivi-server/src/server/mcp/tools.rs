@@ -20,7 +20,8 @@ use crate::server::safety::RateLimiter;
 
 use super::letters::{
     EventFold, ItemState, append_composed, caller_address, compose_event, compose_reply,
-    compose_send, handle_of, item_status, parse_headers, parse_letter, state_of, valid_handle,
+    compose_send, handle_of, item_status, parse_headers, parse_letter, reply_audience, state_of,
+    valid_handle,
 };
 use super::live::string_list;
 
@@ -58,8 +59,8 @@ pub fn dispatch(
         "list" => list_items(store, project_id, identity, arguments),
         "show" => show(store, project_id, identity, arguments),
         "thread" => thread(store, project_id, identity, arguments),
-        "send" => send(store, limiter, project_id, identity, arguments),
-        "reply" => reply(store, limiter, project_id, identity, arguments),
+        "send" => compose::send(store, limiter, project_id, identity, arguments),
+        "reply" => compose::reply(store, limiter, project_id, identity, arguments),
         "done" => settle(store, limiter, project_id, identity, arguments, "done"),
         "reopen" => settle(store, limiter, project_id, identity, arguments, "reopened"),
         "memo" => memo(store, limiter, project_id, identity, arguments),
@@ -312,72 +313,6 @@ fn thread(
     }))
 }
 
-fn send(
-    store: &ProjectStore,
-    limiter: &RateLimiter,
-    project_id: &str,
-    identity: &IdentityRecord,
-    arguments: &Value,
-) -> Result<Value, ToolError> {
-    rate_limit(limiter, project_id, &identity.name)?;
-    let kind = req_str(arguments, "kind")?;
-    if !matches!(kind, "need" | "task" | "want" | "mail" | "chat") {
-        return Err(ToolError::new(
-            "kind must be need, task, want, chat, or mail",
-        ));
-    }
-    let to = if kind == "chat" && arguments.get("to").is_none() {
-        let prefix = identity.mailspace_prefix().ok_or_else(|| {
-            ToolError::new("this identity has no mailspace prefix; it cannot send")
-        })?;
-        vec![format!("chat@{prefix}.local")]
-    } else {
-        parse_to(arguments)?
-    };
-    let subject = req_str(arguments, "subject")?;
-    let body = req_str(arguments, "body")?;
-    if subject.trim().is_empty() || body.trim().is_empty() {
-        return Err(ToolError::new("subject and body must be non-empty"));
-    }
-    // The sugar arguments build the work letter's front matter, and the
-    // dependencies ride in it; the composer gates the body and writes the
-    // format header.
-    let body = sugared_body(kind, body, arguments)?;
-    let composed = compose_send(identity, &to, subject, &body, kind).map_err(ToolError::new)?;
-    let outcome = append_composed(store, project_id, identity, composed).map_err(map_project)?;
-    Ok(json!({
-        "message_id": outcome.message_id,
-        "handle": handle_of(&outcome.message_id),
-        "sequence": outcome.sequence,
-        "kind": kind,
-        "duplicate": outcome.duplicate,
-    }))
-}
-
-fn reply(
-    store: &ProjectStore,
-    limiter: &RateLimiter,
-    project_id: &str,
-    identity: &IdentityRecord,
-    arguments: &Value,
-) -> Result<Value, ToolError> {
-    rate_limit(limiter, project_id, &identity.name)?;
-    let handle = req_str(arguments, "handle")?;
-    let body = req_str(arguments, "body")?;
-    if body.trim().is_empty() {
-        return Err(ToolError::new("body must be non-empty"));
-    }
-    let parent = lookup_one(store, project_id, identity, handle)?;
-    let composed = compose_reply(identity, &parent, body).map_err(ToolError::new)?;
-    let outcome = append_composed(store, project_id, identity, composed).map_err(map_project)?;
-    Ok(json!({
-        "message_id": outcome.message_id,
-        "handle": handle_of(&outcome.message_id),
-        "in_reply_to": handle,
-        "sequence": outcome.sequence,
-    }))
-}
-
 fn settle(
     store: &ProjectStore,
     limiter: &RateLimiter,
@@ -401,8 +336,7 @@ fn settle(
             "{handle} is not a need, task, or want"
         )));
     }
-    // One clock for the whole call: the fold's future bound and the new
-    // event's stamp are read at the same instant.
+    // One clock for the fold and event stamp.
     let now = chrono::Utc::now().timestamp_micros();
     let states = read_view_at(store, project_id, identity, Scan::WorkAndEvents, false, now)?.states;
     let state = state_of(&parent, &parsed, &states);
@@ -469,7 +403,8 @@ fn settle(
                 "close metadata rides the stamped event letter; this caller files a report reply",
             ));
         }
-        compose_reply(identity, &parent, note).map_err(ToolError::new)?
+        let audience = reply_audience(identity, &parent);
+        compose_reply(identity, &parent, &audience, note).map_err(ToolError::new)?
     };
     let outcome = append_composed(store, project_id, identity, composed).map_err(map_project)?;
     let mode = if may_close { "closed" } else { "reported" };
@@ -845,41 +780,6 @@ fn save_memo(
     }))
 }
 
-pub(super) fn parse_to(arguments: &Value) -> Result<Vec<String>, ToolError> {
-    match arguments.get("to") {
-        Some(Value::String(raw)) => {
-            let list: Vec<String> = raw
-                .split(',')
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(str::to_owned)
-                .collect();
-            if list.is_empty() {
-                Err(ToolError::new("to must name at least one address"))
-            } else {
-                Ok(list)
-            }
-        }
-        Some(Value::Array(items)) => {
-            let list: Result<Vec<_>, _> = items
-                .iter()
-                .map(|item| {
-                    item.as_str()
-                        .map(str::to_owned)
-                        .ok_or_else(|| ToolError::new("to must be strings"))
-                })
-                .collect();
-            let list = list?;
-            if list.is_empty() {
-                Err(ToolError::new("to must name at least one address"))
-            } else {
-                Ok(list)
-            }
-        }
-        _ => Err(ToolError::new("to is required")),
-    }
-}
-
 pub(super) fn parse_depends(arguments: &Value) -> Result<Vec<String>, ToolError> {
     match arguments.get("depends_on") {
         None | Some(Value::Null) => Ok(Vec::new()),
@@ -1130,3 +1030,6 @@ pub(super) fn map_project(err: ProjectError) -> ToolError {
 #[cfg(test)]
 #[path = "tools_test.rs"]
 mod tests;
+
+mod compose;
+pub(crate) use compose::parse_to;

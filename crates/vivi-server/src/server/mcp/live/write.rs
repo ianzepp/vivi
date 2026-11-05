@@ -93,16 +93,32 @@ pub(super) fn reply(
     rate_limit(limiter, project_id, &h.actor)?;
     let handle = req_str(arguments, "handle")?;
     let body = req_str(arguments, "body")?;
-    let result =
-        h.ms.reply(
-            handle,
-            &h.actor,
-            Vec::new(),
-            Vec::new(),
-            None,
-            body.to_owned(),
-        )
-        .map_err(lib_error)?;
+    let to = parse_to(arguments)?;
+    let result = if to.is_empty() {
+        let storage = h.ms.storage().map_err(lib_error)?;
+        let id = storage.resolve_message_token(handle).map_err(lib_error)?;
+        let raw = storage.read_message(&id).map_err(lib_error)?;
+        let subject = crate::server::mcp::letters::parse_letter(&raw).subject;
+        let subject = if subject.to_ascii_lowercase().starts_with("re:") {
+            subject
+        } else {
+            format!("Re: {subject}")
+        };
+        h.ms.send(SendRequest {
+            from: h.actor.clone(),
+            to: Vec::new(),
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject,
+            body: body.to_owned(),
+            role: "inbox".into(),
+            kind: Some("mail".into()),
+            reply_to: Some(handle.to_owned()),
+        })
+    } else {
+        h.ms.reply(handle, &h.actor, to, Vec::new(), None, body.to_owned())
+    }
+    .map_err(lib_error)?;
     let mut out = delivery_json(h, &result)?;
     out["in_reply_to"] = json!(handle);
     Ok(out)
