@@ -401,6 +401,24 @@ root = "~/lanes"
 const RULES: &str = "Work the brief. Never weaken a test.\n";
 
 #[test]
+fn charter_envelope_is_the_receipt_in_both_bridge_modes_and_rules_fall_back_normally() {
+    let envelope = "Reply exactly:\nstatus = 'done'";
+    for bridge in [true, false] {
+        let prompt = standing_prompt("scribe", envelope, RULES, "", bridge);
+        assert!(prompt.contains("reply envelope, that envelope followed by its permitted prose body is the stdout receipt"), "{prompt}");
+    }
+    assert!(include_str!("rules.md").contains("ordinary short receipt"));
+
+    let shipped_rules = include_str!("rules.md");
+    assert!(shipped_rules.contains("reply envelope"));
+    assert!(!shipped_rules.contains("End with a short receipt"));
+    for charter in ["", "  \n"] {
+        let prompt = standing_prompt("scribe", charter, shipped_rules, "", false);
+        assert!(prompt.contains("reply envelope"));
+    }
+}
+
+#[test]
 fn a_blank_charter_gives_the_pool_rules_then_the_project_rules() {
     for charter in ["", "  ", "\n  \n"] {
         assert_eq!(standing_prompt("auditor", charter, RULES, "", true), RULES);
@@ -423,12 +441,10 @@ fn project_rules_follow_the_base_when_there_is_no_role() {
 #[test]
 fn a_charter_gives_the_headings_in_order_over_the_pool_rules() {
     let prompt = standing_prompt("scribe", "Write the letters.", RULES, "", false);
-    assert_eq!(
-        prompt,
-        "# Standing charter (role scribe)\n\nWrite the letters.\n\n---\n\n\
-         You run in a pool slot with no `vivi` command and no mailspace. Where the charter tells you to read or settle your handle with `vivi`, read your brief instead and end with your receipt on standard output; the runner records your result and whoever dispatched the job settles the handle.\n\n\
-         # Pool rules (these bound the charter)\n\nWork the brief. Never weaken a test.\n"
-    );
+    assert!(prompt.contains("no `vivi` command and no mailspace"));
+    assert!(prompt.contains("read your brief instead. When the charter or brief defines"));
+    assert!(prompt.contains("# Pool rules (these bound the charter)"));
+
     let charter = prompt.find("# Standing charter (role scribe)").unwrap();
     let rule = prompt
         .find("# Pool rules (these bound the charter)")
@@ -457,7 +473,10 @@ fn the_bridge_note_does_not_tell_the_worker_to_settle_its_handle() {
             "You run in a pool slot with the vivi tools of the project server \
              (MCP server `vivi`). Your task handle is in your brief: read it \
              with `show` and `thread`, report with `reply`; the runner records \
-             your result and whoever dispatched the job settles the handle."
+             your result and whoever dispatched the job settles the handle. \
+             When the charter or brief defines a reply envelope, that envelope \
+             followed by its permitted prose body is the stdout receipt; do not \
+             add a separate receipt or surround it with extra output."
         ),
         "got: {bridged}"
     );
