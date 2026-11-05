@@ -1,6 +1,6 @@
 [package]
 name = "vivi-storage"
-version = "22.1.0"
+version = "23.0.0"
 edition = "2024"
 description = "The vivi SQLite message store"
 license = "MIT"
