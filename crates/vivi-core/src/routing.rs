@@ -48,5 +48,6 @@ pub use pump_charters::pump_charter_roles;
 pub use pump_roles::{PumpRoleCheck, pump_role_checks};
 pub use show::{ConfigOverview, FlowOverview, RoleRow, overview, render_text};
 pub use validate::{
-    Issue, Severity, format_report, not_ready, not_ready_summary, require_ok, validate,
+    Issue, Severity, UNKNOWN_ROLE_TARGET, format_report, is_valid_role_target, not_ready,
+    not_ready_summary, require_ok, role_target_ids, role_target_issue, validate,
 };
