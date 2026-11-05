@@ -42,11 +42,8 @@ impl StepHandler for JudgeStart {
             audit.payload["front"],
             audit.payload["body"].as_str().unwrap_or("")
         );
-        let brief = format!(
-            "Judge mode\nneed: {need}\n\n## Audit\n{}\n\n## Need rung report\n{}\n",
-            capped(&audit_text, AUDIT_CAP),
-            rung_report(rung)
-        );
+        let brief = judge_brief(need, &audit_text, rung);
+
         // The judge is seated in the auditor role but budgets as a judge step.
         let mut spec = role_job(
             cx.ctx,
@@ -61,6 +58,19 @@ impl StepHandler for JudgeStart {
         spec.builtin_role = Some(AUDITOR_ROLE.to_owned());
         Ok(StartAction::Job(Box::new(spec)))
     }
+}
+
+fn judge_brief(
+    need: &str,
+    audit_text: &str,
+    rung: &crate::pump::store::step_payload::StepPayloadRow,
+) -> String {
+    format!(
+        "Judge mode\nneed: {need}\n\n## Audit\n{}\n\n## Need rung report\n{}\n\n{}",
+        capped(audit_text, AUDIT_CAP),
+        rung_report(rung),
+        crate::pump::envelope::format::role(RoleKind::Judge),
+    )
 }
 
 pub(crate) fn register<S: JobStore, M: FlowMail>(registry: &mut Registry<S, M>) {

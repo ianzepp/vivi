@@ -2,6 +2,8 @@
 
 use serde_json::json;
 use tempfile::{TempDir, tempdir};
+use vivi_mail::letter::review::Judge;
+use vivi_mail::letter::roles::parse_role_reply;
 
 use super::JudgeStart;
 use crate::pump::config::PumpConfig;
@@ -110,6 +112,26 @@ fn judge_job_is_a_read_only_auditor_with_audit_and_rung() -> Result<(), Vivarium
     assert!(spec.body.contains("AUDIT-ANSWER-TEXT"));
     assert!(spec.body.contains("vivi::pump::flow::a_test"));
     assert!(spec.body.contains("exit: 101"));
+    let footer = crate::pump::envelope::format::role(vivi_mail::letter::roles::RoleKind::Judge);
+    assert!(spec.body.ends_with(&footer));
+    assert!(
+        spec.body.find("## Need rung report").unwrap()
+            < spec.body.find("Example (illustrative only):").unwrap()
+    );
+    assert!(!footer.contains("[[requirement]]") && !footer.contains("[[finding]]"));
+    assert!(footer.contains("answer = `block` | `residual`"));
+    assert!(footer.contains("literal `reason` is required"));
+    let example = footer
+        .split_once("Example (illustrative only):\n")
+        .unwrap()
+        .1;
+    assert!(
+        parse_role_reply::<Judge>(example)
+            .unwrap()
+            .front
+            .reason
+            .is_some()
+    );
     Ok(())
 }
 

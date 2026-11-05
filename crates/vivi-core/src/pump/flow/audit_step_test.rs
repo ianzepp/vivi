@@ -4,6 +4,8 @@ use std::sync::Arc;
 
 use serde_json::json;
 use tempfile::{TempDir, tempdir};
+use vivi_mail::letter::review::Auditor;
+use vivi_mail::letter::roles::{RoleKind, parse_role_reply};
 
 use super::AuditStart;
 use crate::pump::config::PumpConfig;
@@ -151,6 +153,28 @@ fn start_in(f: &Fixture, run: u32, node: &str) -> Result<JobSpec, vivi_error::Vi
     }
 }
 
+fn assert_auditor_footer(body: &str) {
+    let footer = crate::pump::envelope::format::role(RoleKind::Auditor);
+    assert!(body.ends_with(&footer));
+    assert!(footer.contains("clean_pass") && footer.contains("residual"));
+    for status in [
+        "SATISFIED",
+        "PARTIAL",
+        "MISSING",
+        "UNVERIFIED",
+        "NOT_APPLICABLE",
+    ] {
+        assert!(footer.contains(status));
+    }
+    let example = footer
+        .split_once("Example (illustrative only):\n")
+        .unwrap()
+        .1;
+    let parsed = parse_role_reply::<Auditor>(example).unwrap();
+    assert_eq!(parsed.front.requirement[0].id, "R1");
+    assert_eq!(parsed.front.finding[0].id, "F1");
+}
+
 #[test]
 fn a_first_pass_is_a_read_only_auditor_job_with_range_and_plan() {
     let f = fixture();
@@ -172,6 +196,7 @@ fn a_first_pass_is_a_read_only_auditor_job_with_range_and_plan() {
     assert!(spec.body.contains("reply-1-r0"));
     assert!(spec.body.contains("in parallel"));
     assert!(!spec.body.contains("Second pass"));
+    assert_auditor_footer(&spec.body);
 }
 
 #[test]
@@ -198,6 +223,10 @@ fn a_second_pass_carries_the_prior_audit_and_the_rework_slices() {
     assert!(spec.body.contains("PRIOR FINDINGS"));
     assert!(spec.body.contains("defects"));
     assert!(spec.body.contains("fix-1"));
+    assert!(
+        spec.body.find("fix-1").unwrap() < spec.body.find("Example (illustrative only):").unwrap()
+    );
+    assert_auditor_footer(&spec.body);
 }
 
 fn run_one_audit(f: &Fixture) {

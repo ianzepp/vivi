@@ -86,6 +86,8 @@ fn brief(
         out.push_str(&format!("- {}: {}\n", requirement.id, requirement.text));
     }
     out.push_str(&second_pass(cx, step)?);
+    out.push_str("\n\n");
+    out.push_str(&crate::pump::envelope::format::role(RoleKind::Auditor));
     Ok(out)
 }
 
