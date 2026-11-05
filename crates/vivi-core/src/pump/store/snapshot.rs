@@ -8,7 +8,7 @@
 use crate::pump::state::State;
 use vivi_error::VivariumError;
 
-use super::{PumpStore, db_err};
+use super::{PumpStore, db_err, flow_waits::FlowWaitRow};
 
 /// Exception rows as [`PumpStore::exceptions`] returns them.
 pub type ExceptionRows = Vec<(u64, String, String, String)>;
@@ -18,13 +18,13 @@ impl PumpStore {
     ///
     /// # Errors
     /// Returns [`VivariumError`] when the transaction or a read fails.
-    pub fn load_snapshot(&self) -> Result<(State, ExceptionRows), VivariumError> {
+    pub fn load_snapshot(&self) -> Result<(State, ExceptionRows, Vec<FlowWaitRow>), VivariumError> {
         self.conn()
             .execute_batch("BEGIN DEFERRED")
             .map_err(db_err("begin read"))?;
         let read = self
             .load()
-            .and_then(|state| Ok((state, self.exceptions()?)));
+            .and_then(|state| Ok((state, self.exceptions()?, self.flow_waits()?)));
         let conn = self.conn();
         let ended = conn.execute_batch("ROLLBACK").map_err(db_err("end read"));
         let read = read?;

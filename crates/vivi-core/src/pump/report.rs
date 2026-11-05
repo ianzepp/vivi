@@ -10,7 +10,7 @@ use std::path::Path;
 use vivi_error::VivariumError;
 
 use super::state::State;
-use super::store::{DB_FILENAME, PumpStore, SCHEMA_VERSION};
+use super::store::{DB_FILENAME, FlowWaitRow, PumpStore, SCHEMA_VERSION};
 
 /// What a reader found at the pump home.
 pub enum PumpRead {
@@ -26,6 +26,7 @@ pub enum PumpRead {
 pub struct Snapshot {
     state: State,
     exceptions: Vec<(u64, String, String, String)>,
+    waits: Vec<FlowWaitRow>,
 }
 
 /// One role's latest cadence run, for read-only board and status views.
@@ -56,7 +57,11 @@ pub fn read(home: &Path) -> Result<PumpRead, VivariumError> {
         )));
     }
     match store.load_snapshot() {
-        Ok((state, exceptions)) => Ok(PumpRead::Ready(Snapshot { state, exceptions })),
+        Ok((state, exceptions, waits)) => Ok(PumpRead::Ready(Snapshot {
+            state,
+            exceptions,
+            waits,
+        })),
         Err(err) => Ok(PumpRead::Unreadable(err.to_string())),
     }
 }
@@ -79,6 +84,12 @@ impl Snapshot {
                 )
             })
             .collect()
+    }
+
+    /// Prerequisite waits, ordered by need.
+    #[must_use]
+    pub fn flow_waits(&self) -> &[FlowWaitRow] {
+        &self.waits
     }
 
     /// Exception rows, oldest first: `(at, kind, unit, text)`.

@@ -6,7 +6,7 @@ use tempfile::tempdir;
 use crate::pump::cadence::{CadenceState, RoleRun, set_state};
 use crate::pump::report::{PumpRead, read};
 use crate::pump::state::State;
-use crate::pump::store::{DB_FILENAME, PumpStore};
+use crate::pump::store::{DB_FILENAME, FlowWaitRow, PumpStore, WaitingHandle};
 
 fn ready(st: State) -> crate::pump::report::Snapshot {
     let dir = tempdir().unwrap();
@@ -64,6 +64,30 @@ fn an_older_or_newer_schema_is_reported_not_read() {
     let conn = rusqlite::Connection::open(&path).unwrap();
     conn.pragma_update(None, "user_version", 99).unwrap();
     assert!(matches!(read(dir.path()).unwrap(), PumpRead::Unreadable(_)));
+}
+
+#[test]
+fn prerequisite_waits_are_exposed_in_the_read_snapshot() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join(DB_FILENAME);
+    let store = PumpStore::open(&path).unwrap();
+    store
+        .upsert_flow_wait(&FlowWaitRow {
+            need: "n1".into(),
+            record: "r1".into(),
+            evaluated_at: 17,
+            handles: vec![WaitingHandle {
+                handle: "n2".into(),
+                state: "open".into(),
+                detail: "needs work".into(),
+            }],
+        })
+        .unwrap();
+    drop(store);
+    let PumpRead::Ready(snapshot) = read(dir.path()).unwrap() else {
+        panic!("expected ready")
+    };
+    assert_eq!(snapshot.flow_waits()[0].handles[0].detail, "needs work");
 }
 
 #[test]

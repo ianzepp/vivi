@@ -19,6 +19,8 @@ use vivi_error::VivariumError;
 
 mod codec;
 mod flow_index;
+pub mod flow_waits;
+pub use flow_waits::{FlowWaitRow, WaitingHandle};
 pub mod flow_links;
 mod job_release;
 mod main_state;
@@ -559,6 +561,7 @@ fn ensure_schema(conn: &Connection) -> Result<(), VivariumError> {
     drop_request_queues(conn)?;
     flow_index::ensure_tables(conn)?;
     flow_links::ensure_tables(conn)?;
+    flow_waits::ensure_tables(conn)?;
     step_payload::ensure_table(conn)?;
     job_release::ensure_table(conn)?;
     if version > 0 && version < SCHEMA_VERSION {
