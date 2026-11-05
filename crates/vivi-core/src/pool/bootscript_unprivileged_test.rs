@@ -525,6 +525,240 @@ fn a_failing_requirement_stops_the_seed_names_itself_and_runs_nothing_after() {
 }
 
 #[test]
+fn matching_publication_guards_allow_publication_for_every_assertion() {
+    let root = tempfile::tempdir().unwrap();
+    let config = embedded_config("true");
+    let slot = lay_out(root.path(), &config);
+    assert!(boot(&slot).status.success());
+    let remote = slot.work.join("remote.git");
+    let sha = git(&remote, &["rev-parse", "refs/heads/main"]);
+    git(&remote, &["update-ref", "refs/heads/release/steady", &sha]);
+
+    run_guarded_job(
+        &slot,
+        &config,
+        "job000000021",
+        &[
+            (&"refs/heads/main", &sha),
+            (&"refs/heads/release/steady", &sha),
+        ],
+        None,
+    );
+
+    let result = std::fs::read_to_string(slot.work.join("job/result")).unwrap();
+    assert!(result.contains("publish_state=pushed\n"), "{result}");
+    assert_eq!(git(&remote, &["rev-parse", "refs/heads/published"]), sha);
+}
+
+#[test]
+fn a_changed_publication_guard_prevents_the_target_push() {
+    let root = tempfile::tempdir().unwrap();
+    let config = embedded_config("true");
+    let slot = lay_out(root.path(), &config);
+    assert!(boot(&slot).status.success());
+    let remote = slot.work.join("remote.git");
+    let sha = git(&remote, &["rev-parse", "refs/heads/main"]);
+    git(&remote, &["update-ref", "refs/heads/release/steady", &sha]);
+
+    run_guarded_job(
+        &slot,
+        &config,
+        "job000000022",
+        &[
+            (&"refs/heads/main", &sha),
+            (
+                &"refs/heads/release/steady",
+                &"0000000000000000000000000000000000000000",
+            ),
+        ],
+        None,
+    );
+
+    let result = std::fs::read_to_string(slot.work.join("job/result")).unwrap();
+    assert!(
+        result.contains("publish_state=publish_guard_changed\n"),
+        "{result}"
+    );
+    assert!(git(&remote, &["show-ref", "--verify", "refs/heads/published"]).is_empty());
+}
+
+#[test]
+fn a_missing_guarded_remote_ref_prevents_the_target_push() {
+    let root = tempfile::tempdir().unwrap();
+    let config = embedded_config("true");
+    let slot = lay_out(root.path(), &config);
+    assert!(boot(&slot).status.success());
+    let remote = slot.work.join("remote.git");
+    let sha = git(&remote, &["rev-parse", "refs/heads/main"]);
+
+    run_guarded_job(
+        &slot,
+        &config,
+        "job000000023",
+        &[(&"refs/heads/main", &sha), (&"refs/heads/missing", &sha)],
+        None,
+    );
+
+    let result = std::fs::read_to_string(slot.work.join("job/result")).unwrap();
+    assert!(
+        result.contains("publish_state=publish_guard_changed\n"),
+        "{result}"
+    );
+    assert!(git(&remote, &["show-ref", "--verify", "refs/heads/published"]).is_empty());
+}
+
+#[test]
+fn an_unreadable_publication_guard_fails_closed() {
+    let root = tempfile::tempdir().unwrap();
+    let config = embedded_config("true");
+    let slot = lay_out(root.path(), &config);
+    assert!(boot(&slot).status.success());
+    let remote = slot.work.join("remote.git");
+    let sha = git(&remote, &["rev-parse", "refs/heads/main"]);
+
+    run_guarded_job(
+        &slot,
+        &config,
+        "job000000024",
+        &[("refs/heads/main", &sha)],
+        Some((None, Some(0))),
+    );
+
+    let result = std::fs::read_to_string(slot.work.join("job/result")).unwrap();
+    assert!(
+        result.contains("publish_state=publish_guard_failed\n"),
+        "{result}"
+    );
+    assert!(git(&remote, &["show-ref", "--verify", "refs/heads/published"]).is_empty());
+}
+
+#[test]
+fn a_malformed_publication_guard_fails_closed() {
+    let root = tempfile::tempdir().unwrap();
+    let config = embedded_config("true");
+    let slot = lay_out(root.path(), &config);
+    assert!(boot(&slot).status.success());
+
+    run_guarded_job(
+        &slot,
+        &config,
+        "job000000025",
+        &[("refs/heads/main", &"a".repeat(40))],
+        Some((Some(b"refs/heads/main not-a-tab-separated-entry\n"), None)),
+    );
+
+    let result = std::fs::read_to_string(slot.work.join("job/result")).unwrap();
+    assert!(
+        result.contains("publish_state=publish_guard_failed\n"),
+        "{result}"
+    );
+    assert!(
+        git(
+            &slot.work.join("remote.git"),
+            &["show-ref", "--verify", "refs/heads/published"]
+        )
+        .is_empty()
+    );
+}
+
+#[test]
+fn a_job_without_a_publication_manifest_keeps_its_existing_publish_behavior() {
+    let root = tempfile::tempdir().unwrap();
+    let config = embedded_config("true");
+    let slot = lay_out(root.path(), &config);
+    assert!(boot(&slot).status.success());
+    let remote = slot.work.join("remote.git");
+    let sha = git(&remote, &["rev-parse", "refs/heads/main"]);
+
+    run_guarded_job(&slot, &config, "job000000026", &[], None);
+
+    let result = std::fs::read_to_string(slot.work.join("job/result")).unwrap();
+    assert!(result.contains("publish_state=pushed\n"), "{result}");
+    assert_eq!(git(&remote, &["rev-parse", "refs/heads/published"]), sha);
+}
+
+fn run_guarded_job(
+    slot: &Slot,
+    config: &PoolConfig,
+    id: &str,
+    assertions: &[(&str, &str)],
+    manifest_override: Option<(Option<&[u8]>, Option<u32>)>,
+) {
+    let publish_if = assertions
+        .iter()
+        .map(|(reference, sha)| format!("{reference}={sha}"))
+        .collect::<Vec<_>>();
+    let command = format!(
+        "test ! -e '{}/job/publish-if.list' && ! env | grep -q '^PUBLISH_GUARD_'",
+        slot.work.display()
+    );
+    let plan = dispatch::plan_job(
+        config,
+        "p",
+        (
+            "task-guard",
+            "subject",
+            &vivi_mail::letter::fixture::task_body(""),
+        ),
+        &DispatchFlags {
+            model: source::MODEL.to_string(),
+            need: None,
+            kind: None,
+            from: Some("main".into()),
+            branch: Some("work/guard".into()),
+            publish_ref: Some("refs/heads/published".into()),
+            publish_expect: None,
+            publish_contains: None,
+            publish_if,
+            delete_ref: None,
+            delete_expect: None,
+            with: Vec::new(),
+            budget: Some(60),
+            allow_default_branch: true,
+            read_only: false,
+            reasoning: None,
+            command: Some(command),
+        },
+        job::DEFAULT_RULES.to_string(),
+        id.to_string(),
+    )
+    .unwrap();
+    let mut bundle = job::build_bundle(&plan, "p-slot-1", &Secret::new(String::new()));
+    if let Some((content, mode)) = manifest_override {
+        let manifest_index = bundle
+            .files
+            .iter()
+            .position(|file| file.name == "publish-if.list")
+            .unwrap();
+        if let Some(content) = content {
+            bundle.files[manifest_index].content = content.to_vec();
+        }
+        if let Some(mode) = mode {
+            if mode == 0 {
+                let run_index = bundle
+                    .files
+                    .iter()
+                    .position(|file| file.name == "run.sh")
+                    .unwrap();
+                let original = bundle.files[run_index].content.clone();
+                bundle.files[run_index].content = b"#!/bin/bash\nchmod 000 \"$WORK/job/publish-if.list\"\nexec bash \"$WORK/job/runner.original.sh\"\n".to_vec();
+                bundle.files.push(job::BundleFile {
+                    name: "runner.original.sh",
+                    content: original,
+                    mode: 0o700,
+                });
+            } else {
+                bundle.files[manifest_index].mode = mode;
+            }
+        }
+    }
+    std::fs::write(slot.work.join("job.tgz"), job::pack(&bundle).unwrap()).unwrap();
+    let out = boot(slot);
+    let log = std::fs::read_to_string(slot.work.join("job/run.log")).unwrap_or_default();
+    assert!(out.status.success(), "{}\n{log}", said(&out));
+}
+
+#[test]
 fn a_chatty_requirement_is_not_a_failure_and_a_pool_without_requirements_writes_no_mark() {
     let root = tempfile::tempdir().unwrap();
     let mut config = embedded_config("true");

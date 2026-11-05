@@ -43,6 +43,10 @@
 #                commit dispatch resolved it to (or `-`); fetch mode deepens
 #                until each has a merge base with FROM (see the with loop
 #                below)
+#   publish-if.list optional: repeated `<refs/heads/ref>\t<full SHA>` runner
+#                assertions; captured and removed before the harness, then
+#                rechecked with publisher credentials immediately before the
+#                requested publication (see check_publish_guards below)
 #   extra-targets.env
 #                optional: other repositories to check out read-only beside
 #                this job's own (a planner reads every target). EXTRA_COUNT and,
@@ -122,6 +126,11 @@ PUBLISH_HOME=
 PUBLISH_GIT=
 PUBLISH_PATH=
 PUBLISH_ASKPASS=
+PUBLISH_GUARD_STATE=absent
+PUBLISH_GUARD_CONTENT=
+PUBLISH_GUARD_CHECK=0
+# These values belong to the runner, not to a possibly same-uid harness.
+export -n PUBLISH_GUARD_STATE PUBLISH_GUARD_CONTENT PUBLISH_GUARD_CHECK 2>/dev/null || true
 if [ -n "${UNPRIVILEGED:-}" ]; then
   as_hand() { "$@"; }
   AGENT_HOME=$W/home
@@ -196,6 +205,80 @@ publisher_git() {
     push|fetch|ls-remote) retry_refused publisher_env_git --git-dir="$PUBLISH_REPO" "$@" ;;
     *) publisher_env_git --git-dir="$PUBLISH_REPO" "$@" ;;
   esac
+}
+
+# Capture and remove the manifest before the harness starts. In unprivileged
+# slots the harness shares the runner's uid, so leaving the file in job/ would
+# let it replace the runner's publication assertions.
+capture_publish_guards() {
+  local captured
+  PUBLISH_GUARD_STATE=absent
+  PUBLISH_GUARD_CONTENT=
+  if [ ! -e "$J/publish-if.list" ] && [ ! -L "$J/publish-if.list" ]; then
+    return 0
+  fi
+  PUBLISH_GUARD_STATE=failed
+  if [ -f "$J/publish-if.list" ] && [ ! -L "$J/publish-if.list" ] && [ -r "$J/publish-if.list" ]; then
+    if captured=$(cat "$J/publish-if.list" 2>/dev/null && printf '\001'); then
+      PUBLISH_GUARD_CONTENT=${captured%$'\001'}
+      PUBLISH_GUARD_STATE=loaded
+    fi
+  fi
+  rm -f "$J/publish-if.list" || PUBLISH_GUARD_STATE=failed
+}
+
+# Verify every complete assertion using only publisher credentials. A missing
+# ref or a different full tip is a freshness change; malformed input or a
+# failed query refuses publication as a guard failure.
+check_publish_guards() {
+  local url=$1 content line ref sha observed actual_sha actual_ref count=0
+  [ "$PUBLISH_GUARD_STATE" = absent ] && return 0
+  [ "$PUBLISH_GUARD_STATE" = loaded ] || { PUBLISH_STATE=publish_guard_failed; return 1; }
+  content=$PUBLISH_GUARD_CONTENT
+  [[ "$content" == *$'\n' ]] || { PUBLISH_STATE=publish_guard_failed; return 1; }
+  content=${content%$'\n'}
+  [[ "$content" != *$'\n\n'* && "$content" != *$'\n' ]] || {
+    PUBLISH_STATE=publish_guard_failed
+    return 1
+  }
+  while [ -n "$content" ]; do
+    if [[ "$content" == *$'\n'* ]]; then
+      line=${content%%$'\n'*}
+      content=${content#*$'\n'}
+    else
+      line=$content
+      content=
+    fi
+    case "$line" in *$'\t'*) ;; *) PUBLISH_STATE=publish_guard_failed; return 1 ;; esac
+    ref=${line%%$'\t'*}
+    sha=${line#*$'\t'}
+    case "$sha" in *$'\t'*) PUBLISH_STATE=publish_guard_failed; return 1 ;; esac
+    case "$ref" in refs/heads/*) ;; *) PUBLISH_STATE=publish_guard_failed; return 1 ;; esac
+    publisher_git check-ref-format "$ref" >/dev/null 2>&1 && valid_git_oid "$sha" || {
+      PUBLISH_STATE=publish_guard_failed
+      return 1
+    }
+    observed=$(publisher_git ls-remote --heads "$url" "$ref") || {
+      PUBLISH_STATE=publish_guard_failed
+      return 1
+    }
+    if [ -z "$observed" ]; then
+      PUBLISH_STATE=publish_guard_changed
+      return 1
+    fi
+    [[ "$observed" != *$'\n'* ]] || { PUBLISH_STATE=publish_guard_failed; return 1; }
+    actual_sha=${observed%%$'\t'*}
+    actual_ref=${observed#*$'\t'}
+    case "$actual_ref" in *$'\t'*) PUBLISH_STATE=publish_guard_failed; return 1 ;; esac
+    valid_git_oid "$actual_sha" && [ "$actual_ref" = "$ref" ] || {
+      PUBLISH_STATE=publish_guard_failed
+      return 1
+    }
+    [ "$actual_sha" = "$sha" ] || { PUBLISH_STATE=publish_guard_changed; return 1; }
+    count=$((count + 1))
+  done
+  [ "$count" -gt 0 ] || { PUBLISH_STATE=publish_guard_failed; return 1; }
+  return 0
 }
 
 # The server's SSH turned the connection away before any session began: sshd
@@ -423,13 +506,18 @@ publish_candidate_to() {
   if [ -n "${PUBLISH_EXPECT:-}" ] && [[ "$ref" == refs/heads/vivi/need/* ]]; then
     guarded_need_create "$url" "$ref" "$candidate" || return 1
     push_state=$GUARDED_PUSH_STATE
-  elif publisher_git push --no-verify -q "$url" "$candidate:$ref"; then
-    push_state=pushed
-  elif [ "$allow_existing" = yes ]; then
-    push_state=already-on-remote
   else
-    PUBLISH_STATE=push_refused
-    return 1
+    if [ "$PUBLISH_GUARD_CHECK" = 1 ]; then
+      check_publish_guards "$url" || return 1
+    fi
+    if publisher_git push --no-verify -q "$url" "$candidate:$ref"; then
+      push_state=pushed
+    elif [ "$allow_existing" = yes ]; then
+      push_state=already-on-remote
+    else
+      PUBLISH_STATE=push_refused
+      return 1
+    fi
   fi
   publisher_git fetch -q --no-tags "$url" "$ref" 2>/dev/null || {
     PUBLISH_STATE=verify_failed
@@ -481,6 +569,9 @@ guarded_need_create() {
     fi
     PUBLISH_STATE=ref_mismatch
     return 1
+  fi
+  if [ "$PUBLISH_GUARD_CHECK" = 1 ]; then
+    check_publish_guards "$url" || return 1
   fi
   if publisher_git push --no-verify -q --force-with-lease="$ref:" "$url" "$candidate:$ref"; then
     GUARDED_PUSH_STATE=pushed
@@ -541,7 +632,9 @@ publish_target() {
     PUBLISH_STATE=remote_missing
     return 0
   fi
+  PUBLISH_GUARD_CHECK=1
   publish_candidate_to "$PUBLISH_URL" "$PUBLISH_REF" "$PUBLISH_CANDIDATE" yes || true
+  PUBLISH_GUARD_CHECK=0
 }
 
 # Delete only this job's owned need, prior-need, unit, repair or merge-main ref, guarded by its exact
@@ -624,6 +717,7 @@ fi
 
 cd "$RD" || finish workdir_missing
 TOKEN=$(cat "$J/token")
+capture_publish_guards
 [ -z "${UNPRIVILEGED:-}" ] || rm -f "$J/token"
 BRIDGE_KEY=
 if [ -f "$J/bridge.key" ]; then
