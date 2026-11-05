@@ -59,7 +59,7 @@ directories. Run it again at will.
 | `data_dir` | Storage root: durable and chat projects at `<data_dir>/projects/<id>/.vivi/` (`data`) |
 | `send_rate_per_minute` | Writes per minute per identity (rooms, the projects API, and MCP writes share it). `30` by default; a positive integer sets the limit; `0` is unlimited (for a trusted tailnet host) |
 | `hosted_default_identity` | The vivi identity an API key without its own `identity` acts as on a hosted project (`operator`) |
-| `log` | Log filter (`vivi::server=info,vivi::pump=info,tower_http=info`) |
+| `log` | Log filter (`vivi_server=info,vivi_core::pump=info,tower_http=info`) |
 | `projects_root` | Project tools: directory that holds project roots (`<root>/<name>`) (`projects`) |
 | `lanes_root` | Project tools: directory that holds each project's lanes (`<root>/<name>/<target>.git`) (`lanes`) |
 | `git_url_prefix` | Project tools: lane URLs are `<prefix><name>/<target>.git`, for example `git@hub:` (`file://<lanes_root>/`) |

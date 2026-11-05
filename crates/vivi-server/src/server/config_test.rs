@@ -144,3 +144,44 @@ fn secrets_other_users_can_read_are_refused() {
     assert!(err.contains("chmod"), "{err}");
     let _ = std::fs::remove_dir_all(&home);
 }
+
+/// The default log filter must let the server's own lines through. It named
+/// `vivi::server` after the crates were split (the server's lines come from
+/// `vivi_server::...`, the pumps' from `vivi_core::pump::...`), and a 23 host
+/// logged nothing at all: no home, no projects, no listening line.
+#[test]
+fn the_default_log_filter_keeps_the_server_and_pump_lines() {
+    use std::sync::{Arc, Mutex};
+    let home = scratch("log-filter");
+    let config = ServerConfig::load_from(&home).unwrap();
+    let seen: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = seen.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::new(&config.log))
+        .with_writer(move || SinkWriter(sink.clone()))
+        .finish();
+    tracing::subscriber::with_default(subscriber, || {
+        tracing::info!("a server line");
+        tracing::info!(target: "vivi_core::pump::service", "a pump line");
+        tracing::debug!("a debug line");
+    });
+    let text = String::from_utf8(seen.lock().unwrap().clone()).unwrap();
+    assert!(text.contains("a server line"), "{text:?}");
+    assert!(text.contains("a pump line"), "{text:?}");
+    assert!(!text.contains("a debug line"), "{text:?}");
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+/// A writer into a shared buffer, for capturing log lines.
+struct SinkWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for SinkWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}

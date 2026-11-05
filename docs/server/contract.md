@@ -240,7 +240,7 @@ variable read). `vivi server init [--port N]` creates the home; `vivi server run
 | `data_dir` | storage root (`<data_dir>/projects/<id>/`, `<data_dir>/rooms/<id>/.vivi/`, per R2) | `data` |
 | `send_rate_per_minute` | writes per minute per identity (`0` = none) | `30` |
 | `hosted_default_identity` | identity an API key without its own acts as on a hosted project | `operator` |
-| `log` | log filter | `vivi::server=info,vivi::pump=info,tower_http=info` |
+| `log` | log filter | `vivi_server=info,vivi_core::pump=info,tower_http=info` |
 | `projects_root`, `lanes_root`, `git_url_prefix`, `default_pool` | host project tools (see Host tools) | `projects`, `lanes`, `file://<lanes_root>/`, unset |
 
 Secret files in `creds/` (the directory mode 700, each file mode 600; the server

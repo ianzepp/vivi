@@ -3186,7 +3186,7 @@ variable the server reads, and it also holds this machine's other vivi files
   | `port` | listen port (`8080`) |
   | `send_rate_per_minute` | writes per minute per identity (`30`; `0` is unlimited) |
   | `hosted_default_identity` | identity an API key without its own acts as on a hosted project (`operator`) |
-  | `log` | log filter (`vivi::server=info,vivi::pump=info,tower_http=info`) |
+  | `log` | log filter (`vivi_server=info,vivi_core::pump=info,tower_http=info`) |
   | `data_dir` | data directory (`data`) |
   | `projects_root` | where `create_project` puts project roots (`projects`) |
   | `lanes_root` | where it puts lane repositories (`lanes`) |

@@ -68,7 +68,7 @@ config.toml (every key optional; relative paths are under the server home):
                             unlimited)
   hosted_default_identity   Identity an API key without its own acts as on a
                             hosted project (default operator)
-  log                       Log filter (default vivi::server=info,vivi::pump=info,tower_http=info)
+  log                       Log filter (default vivi_server=info,vivi_core::pump=info,tower_http=info)
   data_dir                  Data directory (default data)
   projects_root             Where host tools put project roots (default projects)
   lanes_root                Where host tools put lane repositories (default lanes)
