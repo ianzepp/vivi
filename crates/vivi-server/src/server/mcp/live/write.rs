@@ -46,6 +46,7 @@ pub(super) fn send(
     arguments: &Value,
 ) -> Result<Value, ToolError> {
     rate_limit(limiter, project_id, &h.actor)?;
+    assert_from(h, arguments)?;
     let kind = req_str(arguments, "kind")?;
     let role = match kind {
         "need" => "needs",
@@ -91,6 +92,7 @@ pub(super) fn reply(
     arguments: &Value,
 ) -> Result<Value, ToolError> {
     rate_limit(limiter, project_id, &h.actor)?;
+    assert_from(h, arguments)?;
     let handle = req_str(arguments, "handle")?;
     let body = req_str(arguments, "body")?;
     let to = parse_to(arguments)?;
@@ -122,6 +124,22 @@ pub(super) fn reply(
     let mut out = delivery_json(h, &result)?;
     out["in_reply_to"] = json!(handle);
     Ok(out)
+}
+
+fn assert_from(h: &Hosted, arguments: &Value) -> Result<(), ToolError> {
+    let Some(value) = arguments.get("from") else {
+        return Ok(());
+    };
+    let supplied = value
+        .as_str()
+        .ok_or_else(|| ToolError::new("from must be a string"))?;
+    let resolved = h.ms.resolve_identity(supplied).map_err(lib_error)?;
+    if resolved != h.actor {
+        return Err(ToolError::new(
+            "from must assert the effective acting identity",
+        ));
+    }
+    Ok(())
 }
 
 /// `done` moves the item to the done folder; `reopen` moves it back to the

@@ -409,6 +409,34 @@ async fn mcp_requires_a_bearer() {
 }
 
 #[tokio::test]
+async fn mcp_unaddressed_send_uses_grant_identity() {
+    let fx = fixture("unaddressed-authorship").await;
+    let (status, result) = fx
+        .rpc(
+            &fx.token,
+            "tools/call",
+            json!({
+                "name": "send",
+                "arguments": {"kind": "mail", "subject": "solo", "body": "stored", "to": []}
+            }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    assert_eq!(result["result"]["isError"], false, "{result}");
+}
+
+#[tokio::test]
+async fn mcp_from_cannot_change_the_grant_author() {
+    let fx = fixture("from-assertion").await;
+    let (status, result) = fx.rpc(&fx.token, "tools/call", json!({
+        "name": "send",
+        "arguments": {"kind": "mail", "subject": "bad", "body": "must not write", "from": "other"}
+    })).await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    assert_eq!(result["result"]["isError"], true, "{result}");
+}
+
+#[tokio::test]
 async fn initialize_and_tools_list() {
     let fx = fixture("init").await;
     let (status, init) = fx
@@ -423,6 +451,41 @@ async fn initialize_and_tools_list() {
     assert_eq!(init["result"]["serverInfo"]["name"], "vivi-server");
     let (status, listed) = fx.rpc(&fx.token, "tools/list", json!({})).await;
     assert_eq!(status, StatusCode::OK, "{listed}");
+    for name in ["send", "reply"] {
+        let schema = listed["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == name)
+            .unwrap()["inputSchema"]
+            .clone();
+        assert!(
+            schema["properties"]["from"].is_object(),
+            "{name} has optional from"
+        );
+        assert!(schema["properties"]["to"].is_object(), "{name} has to");
+        assert!(
+            !schema["required"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("from"))
+        );
+        assert!(
+            !schema["required"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("to"))
+        );
+        assert_eq!(
+            schema["properties"]["to"]["oneOf"][1]["items"]["type"],
+            "string"
+        );
+        assert!(
+            schema["properties"]["to"]["oneOf"][1]
+                .get("minItems")
+                .is_none()
+        );
+    }
     let names: Vec<_> = listed["result"]["tools"]
         .as_array()
         .unwrap()
@@ -554,7 +617,7 @@ async fn initialize_and_tools_list() {
     let send_schema = &tools.iter().find(|tool| tool["name"] == "send").unwrap()["inputSchema"];
     assert_eq!(
         send_schema["required"],
-        json!(["project", "kind", "to", "subject", "body"])
+        json!(["project", "kind", "subject", "body"])
     );
     assert_eq!(send_schema["additionalProperties"], false);
     for property in [
