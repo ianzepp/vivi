@@ -74,6 +74,23 @@ fn slice(id: &str, target: &str, scope: &str) -> String {
     )
 }
 
+/// The exact brief the rich slice carries: a TOML multiline literal with
+/// blank lines before the lookalike document headings and real content after
+/// the end heading.
+const RICH_BRIEF: &str = "Open the hand brief.\n\n--- Begin document ---\n\nEmbedded context for the hand.\n\n--- End document ---\n\nKeep this closing note in the brief.\n";
+
+/// A slice whose brief is a TOML multiline literal holding lookalike
+/// `--- Begin document ---` and `--- End document ---` lines that must stay
+/// receipt content, never section headings.
+fn rich_slice(id: &str, target: &str, scope: &str) -> String {
+    format!(
+        "[[slice]]\nid = \"{id}\"\ntitle = \"heading rich\"\nbrief = '''\nOpen the hand brief.\n\n\
+         --- Begin document ---\n\nEmbedded context for the hand.\n\n--- End document ---\n\n\
+         Keep this closing note in the brief.\n'''\ntarget = \"{target}\"\nwrite_scope = [{scope}]\n\
+         deps = []\n"
+    )
+}
+
 fn envelope(slices: &str) -> String {
     format!("+++\nanswer = \"sliced\"\n{slices}+++\nreport\n")
 }
@@ -81,6 +98,17 @@ fn envelope(slices: &str) -> String {
 fn result(job: &str, message: &str) -> String {
     format!(
         "{POOL_RESULT_MARKER}{job}: finished\npool p  slot 1  model m\n\n--- receipt\n{message}"
+    )
+}
+
+/// `result` plus the genuine trailing stderr-tail and runner-log-tail pool
+/// sections, appended after the envelope the way the renderer writes them so
+/// they sit outside it and the receipt must be cut before them.
+fn with_tails(reply: String) -> String {
+    format!(
+        "{}\n\n--- stderr tail\nthread 'hand' panicked at src/hand.rs:1:1:\nboom\n\n\
+         --- runner log tail\n10:02:03 INFO attempt 1 model m\n10:02:09 INFO hand exit 0\n",
+        reply.trim_end()
     )
 }
 
@@ -107,6 +135,36 @@ fn start(rig: &Rig, node: &str) -> Result<StartAction, VivariumError> {
         def: &rig.def,
     };
     FanoutStart.start(&cx, &row(node, "t-fan", StepState::Running))
+}
+
+#[test]
+fn a_heading_rich_receipt_fans_out_with_the_exact_brief() -> R {
+    let mut rig = rig()?;
+    let both = format!(
+        "{}{}",
+        rich_slice("H1", "default", "\"src/doc.rs\""),
+        slice("S2", "default", "\"src/b.rs\"")
+    );
+    seat(&mut rig, "slice", "build1", &[with_tails(envelope(&both))])?;
+
+    let action = start(&rig, "build1")?;
+
+    let StartAction::Fanout {
+        slicer_step,
+        slices,
+    } = action
+    else {
+        panic!("expected a fanout, got {action:?}");
+    };
+    assert_eq!(slicer_step.node, "slice");
+    let ids: Vec<&str> = slices.iter().map(|s| s.id.as_str()).collect();
+    assert_eq!(ids, vec!["H1", "S2"]);
+    assert_eq!(slices[0].target, "default");
+    assert_eq!(slices[0].write_scope, vec!["src/doc.rs".to_owned()]);
+    assert_eq!(slices[0].brief, RICH_BRIEF);
+    assert_eq!(rig.store.open_fanout(NEED, 1)?, Some("t-fan".into()));
+    assert!(!exceptions(&rig).contains("flow-slices-invalid"));
+    Ok(())
 }
 
 fn exceptions(rig: &Rig) -> String {

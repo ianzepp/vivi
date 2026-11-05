@@ -67,6 +67,22 @@ fn the_tail_is_capped_in_bytes_on_a_char_boundary() {
 }
 
 fn posted(rc: &str, receipt: &str, stderr: &str, log: &str) -> String {
+    posted_facts(rc, Vec::new(), receipt, stderr, log)
+}
+
+/// A posted reply whose facts section carries one `$ <cmd>` fact with
+/// `<out>` as its output.
+fn posted_fact(rc: &str, cmd: &str, out: &str, receipt: &str, stderr: &str, log: &str) -> String {
+    posted_facts(rc, vec![(cmd, out)], receipt, stderr, log)
+}
+
+fn posted_facts(
+    rc: &str,
+    facts: Vec<(&str, &str)>,
+    receipt: &str,
+    stderr: &str,
+    log: &str,
+) -> String {
     use crate::pool::collect::{Collected, JobResult, Outcome};
     use crate::pool::record::{DispatchRecord, OpenDispatch, collected_text};
     use std::collections::BTreeMap;
@@ -91,10 +107,14 @@ fn posted(rc: &str, receipt: &str, stderr: &str, log: &str) -> String {
         abandoned: 0,
         abandoned_cost_micros: 0,
     };
+    let mut fields = BTreeMap::from([("agent_rc".to_string(), rc.to_string())]);
+    for (n, (cmd, out)) in facts.iter().enumerate() {
+        fields.insert(format!("fact_{}_cmd", n + 1), (*cmd).to_string());
+        fields.insert(format!("fact_{}_exit", n + 1), "0".to_string());
+        fields.insert(format!("fact_{}_out", n + 1), (*out).to_string());
+    }
     let done = Collected {
-        result: JobResult {
-            fields: BTreeMap::from([("agent_rc".to_string(), rc.to_string())]),
-        },
+        result: JobResult { fields },
         receipt: receipt.into(),
         stderr: stderr.into(),
         log: log.into(),
@@ -143,6 +163,28 @@ fn a_long_receipt_section_is_still_capped_by_lines() {
     let result = parse(&job(JobStatus::Finished, Some(&text)));
     assert_eq!(result.tail.lines().count(), TAIL_LINES);
     assert_eq!(result.tail.lines().last(), Some("line199"));
+}
+
+#[test]
+fn an_unsectioned_reply_is_still_read_whole() {
+    let receipt = format!("{}test a::one ... FAILED\n", running("alpha"));
+    let result = parse(&job(JobStatus::Finished, Some(&receipt)));
+    let ids: Vec<String> = result.failing.into_iter().collect();
+    assert_eq!(ids, ["alpha::a::one"]);
+    assert!(result.tail.contains("test a::one ... FAILED"));
+}
+
+#[test]
+fn selection_is_receipt_then_stderr_and_survives_an_unknown_heading() {
+    let receipt = "alpha-receipt-line\n\n--- document note\nbeta-receipt-after-unknown-heading\n";
+    let text = posted("1", receipt, "gamma-stderr-line\n", "delta-log-line\n");
+    let result = parse(&job(JobStatus::Finished, Some(&text)));
+    assert!(result.tail.contains("alpha-receipt-line"));
+    assert!(result.tail.contains("beta-receipt-after-unknown-heading"));
+    assert!(result.tail.contains("gamma-stderr-line"));
+    assert!(!result.tail.contains("delta-log-line"));
+    assert!(!result.tail.contains("pool result"));
+    assert!(result.tail.find("alpha").unwrap() < result.tail.find("gamma").unwrap());
 }
 
 fn failing_of(receipt: &str, stderr: &str) -> Vec<String> {
@@ -226,6 +268,48 @@ fn a_json_failure_line_is_parsed() {
     assert_eq!(failing_of(&receipt, ""), ["alpha::m::t"]);
 }
 
+#[test]
+fn failing_ids_survive_unknown_and_backward_headings_in_the_receipt() {
+    let receipt = format!(
+        "{}test a::one ... FAILED\n\n--- document note\ntest b::two ... FAILED\n\n--- receipt\ntest c::three ... FAILED\n",
+        running("alpha"),
+    );
+    let stderr = "to rerun pass `--test stderrbin`\ntest d::four ... FAILED\n";
+    assert_eq!(
+        failing_of(&receipt, &stderr),
+        [
+            "alpha::a::one",
+            "alpha::b::two",
+            "alpha::c::three",
+            "alpha::d::four"
+        ],
+    );
+}
+
+#[test]
+fn facts_and_runner_log_never_reach_the_failing_set_or_tail() {
+    let text = posted_fact(
+        "101",
+        "cargo nextest run",
+        "error: test failed, to rerun pass `--test phony`",
+        "test a::one ... FAILED\n",
+        "",
+        "",
+    );
+    let result = parse(&job(JobStatus::Finished, Some(&text)));
+    let ids: Vec<String> = result.failing.into_iter().collect();
+    assert_eq!(ids, ["a::one"]);
+    assert!(!result.tail.contains("phony"));
+    assert!(!result.tail.contains("cargo nextest"));
+
+    let log = "     Running unittests src/lib.rs (target/debug/deps/logbin-1a2b3c4d5e6f7081)\n\
+               test l::t ... FAILED\n\nfailures:\n    l::t\n";
+    let only_log = posted("101", "", "", log);
+    let result = parse(&job(JobStatus::Finished, Some(&only_log)));
+    assert!(result.failing.is_empty());
+    assert_eq!(result.tail, "");
+}
+
 fn with_detail(text: &str, detail: &str) -> PoolJob {
     let mut job = job(JobStatus::Finished, Some(text));
     if let Some(outcome) = job.outcome.as_mut() {
@@ -237,6 +321,13 @@ fn with_detail(text: &str, detail: &str) -> PoolJob {
 fn env_of(rc: &str, receipt: &str, stderr: &str) -> Option<EnvFailure> {
     let text = posted(rc, receipt, stderr, "");
     env_failure(&job(JobStatus::Finished, Some(&text)))
+}
+
+fn env_of_log(rc: &str, receipt: &str, stderr: &str, log: &str) -> Option<EnvFailure> {
+    env_failure(&job(
+        JobStatus::Finished,
+        Some(&posted(rc, receipt, stderr, log)),
+    ))
 }
 
 #[test]
@@ -308,6 +399,36 @@ fn command_not_found_in_the_hand_message_or_receipt_is_ignored() {
     assert_eq!(env_failure(&job(JobStatus::Finished, Some(&text))), None);
     let message = format!("{text}\n\n--- hand final message\nsh: 1: tsc: not found\n");
     assert_eq!(env_failure(&job(JobStatus::Finished, Some(&message))), None);
+}
+
+#[test]
+fn missing_tool_evidence_is_read_from_the_stderr_section_only() {
+    let found = env_of(
+        "1",
+        "bash: ghost: command not found\n",
+        "bash: real: command not found\n",
+    )
+    .expect("env failure");
+    assert_eq!(found.tool.as_deref(), Some("real"));
+    assert!(found.evidence.contains("real"));
+    assert!(!found.evidence.contains("ghost"));
+}
+
+#[test]
+fn missing_tool_evidence_after_an_unknown_stderr_heading_is_kept() {
+    let stderr = "worker cleanup\n\n--- teardown note\nbash: terraform: command not found\n";
+    let found = env_of("1", "", stderr).expect("env failure");
+    assert_eq!(found.kind, EnvKind::ToolMissing);
+    assert_eq!(found.tool.as_deref(), Some("terraform"));
+    assert!(found.evidence.contains("terraform"));
+}
+
+#[test]
+fn command_not_found_in_the_runner_log_is_not_evidence() {
+    let found = env_of_log("127", "", "", "bash: tsc: command not found\n").expect("env failure");
+    assert_eq!(found.kind, EnvKind::ToolMissing);
+    assert_eq!(found.tool, None);
+    assert_eq!(found.evidence, "agent exit 127");
 }
 
 #[test]

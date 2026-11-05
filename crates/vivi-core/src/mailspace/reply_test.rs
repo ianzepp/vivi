@@ -197,11 +197,24 @@ fn a_reply_to_a_self_addressed_item_is_kept_on_its_thread() {
         })
         .unwrap();
     let reply = space
-        .reply(&item.sent, "operator", Vec::new(), Vec::new(), None, "a reply as myself".into())
+        .reply(
+            &item.sent,
+            "operator",
+            Vec::new(),
+            Vec::new(),
+            None,
+            "a reply as myself".into(),
+        )
         .expect("replying to one's own item must not be refused");
     assert!(
-        reply.delivered.iter().all(|copy| copy.identity == "operator"),
+        reply
+            .delivered
+            .iter()
+            .all(|copy| copy.identity == "operator"),
         "no other identity receives a self reply"
     );
-    assert!(reply.delivered.len() <= 1, "a self reply is stored like the item it answers");
+    assert!(
+        reply.delivered.len() <= 1,
+        "a self reply is stored like the item it answers"
+    );
 }

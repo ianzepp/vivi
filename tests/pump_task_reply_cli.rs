@@ -1,6 +1,7 @@
 //! A reply on a task the pump sent to itself, through the real binary and a
-//! real mailspace: a bare `vivi mail reply` has no other identity to address,
-//! so the pump passes `--to` (see `pump::record::reply_on_task`).
+//! real mailspace. The pump passes `--to` (see `pump::record::reply_on_task`);
+//! a bare `vivi mail reply` on an item only its author holds goes back to the
+//! author and stays on the thread (the self-reply rule, Nov 3).
 
 use std::process::{Command, Output};
 
@@ -61,17 +62,19 @@ fn text(bytes: &[u8]) -> String {
 }
 
 #[test]
-fn a_reply_without_a_recipient_on_a_pump_to_pump_task_fails() {
+fn a_reply_without_a_recipient_on_a_pump_to_pump_task_returns_to_its_author() {
     let (tmp, mailspace) = project();
     let task = self_task(&mailspace);
 
     let out = reply(&tmp, &task, &[]);
 
-    assert!(!out.status.success(), "{}", text(&out.stdout));
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let thread = vivi(&tmp, &["mail", "thread", &task]);
+    assert!(thread.status.success(), "{}", text(&thread.stderr));
     assert!(
-        text(&out.stderr).contains("no other local identity or remote address"),
+        text(&thread.stdout).contains("the brief"),
         "{}",
-        text(&out.stderr)
+        text(&thread.stdout)
     );
 }
 
