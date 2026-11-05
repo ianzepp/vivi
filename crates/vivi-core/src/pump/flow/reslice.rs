@@ -225,6 +225,15 @@ fn brief<M: FlowMail>(
     base: &SlicerBase,
 ) -> Result<String, VivariumError> {
     let context = reslice_context::quoted_context(&mail.task_body(&slice.task)?);
+    let footer = crate::pump::envelope::format::slicer(
+        if mode == Mode::Split {
+            SlicerMode::Split
+        } else {
+            SlicerMode::Rework
+        },
+        &base.target,
+        &illustrative_id(slice, mode),
+    );
     let fallback = base
         .fallback_reason
         .as_ref()
@@ -232,7 +241,7 @@ fn brief<M: FlowMail>(
     Ok(format!(
         "{}\n\nmode: {}\nslice size: aim for 5 to {} minutes\ntargets: {}\n\
          base source: {}\nbase target: {}\nbase ref: {}\nbase sha: {}\n{}\n\
-         {REQUEST_HEADING}\n\n{input}\n\n{}\n\n{context}",
+         {REQUEST_HEADING}\n\n{input}\n\n{}\n\n{context}\n\n{footer}",
         mode.instruction(),
         mode.word(),
         ctx.cfg.slice.minutes(),
@@ -244,6 +253,19 @@ fn brief<M: FlowMail>(
         fallback,
         reslice_context::CONTEXT_HEADING,
     ))
+}
+
+/// ID supplied to the shared slicer renderer for this request mode.
+fn illustrative_id(slice: &StepRow, mode: Mode) -> String {
+    let id = slice
+        .node
+        .strip_prefix(SLICE_NODE_PREFIX)
+        .unwrap_or(&slice.node);
+    if mode == Mode::Split {
+        id.to_owned()
+    } else {
+        format!("{id}.example")
+    }
 }
 
 /// The brief word for a resolved base's source.

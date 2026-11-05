@@ -285,9 +285,21 @@ fn a_brief_leads_with_the_slicing_instruction_and_quotes_the_history() -> R {
         brief.contains("> The public error type must stay stable."),
         "{brief}"
     );
-    for absent in ["cargo", "Checks", "```", "Run cargo clippy"] {
-        assert!(!brief.contains(absent), "{absent} in {brief}");
+    let footer_at = brief
+        .find("The actual reply starts immediately")
+        .expect("slicer footer");
+    let history = &brief[..footer_at];
+    for absent in ["+++", "cargo", "Checks", "```", "Run cargo clippy"] {
+        assert!(!history.contains(absent), "{absent} in {history}");
     }
+    assert!(
+        brief.ends_with(&crate::pump::envelope::format::slicer(
+            vivi_mail::letter::roles::SlicerMode::Rework,
+            "default",
+            "a.example"
+        )),
+        "{brief}"
+    );
     // The lead is dispatched guidance, not stored mail identity.
     let task = job.task.clone().expect("task");
     assert_eq!(rig.mail.tasks[&rig.slice.task].body, original);
