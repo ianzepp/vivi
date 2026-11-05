@@ -105,6 +105,7 @@ case "$REMOTE" in
 esac
 now() { date +%s; }
 T0=$(now)
+load_publish_guards || true
 START=
 AGENT_RC=
 AGENT_S=
@@ -122,6 +123,8 @@ PUBLISH_HOME=
 PUBLISH_GIT=
 PUBLISH_PATH=
 PUBLISH_ASKPASS=
+PUBLISH_GUARDS=
+PUBLISH_GUARD_STATE=
 if [ -n "${UNPRIVILEGED:-}" ]; then
   as_hand() { "$@"; }
   AGENT_HOME=$W/home
@@ -154,6 +157,47 @@ wait_for_agent_exit() {
     sleep 0.05
   done
   no_agent_running
+}
+
+# Read the runner-owned assertion file before the harness can inspect it.
+# Keep only validated ref/SHA pairs in this shell's private state.
+load_publish_guards() {
+  local guard_file=$J/publish-if.list line ref sha extra
+  PUBLISH_GUARDS=
+  PUBLISH_GUARD_STATE=
+  [ -e "$guard_file" ] || return 0
+  if [ -L "$guard_file" ] || [ ! -f "$guard_file" ] || [ ! -r "$guard_file" ]; then
+    PUBLISH_GUARD_STATE=publish_guard_failed
+    rm -f -- "$guard_file"
+    return 1
+  fi
+  while IFS= read -r line || [ -n "$line" ]; do
+    ref=${line%%$'\t'*}
+    [ "$ref" != "$line" ] || { PUBLISH_GUARD_STATE=publish_guard_failed; break; }
+    extra=${line#*$'\t'}
+    sha=${extra%%$'\t'*}
+    [ "$sha" != "$extra" ] && [ "$extra" = "$sha" ] || { PUBLISH_GUARD_STATE=publish_guard_failed; break; }
+    case "$ref" in refs/heads/*) ;; *) PUBLISH_GUARD_STATE=publish_guard_failed; break ;; esac
+    case "$ref" in *[!A-Za-z0-9_./-]*) PUBLISH_GUARD_STATE=publish_guard_failed; break ;; esac
+    valid_git_oid "$sha" || { PUBLISH_GUARD_STATE=publish_guard_failed; break; }
+    PUBLISH_GUARDS+="${PUBLISH_GUARDS:+$'\n'}$ref $sha"
+  done < "$guard_file"
+  rm -f -- "$guard_file"
+  [ -z "$PUBLISH_GUARD_STATE" ]
+}
+
+check_publish_guards() {
+  local ref sha line observed observed_ref
+  [ -z "$PUBLISH_GUARDS" ] && return 0
+  while read -r ref sha; do
+    [ -n "$ref" ] || continue
+    line=$(publisher_git ls-remote --heads "$PUBLISH_URL" "$ref" 2>/dev/null) || { PUBLISH_GUARD_STATE=publish_guard_failed; return 1; }
+    read -r observed observed_ref <<< "$line"
+    if [ "$observed_ref" != "$ref" ] || [ "$observed" != "$sha" ]; then
+      PUBLISH_GUARD_STATE=publish_guard_changed
+      return 1
+    fi
+  done <<< "$PUBLISH_GUARDS"
 }
 
 clean_publish_url() {
@@ -420,7 +464,9 @@ publish_candidate_to() {
     }
   fi
   history_clean "$candidate" || { PUBLISH_STATE=$HISTORY_STATE; return 1; }
-  if [ -n "${PUBLISH_EXPECT:-}" ] && [[ "$ref" == refs/heads/vivi/need/* ]]; then
+  PUBLISH_URL=$url
+  check_publish_guards || { PUBLISH_STATE=$PUBLISH_GUARD_STATE; return 1; }
+  if [ -n "${PUBLISH_EXPECT:-}" ] ] && [[ "$ref" == refs/heads/vivi/need/* ]]; then
     guarded_need_create "$url" "$ref" "$candidate" || return 1
     push_state=$GUARDED_PUSH_STATE
   elif publisher_git push --no-verify -q "$url" "$candidate:$ref"; then
@@ -541,6 +587,8 @@ publish_target() {
     PUBLISH_STATE=remote_missing
     return 0
   fi
+  if [ -n "$PUBLISH_GUARD_STATE" ]; then PUBLISH_STATE=$PUBLISH_GUARD_STATE; return 0; fi
+  check_publish_guards || { PUBLISH_STATE=$PUBLISH_GUARD_STATE; return 0; }
   publish_candidate_to "$PUBLISH_URL" "$PUBLISH_REF" "$PUBLISH_CANDIDATE" yes || true
 }
 
