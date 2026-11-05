@@ -12,7 +12,8 @@
 //!   role name until `role add` adopts it;
 //! - **sent**: it is the sender's own copy of work addressed to another
 //!   mailspace. The node is how the sender orders and tracks work in flight,
-//!   and the receiving mailspace dispatches it.
+//!   and the receiving mailspace dispatches it. Work the author sent to
+//!   nobody is not handed to anyone, so it stays **local**.
 //!
 //! The graph projection, `step`, `graph activate`, `boot`, the audit and
 //! prune read this one classification.
@@ -51,6 +52,14 @@ pub(super) enum Holding {
 #[must_use]
 pub fn is_foreign_account(account: &str) -> bool {
     account.contains('@')
+}
+
+/// Whether a stored To and Cc pair names nobody: both are empty or only
+/// whitespace. Callers must still check the row's storage role and work kind;
+/// an unaddressed row is not automatically this mailspace's own work.
+#[must_use]
+pub fn is_unaddressed(to: &str, cc: &str) -> bool {
+    to.trim().is_empty() && cc.trim().is_empty()
 }
 
 /// The bare lowercase addresses of a stored address list
@@ -127,8 +136,12 @@ impl Mailspace {
     /// The address `view`'s work was handed to when `view` is the sender's
     /// own copy: a row in `sent`, or the sender's row of a letter addressed
     /// only to another mailspace after it was moved (closed, or reopened
-    /// before reopening was refused).
+    /// before reopening was refused). A row with no audience names nobody, so
+    /// the author's own work stays here instead of waiting on a receiver.
     pub(super) fn sent_copy_recipient(&self, view: &StoredMessageView) -> Option<String> {
+        if is_unaddressed(&view.to_addr, &view.cc_addr) {
+            return None;
+        }
         let all = recipients(view);
         let remote = self.remote_recipients(view);
         if view.local_role == "sent" {
