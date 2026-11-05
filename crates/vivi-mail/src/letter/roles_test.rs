@@ -58,6 +58,96 @@ fn check_seconds_accept_integer_and_decimal_numbers() {
     assert_eq!(parsed.front["check"][0]["seconds"].as_f64(), Some(12.0));
 }
 
+/// Hand, Repairer and Merge all carry `[[check]]` rows, so each role's parser
+/// must refuse the same bad durations. The check row starts on reply line 4
+/// and its `seconds` line lands on reply line 7.
+fn a_check_row_per_role() -> impl Iterator<Item = (RoleKind, &'static str)> {
+    [
+        (RoleKind::Hand, "built"),
+        (RoleKind::Repairer, "built"),
+        (RoleKind::Merge, "merged"),
+    ]
+    .into_iter()
+}
+
+#[test]
+fn check_seconds_refuse_negative_and_non_numeric_values() {
+    for (kind, answer) in a_check_row_per_role() {
+        let row = |seconds: &str| {
+            hand(&format!(
+                "answer = \"{answer}\"\n\n[[check]]\ncmd = \"cargo test\"\n\
+                 result = \"pass\"\nseconds = {seconds}\n"
+            ))
+        };
+        for seconds in [
+            "-1",
+            "-1.5",
+            "\"12\"",
+            "\"fast\"",
+            "true",
+            "[12]",
+            "{ value = 12 }",
+        ] {
+            let err = parse_for(kind, &row(seconds)).unwrap_err();
+            assert!(
+                matches!(err, EnvelopeError::Toml { line: 7, .. }),
+                "{kind:?} seconds = {seconds}: {err:?}"
+            );
+        }
+
+        let missing = hand(&format!(
+            "answer = \"{answer}\"\n\n[[check]]\ncmd = \"cargo test\"\nresult = \"pass\"\n"
+        ));
+        let err = parse_for(kind, &missing).unwrap_err();
+        assert!(
+            matches!(err, EnvelopeError::Toml { .. }),
+            "{kind:?}: {err:?}"
+        );
+    }
+}
+
+#[test]
+fn check_seconds_refuse_non_finite_numbers() {
+    for (kind, answer) in a_check_row_per_role() {
+        let row = |seconds: &str| {
+            hand(&format!(
+                "answer = \"{answer}\"\n\n[[check]]\ncmd = \"cargo test\"\n\
+                 result = \"pass\"\nseconds = {seconds}\n"
+            ))
+        };
+        for seconds in ["nan", "inf", "-inf"] {
+            let err = parse_for(kind, &row(seconds)).unwrap_err();
+            assert!(
+                matches!(err, EnvelopeError::Toml { line: 7, .. }),
+                "{kind:?} seconds = {seconds}: {err:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn decimal_check_seconds_survive_serialization() {
+    let text = hand(
+        "answer = \"built\"\n\n[[check]]\ncmd = \"cargo test\"\nresult = \"pass\"\
+         \nseconds = 12.5\n\n[[check]]\ncmd = \"cargo doc\"\nresult = \"skipped\"\
+         \nseconds = 1.0e20\n",
+    );
+    let envelope = super::parse_role_reply::<super::Hand>(&text).unwrap();
+    assert_eq!(envelope.front.check[0].seconds, 12.5);
+    assert_eq!(envelope.front.check[1].seconds, 1.0e20);
+
+    let json = serde_json::to_value(&envelope.front).unwrap();
+    let round_tripped: super::Hand = serde_json::from_value(json).unwrap();
+    assert_eq!(round_tripped.check[0].seconds, 12.5);
+    assert_eq!(round_tripped.check[1].seconds, 1.0e20);
+
+    let rendered = crate::letter::render(&envelope.front, "fractional receipt").unwrap();
+    let reparsed = super::parse_role_reply::<super::Hand>(&rendered).unwrap();
+    assert_eq!(reparsed.front.check[0].seconds, 12.5);
+    assert_eq!(reparsed.front.check[1].seconds, 1.0e20);
+    assert_eq!(reparsed.body, "fractional receipt");
+}
+
 #[test]
 fn an_empty_change_list_is_a_valid_built() {
     let parsed = parse_for(RoleKind::Hand, &hand("answer = \"built\"\n")).unwrap();
