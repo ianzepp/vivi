@@ -300,7 +300,11 @@ fn a_reslice_brief_quotes_filtered_context_and_leaves_the_task_unchanged() -> R 
 
     let task = ask(&mut rig, Mode::Split, "too big")?;
 
-    let brief = rig.jobs.jobs[&format!("reslice-{task}-a1")].body.clone();
+    let full = rig.jobs.jobs[&format!("reslice-{task}-a1")].body.clone();
+    // The reply-format block at the end shows the envelope fences on purpose;
+    // the quoted context before it must not leak any front matter.
+    assert!(full.ends_with(super::REPLY_FORMAT), "{full}");
+    let brief = full[..full.len() - super::REPLY_FORMAT.len()].to_string();
     assert!(!brief.contains("+++"), "{brief}");
     assert!(!brief.contains("node = \"slice:a\""), "{brief}");
     assert!(!brief.contains("cargo"), "{brief}");

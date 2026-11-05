@@ -195,6 +195,10 @@ pub struct Check {
     pub result: CheckResult,
     #[serde(deserialize_with = "deserialize_seconds")]
     pub seconds: f64,
+    /// Optional free-text note on the check (for example which tests failed).
+    /// Models add it often; refusing the whole envelope over it lost rounds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 /// `seconds` is a duration: any finite, non-negative number, TOML integer or

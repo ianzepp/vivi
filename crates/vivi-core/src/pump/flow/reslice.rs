@@ -36,6 +36,30 @@ pub const KIND: &str = "reslice";
 /// Exception kind of a reslice job that gave no usable slicer reply.
 pub const RESLICE_FAILED: &str = "flow-reslice-failed";
 
+/// The reply format, restated at the end of every reslice brief. Without it
+/// models answered with Markdown (`## sliced`) and the reply was refused.
+pub const REPLY_FORMAT: &str = "## reply format (required)\n\n\
+Your whole reply is one document that opens with a line containing only `+++`, \
+then TOML front matter, then a closing `+++` line, then optional short notes. \
+Never Markdown headings or lists in place of the front matter: a reply that \
+does not open with `+++` is refused and the work is lost. Write free text as \
+TOML literal strings ('''...'''). Example:\n\n\
++++\n\
+answer = \"sliced\"\n\
+mode = \"<the mode above>\"\n\n\
+[[slice]]\n\
+id = \"<id>\"\n\
+title = 'One line title'\n\
+brief = '''\n\
+What to change, where, and the test to add.\n\
+'''\n\
+target = \"<target>\"\n\
+write_scope = [\"path/to/file.rs\", \"path/to/file_test.rs\"]\n\
+deps = []\n\
++++\n\n\
+When the work is not this need's, answer `escalate` instead, with `reason = '...'` \
+and no `[[slice]]` table.";
+
 /// What a reslice job asks the slicer to do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -232,7 +256,7 @@ fn brief<M: FlowMail>(
     Ok(format!(
         "{}\n\nmode: {}\nslice size: aim for 5 to {} minutes\ntargets: {}\n\
          base source: {}\nbase target: {}\nbase ref: {}\nbase sha: {}\n{}\n\
-         {REQUEST_HEADING}\n\n{input}\n\n{}\n\n{context}",
+         {REQUEST_HEADING}\n\n{input}\n\n{}\n\n{context}\n\n{REPLY_FORMAT}",
         mode.instruction(),
         mode.word(),
         ctx.cfg.slice.minutes(),
