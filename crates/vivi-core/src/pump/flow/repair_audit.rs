@@ -16,6 +16,7 @@ use std::collections::BTreeSet;
 use serde_json::json;
 
 use crate::pump::attempt_record::hand_message;
+use crate::pump::envelope::refusal;
 use crate::pump::flow::fanout::VERDICT_MERGED;
 use crate::pump::flow::handlers::{FlowMail, Registry, TickPhase};
 use crate::pump::flow::index::run_state;
@@ -229,7 +230,7 @@ fn findings_of(job: &PoolJob) -> Result<Vec<Finding>, String> {
         return Err(format!("audit job ended {:?} with no reply", job.status));
     };
     let parsed = parse_for(RoleKind::Auditor, &hand_message(&outcome.receipt))
-        .map_err(|error| format!("auditor reply unreadable: {error}"))?;
+        .map_err(|error| refusal::describe(job, &error))?;
     match parsed.front.get("finding") {
         Some(rows) => serde_json::from_value(rows.clone())
             .map_err(|error| format!("auditor findings unreadable: {error}")),

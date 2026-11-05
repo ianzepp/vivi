@@ -15,10 +15,11 @@ use crate::pump::flow::handlers::Registry;
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::load::load;
 use crate::pump::flow::mail::MailWriter;
+use crate::pump::flow::need_branch::{self, LIVE};
 use crate::pump::host::{Ctx, test_ctx};
 use crate::pump::jobs::{JobStore, PoolJob};
 use crate::pump::store::flow_links::SliceLink;
-use crate::pump::store::{DB_FILENAME, PumpStore};
+use crate::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
 use crate::routing::RoutedRole;
 use vivi_error::VivariumError;
 use vivi_mail::letter::roles::{FollowUp, Hand, HandAnswer};
@@ -26,6 +27,25 @@ use vivi_mail::letter::roles::{FollowUp, Hand, HandAnswer};
 type R = Result<(), VivariumError>;
 
 const NEED: &str = "n1";
+
+/// The target's main ref and the published tip of the need branch.
+const MAIN: &str = "1111111111111111111111111111111111111111";
+const NEED_TIP: &str = "2222222222222222222222222222222222222222";
+const BASE: &str = "3333333333333333333333333333333333333333";
+
+/// The operator's exact leading instruction for a follow-up brief.
+const LEAD: &str = "Return a slice list for this follow-up (sliced) or escalate. Do not \
+                    implement it; your checkout is read-only.";
+
+/// A real task letter: prose, an inline check, a checks section, a fenced
+/// command and a standalone self-check, then the substantive requirements.
+const HISTORICAL_BODY: &str = "+++\nneed = \"n1\"\nrun = 1\nnode = \"slice:a\"\n+++\n\n\
+The follow-up: the parser rejects empty input.\n\
+Checks: cargo test --lib parser\n\n\
+## Checks\n- cargo test --test hygiene\n\n\
+```sh\ncargo fmt --check\n```\n\n\
+Run cargo clippy before you answer.\n\n\
+## Requirements\nThe public error type must stay stable.\n";
 
 #[derive(Default)]
 struct Jobs {
@@ -64,7 +84,9 @@ fn step(node: &str, task: &str) -> StepRow {
 
 fn rig() -> Result<Rig, VivariumError> {
     let dir = tempdir().map_err(|e| VivariumError::Other(e.to_string()))?;
-    let (ctx, _host) = test_ctx(dir.path(), PumpConfig::default());
+    let mut cfg = PumpConfig::default();
+    cfg.main = String::from(MAIN);
+    let (ctx, host) = test_ctx(dir.path(), cfg);
     let mut routing = (*ctx.routing).clone();
     routing.roles.retain(|role| role.name != SLICER_ROLE);
     routing.roles.push(RoutedRole {
@@ -101,6 +123,20 @@ fn rig() -> Result<Rig, VivariumError> {
         fanout: Some("fan1".into()),
         deps: Vec::new(),
     })?;
+    // A live need branch on the default target, published at NEED_TIP.
+    store.upsert_need_branch(&NeedBranchRow::for_run(
+        &run,
+        need_branch::branch(NEED),
+        Some(BASE.into()),
+        LIVE,
+        "default",
+        Vec::new(),
+    ))?;
+    host.reply(
+        &format!("ls-remote origin refs/heads/{}", need_branch::branch(NEED)),
+        0,
+        &format!("{NEED_TIP}\trefs/heads/{}\n", need_branch::branch(NEED)),
+    );
     Ok(Rig {
         _dir: dir,
         ctx,
@@ -164,6 +200,10 @@ fn only_the_required_follow_up_queues_a_follow_up_reslice_job() -> R {
     assert!(job.body.contains("fix the parser"), "{}", job.body);
     assert!(job.body.contains("src/a.rs, src/b.rs"), "{}", job.body);
     assert!(!job.body.contains("tidy docs"), "{}", job.body);
+    assert!(job.read_only);
+    assert_eq!(job.target.as_deref(), Some("default"));
+    assert_eq!(job.from_ref.as_deref(), Some(NEED_TIP));
+    assert_ne!(job.from_ref.as_deref(), Some(MAIN));
     let task = job.task.clone().expect("task");
     let body = rig.mail.tasks[&task].body.clone();
     assert!(body.contains("follow-up from slice slice:a"), "{body}");
@@ -190,5 +230,61 @@ fn calling_the_hook_twice_queues_one_job() -> R {
     run_hook(&mut rig, &envelope)?;
 
     assert_eq!(rig.jobs.jobs.len(), 1);
+    Ok(())
+}
+
+#[test]
+fn a_brief_leads_with_the_slicing_instruction_and_quotes_the_history() -> R {
+    let mut rig = rig()?;
+    rig.mail
+        .tasks
+        .get_mut(&rig.slice.task)
+        .expect("slice task")
+        .body = HISTORICAL_BODY.into();
+    let original = rig.mail.tasks[&rig.slice.task].body.clone();
+
+    run_hook(
+        &mut rig,
+        &hand(vec![item("implement a fix in the parser", false)]),
+    )?;
+
+    assert_eq!(rig.jobs.jobs.len(), 1);
+    let job = rig.jobs.jobs.values().next().expect("job");
+    let brief = job.body.clone();
+    // The rework envelope word and the follow-up payload name both survive.
+    assert_eq!(job.payload["mode"], "follow-up");
+    assert!(
+        brief.starts_with(&format!("{LEAD}\n\nmode: rework\n")),
+        "{brief}"
+    );
+    assert!(brief.contains("slice size: aim for 5 to"), "{brief}");
+    // The instruction precedes the imperative request, which stays available.
+    assert!(
+        brief.find(LEAD) < brief.find("implement a fix in the parser"),
+        "{brief}"
+    );
+    assert!(brief.contains("## request"), "{brief}");
+    assert!(brief.contains("follow-up from slice slice:a"), "{brief}");
+    assert!(
+        brief.contains("need: implement a fix in the parser"),
+        "{brief}"
+    );
+    // The historical prose is quoted, its inherited instructions are not.
+    assert!(
+        brief.contains("> The follow-up: the parser rejects empty input."),
+        "{brief}"
+    );
+    assert!(brief.contains("> ## Requirements"), "{brief}");
+    assert!(
+        brief.contains("> The public error type must stay stable."),
+        "{brief}"
+    );
+    for absent in ["cargo", "Checks", "```", "Run cargo clippy"] {
+        assert!(!brief.contains(absent), "{absent} in {brief}");
+    }
+    // The lead is dispatched guidance, not stored mail identity.
+    let task = job.task.clone().expect("task");
+    assert_eq!(rig.mail.tasks[&rig.slice.task].body, original);
+    assert!(!rig.mail.tasks[&task].body.contains(LEAD));
     Ok(())
 }
