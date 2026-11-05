@@ -298,6 +298,18 @@ finish() { # finish <push-outcome> [sha]
     AGENT_RC=${AGENT_RC:-1}
     RESULT_EXTRA="ramdisk_size_gib=$RAMDISK_SIZE_GIB"
   fi
+  local proof_f proof_size proof_c proof_complete
+  for proof_f in agent.out agent.err; do
+    proof_size= proof_c=0 proof_complete=0
+    if [ -f "$J/$proof_f" ]; then
+      proof_size=$(wc -c < "$J/$proof_f" | tr -d ' ')
+      proof_c=$proof_size
+      [ "$proof_c" -le 262144 ] || proof_c=262144
+      [ "$proof_size" -le 262144 ] && proof_complete=1
+    fi
+    proof_key=${proof_f//./_}
+    RESULT_EXTRA="${RESULT_EXTRA:+$RESULT_EXTRA$'\n'}${proof_key}_size=$proof_size$'\n'${proof_key}_captured=$proof_c$'\n'${proof_key}_complete=$proof_complete"
+  done
   record_source_ancestry
   detach_local
   {

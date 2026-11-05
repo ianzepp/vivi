@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use super::*;
-use crate::pool::collect::{Collected, JobResult};
+use crate::pool::collect::{ChannelProof, Collected, JobResult};
 
 fn record(job: &str) -> DispatchRecord {
     DispatchRecord {
@@ -129,6 +129,8 @@ fn finished_with(extra: &[(&str, &str)]) -> Outcome {
         receipt: "did the thing\n".into(),
         stderr: String::new(),
         log: "from main at abc\n".into(),
+        stdout_proof: ChannelProof::default(),
+        stderr_proof: ChannelProof::default(),
     })
 }
 
@@ -187,6 +189,8 @@ fn read_only_outcome(extra: &[(&str, &str)]) -> Outcome {
         receipt: "read it all\n".into(),
         stderr: String::new(),
         log: String::new(),
+        stdout_proof: ChannelProof::default(),
+        stderr_proof: ChannelProof::default(),
     })
 }
 
@@ -529,6 +533,8 @@ fn finished_sections(receipt: &str, stderr: &str, log: &str) -> Outcome {
         receipt: receipt.into(),
         stderr: stderr.into(),
         log: log.into(),
+        stdout_proof: ChannelProof::default(),
+        stderr_proof: ChannelProof::default(),
     })
 }
 
