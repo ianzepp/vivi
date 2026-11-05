@@ -39,10 +39,44 @@ CREATE TABLE IF NOT EXISTS fanout_starts (
 /// Create the flow link tables when they are missing.
 pub(super) fn ensure_tables(conn: &Connection) -> Result<(), VivariumError> {
     conn.execute_batch(LINKS_DDL)
-        .map_err(db_err("create flow link tables"))
+        .map_err(db_err("create flow link tables"))?;
+    // Additive checks are required even when user_version already says v8.
+    let mut stmt = conn
+        .prepare("PRAGMA table_info(restart_entries)")
+        .map_err(db_err("inspect restart entries"))?;
+    let columns = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(db_err("inspect restart entries"))?
+        .collect::<Result<std::collections::BTreeSet<_>, _>>()
+        .map_err(db_err("inspect restart entries"))?;
+    drop(stmt);
+    for (name, declaration) in [
+        ("origin_record", "TEXT"),
+        ("action_id", "TEXT"),
+        ("unlock_task", "TEXT"),
+    ] {
+        if !columns.contains(name) {
+            conn.execute_batch(&format!(
+                "ALTER TABLE restart_entries ADD COLUMN {name} {declaration}"
+            ))
+            .map_err(db_err("extend restart entries"))?;
+        }
+    }
+    Ok(())
 }
 
-/// The fanout and dependencies recorded for one slice (or reslice) step task.
+/// Provenance attached to a durable restart request. Optional fields preserve
+/// autonomous requests and compatibility with legacy entry-only rows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestartMetadata {
+    pub need: String,
+    pub run: u32,
+    pub entry: String,
+    pub origin_record: Option<String>,
+    pub action_id: Option<String>,
+    pub unlock_task: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SliceLink {
     pub task: String,
@@ -98,8 +132,60 @@ fn read_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<LinkRow> {
 
 const LINK_COLUMNS: &str = "task, need, run, fanout, deps_json";
 
+fn restart_replay(
+    tx: &rusqlite::Transaction<'_>,
+    request: &RestartMetadata,
+) -> Result<bool, VivariumError> {
+    let Some(action) = &request.action_id else {
+        return Ok(false);
+    };
+    let receipt: bool = tx
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM applied_actions WHERE letter_id=?1)",
+            [action],
+            |r| r.get(0),
+        )
+        .map_err(db_err("check restart receipt"))?;
+    if !receipt {
+        return Ok(false);
+    }
+    let old = restart_row(tx, request)?;
+    let same = old.is_some_and(|v| {
+        v.0 == request.entry
+            && v.1 == request.origin_record
+            && v.2.as_ref() == Some(action)
+            && v.3 == request.unlock_task
+    });
+    if same {
+        Ok(true)
+    } else {
+        Err(VivariumError::Other(
+            "restart action already applied to a different request".into(),
+        ))
+    }
+}
+
+fn restart_row(
+    tx: &rusqlite::Transaction<'_>,
+    request: &RestartMetadata,
+) -> Result<Option<(String, Option<String>, Option<String>, Option<String>)>, VivariumError> {
+    let old = tx.query_row("SELECT entry, origin_record, action_id, unlock_task FROM restart_entries WHERE need=?1 AND run=?2", params![request.need, request.run], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).optional().map_err(db_err("read restart request"))?;
+    let predecessor: bool = tx
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM flow_runs WHERE need=?1 AND run=?2)",
+            params![request.need, request.run],
+            |r| r.get(0),
+        )
+        .map_err(db_err("check restart predecessor"))?;
+    if !predecessor {
+        return Err(VivariumError::Other(
+            "restart predecessor does not exist".into(),
+        ));
+    }
+    Ok(old)
+}
+
 impl PumpStore {
-    /// Record the fanout step task currently open in a run.
     ///
     /// # Errors
     /// Returns [`VivariumError`] when the row cannot be written.
@@ -206,6 +292,69 @@ impl PumpStore {
             )));
         }
         Ok(())
+    }
+
+    /// Load an entry and its optional provenance.
+    pub fn restart_metadata(
+        &self,
+        need: &str,
+        run: u32,
+    ) -> Result<Option<RestartMetadata>, VivariumError> {
+        self.conn().query_row(
+            "SELECT entry, origin_record, action_id, unlock_task FROM restart_entries WHERE need=?1 AND run=?2",
+            params![need, run], |r| Ok(RestartMetadata { need: need.to_owned(), run, entry: r.get(0)?, origin_record: r.get(1)?, action_id: r.get(2)?, unlock_task: r.get(3)? })
+        ).optional().map_err(db_err("read restart metadata"))
+    }
+
+    /// Atomically persist restart intent, predecessor state, and optional action receipt.
+    /// Replaying the identical action/request is a no-op; conflicting replays fail.
+    pub fn request_restart(
+        &self,
+        request: &RestartMetadata,
+        at: u64,
+    ) -> Result<bool, VivariumError> {
+        if request.need.is_empty()
+            || request.entry.is_empty()
+            || request.run == 0
+            || request.action_id.as_deref() == Some("")
+        {
+            return Err(VivariumError::Other("inconsistent restart request".into()));
+        }
+        let conn = self.conn();
+        let tx = conn
+            .unchecked_transaction()
+            .map_err(db_err("begin restart request"))?;
+        if restart_replay(&tx, request)? {
+            tx.commit().map_err(db_err("commit restart replay"))?;
+            return Ok(false);
+        }
+        let old = restart_row(&tx, request)?;
+        if let Some(v) = old {
+            if v.0 != request.entry
+                || v.1 != request.origin_record
+                || v.2 != request.action_id
+                || v.3 != request.unlock_task
+            {
+                return Err(VivariumError::Other("conflicting restart request".into()));
+            }
+        } else {
+            tx.execute("INSERT INTO restart_entries (need,run,entry,origin_record,action_id,unlock_task) VALUES (?1,?2,?3,?4,?5,?6)", params![request.need, request.run, request.entry, request.origin_record, request.action_id, request.unlock_task]).map_err(db_err("write restart request"))?;
+        }
+        let changed = tx.execute("UPDATE flow_runs SET state='restarting', state_at=CAST(strftime('%s','now') AS INTEGER) WHERE need=?1 AND run=?2", params![request.need, request.run]).map_err(db_err("mark restart predecessor"))?;
+        if changed == 0 {
+            return Err(VivariumError::Other(
+                "restart predecessor does not exist".into(),
+            ));
+        }
+        if let Some(action) = &request.action_id {
+            tx.execute(
+                "INSERT INTO applied_actions (letter_id,at) VALUES (?1,?2)",
+                params![action, i64::try_from(at).unwrap_or(i64::MAX)],
+            )
+            .map_err(db_err("record restart action"))?;
+        }
+        tx.commit().map_err(db_err("commit restart request"))?;
+        Ok(true)
     }
 
     /// Record the entry a restart of run `run` starts the next run at.

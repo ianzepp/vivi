@@ -17,7 +17,7 @@ use tempfile::tempdir;
 
 use crate::pump::flow::index::{RunRow, StepJobRow, StepRow, StepState, run_state};
 use crate::pump::flow::scope::ScopeState;
-use crate::pump::store::flow_links::SliceLink;
+use crate::pump::store::flow_links::{RestartMetadata, SliceLink};
 use crate::pump::store::step_payload::StepPayloadRow;
 use crate::pump::store::{DB_FILENAME, FlowWaitRow, NeedBranchRow, PumpStore, WaitingHandle};
 
@@ -208,8 +208,18 @@ fn write_scopes_and_links(store: &PumpStore, live: &RunRow) {
         .expect("fanout start");
     store.set_fanout_start("t-bare", None).expect("bare start");
     store
-        .set_restart_entry("n1", 1, "slice")
-        .expect("restart entry");
+        .request_restart(
+            &RestartMetadata {
+                need: "n1".into(),
+                run: 1,
+                entry: "slice".into(),
+                origin_record: Some("record-1".into()),
+                action_id: None,
+                unlock_task: Some("unlock-1".into()),
+            },
+            123,
+        )
+        .expect("restart request");
 }
 
 fn write_branches_payloads_and_state(store: &PumpStore, live: &RunRow, other: &RunRow) {
