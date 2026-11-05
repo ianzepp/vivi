@@ -13,15 +13,16 @@ use super::tool;
 pub(super) fn send_tool() -> Value {
     tool(
         "send",
-        "Send a need, task, want, chat, or mail as the authenticated caller. The server composes the letter and mints its id. For kind=chat, to is optional. For a need, task, or want the sugar arguments build the letter's front matter as the CLI's flags do (a need needs done_when, a want needs question; a missing one is refused with vivi's message). A body that opens with +++ is the whole letter, and a sugar argument beside it is refused. Mail and chat take no sugar arguments. With dispatch true (hosted projects only, kind need only) the need keeps every delivery field and the ordinary send response, and the server also files one open pump record for it: the record rides the response as `pump`, and `priority` only when requested. Dispatch is authorized exactly like pump_send: an API key minted by the host's own member and acting as a role of kind operator; a member token or any other key is refused. priority requires dispatch: larger levels are more urgent, and 0 means none.",
+        "Send a need, task, want, chat, or mail as the effective grant identity (falling back to the authenticated member). Optional from only asserts that identity and never overrides it. An empty or omitted To stores without delivery or wake. The server composes the letter and mints its id. For kind=chat, to is optional. For a need, task, or want the sugar arguments build the letter's front matter as the CLI's flags do (a need needs done_when, a want needs question; a missing one is refused with vivi's message). A body that opens with +++ is the whole letter, and a sugar argument beside it is refused. Mail and chat take no sugar arguments. With dispatch true (hosted projects only, kind need only) the need keeps every delivery field and the ordinary send response, and the server also files one open pump record for it: the record rides the response as `pump`, and `priority` only when requested. Dispatch is authorized exactly like pump_send: an API key minted by the host's own member and acting as a role of kind operator; a member token or any other key is refused. priority requires dispatch: larger levels are more urgent, and 0 means none.",
         json!({
             "type": "object",
             "properties": {
                 "kind": { "type": "string", "enum": ["need", "task", "want", "chat", "mail"] },
+                "from": { "type": "string", "description": "Optional assertion of the effective author; it cannot change authorship." },
                 "to": {
                     "oneOf": [
                         { "type": "string" },
-                        { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+                        { "type": "array", "items": { "type": "string" } }
                     ]
                 },
                 "subject": { "type": "string" },
@@ -54,7 +55,7 @@ pub(super) fn send_tool() -> Value {
                 "dispatch": { "type": "boolean", "default": false, "description": "Hosted projects and kind need only: the server also files one open pump record for the need, keeping every delivery field and the ordinary response. Authorized like pump_send: an API key minted by the host's own member acting as a role of kind operator." },
                 "priority": { "type": "integer", "minimum": 0, "maximum": i64::MAX, "description": "Requires dispatch. The need's dispatch priority: larger levels are more urgent, and 0 means none. Returned in the response only when requested." }
             },
-            "required": ["kind", "to", "subject", "body"],
+            "required": ["kind", "subject", "body"],
             "additionalProperties": false
         }),
     )

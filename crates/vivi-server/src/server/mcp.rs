@@ -390,7 +390,7 @@ fn initialize(params: &Value, surface: &Surface<'_>) -> Value {
     })
 }
 
-const PROJECT_INSTRUCTIONS: &str = "This is a vivi project mailspace. You are the authenticated member; never pass a from address. Start with overview, then list/show/thread to read, send/reply for new work, done/reopen for lifecycle, memo for durable notes, and graph for ready/blocked. On a hosted project, mark/unmark label a need or want, depend adds or drops prerequisites after the send, and board returns the project board.";
+const PROJECT_INSTRUCTIONS: &str = "This is a vivi project mailspace. Start with overview, then list/show/thread to read, send/reply for new work, done/reopen for lifecycle, memo for durable notes, and graph for ready/blocked. Send/reply To is optional: no recipients stores an author-only letter and causes no delivery or wake. Authorship is the effective grant identity, falling back to the authenticated member; optional From is an assertion only and cannot select another author. Ordinary list/board defaults are project-wide; specify filters to narrow them. Private memos default to your own. depend selects the acting role, not the holder. On a hosted project, mark/unmark label a need or want, depend adds or drops prerequisites after the send, and board returns the project board.";
 
 fn tools_list() -> Value {
     json!({
@@ -436,10 +436,12 @@ fn tools_list() -> Value {
                 "additionalProperties": false
             })),
             tool_schema::send_tool(),
-            tool("reply", "Reply to a letter by handle as the authenticated caller.", json!({
+            tool("reply", "Reply as the effective grant identity (falling back to the authenticated member); optional from only asserts authorship. To is optional, including an empty array, for a stored reply without delivery or wake.", json!({
                 "type": "object",
                 "properties": {
                     "handle": { "type": "string" },
+                    "from": { "type": "string" },
+                    "to": { "oneOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}] },
                     "body": { "type": "string" }
                 },
                 "required": ["handle", "body"],

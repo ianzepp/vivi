@@ -15,6 +15,16 @@ use crate::server::safety::RateLimiter;
 use super::read::{memo_items, string_list};
 use super::{Hosted, is_work, lib_error, locate};
 
+fn assert_hosted_from(arguments: &Value, actor: &str) -> Result<(), ToolError> {
+    let Some(value) = arguments.get("from") else {
+        return Ok(());
+    };
+    if value.as_str().is_some_and(|from| from.trim() == actor) {
+        return Ok(());
+    }
+    Err(ToolError::new("from must assert the effective author"))
+}
+
 /// A delivery as the tool reports it: the handle of the item as the
 /// recipient holds it (the sender's own copy when nothing was delivered
 /// locally), and every copy.
@@ -46,6 +56,7 @@ pub(super) fn send(
     arguments: &Value,
 ) -> Result<Value, ToolError> {
     rate_limit(limiter, project_id, &h.actor)?;
+    assert_hosted_from(arguments, &h.actor)?;
     let kind = req_str(arguments, "kind")?;
     let role = match kind {
         "need" => "needs",
@@ -91,6 +102,7 @@ pub(super) fn reply(
     arguments: &Value,
 ) -> Result<Value, ToolError> {
     rate_limit(limiter, project_id, &h.actor)?;
+    assert_hosted_from(arguments, &h.actor)?;
     let handle = req_str(arguments, "handle")?;
     let body = req_str(arguments, "body")?;
     let to = parse_to(arguments)?;
