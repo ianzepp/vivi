@@ -1,5 +1,6 @@
 //! The pump's flow engine: flows as data, a run per need, one transition point.
 
+pub(crate) mod admission;
 pub mod advance;
 pub mod answer;
 pub mod audit_step;

@@ -13,7 +13,7 @@ use crate::pump::jobs::JobStore;
 use vivi_error::VivariumError;
 use vivi_mail::letter::work::StepFront;
 
-mod prereq;
+pub(crate) mod prereq;
 
 /// The word the milestone answers when every prerequisite has landed.
 const READY: &str = "ready";

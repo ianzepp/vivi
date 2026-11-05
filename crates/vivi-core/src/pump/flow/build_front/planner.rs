@@ -87,8 +87,9 @@ fn front_lines(cx: &StartCx<'_>, need: &str) -> Result<String, VivariumError> {
     if let Some(target) = front.target {
         lines.push(format!("target: {target}\n"));
     }
-    if !front.depends_on.is_empty() {
-        lines.push(format!("depends_on: {}\n", front.depends_on.join(", ")));
+    let depends_on = cx.mail.need_prerequisites(need)?;
+    if !depends_on.is_empty() {
+        lines.push(format!("depends_on: {}\n", depends_on.join(", ")));
     }
     Ok(lines.concat())
 }

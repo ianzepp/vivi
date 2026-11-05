@@ -137,12 +137,14 @@ fn plan_brief_shows_done_when_target_and_depends_on_above_the_thread() -> R {
     front.depends_on = vec![String::from("a1"), String::from("b2")];
     let body = vivi_mail::letter::fixture::need_body_with(&front, "prose");
     let need = rig.mail.send_step("pump", "pump", "the need", &body, &[])?;
+    rig.mail.set_prerequisites(&need, &["b2", "c3"]);
     rig.run.need = need;
 
     let spec = start(&rig, "plan")?;
 
-    let lines = "done_when: first thing\ndone_when: second thing\ntarget: default\ndepends_on: a1, b2\nthread:";
+    let lines = "done_when: first thing\ndone_when: second thing\ntarget: default\ndepends_on: b2, c3\nthread:";
     assert!(spec.body.contains(lines), "{}", spec.body);
+    assert!(!spec.body.contains("depends_on: a1"), "{}", spec.body);
     Ok(())
 }
 
