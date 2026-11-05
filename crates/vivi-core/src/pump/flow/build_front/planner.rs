@@ -3,6 +3,7 @@
 use std::fmt::Write as _;
 
 use crate::mailspace::shipped::PUMP_PLANNER_ROLE;
+use crate::pump::envelope::format;
 use crate::pump::flow::def::{FlowKind, NodeClass};
 use crate::pump::flow::handlers::{FlowMail, Registry};
 use crate::pump::flow::index::StepRow;
@@ -12,6 +13,7 @@ use crate::pump::flow::step_inputs::{
 };
 use crate::pump::jobs::JobStore;
 use vivi_error::VivariumError;
+use vivi_mail::letter::roles::RoleKind;
 
 /// The node whose answer `plan2` builds on.
 const FIRST_PLAN: &str = "plan";
@@ -65,6 +67,8 @@ fn brief(cx: &StartCx<'_>, step: &StepRow) -> Result<String, VivariumError> {
     if cx.run.run > 1 {
         text.push_str(&prior_branch_note(cx)?);
     }
+    text.push_str("\n\n");
+    text.push_str(&format::role(RoleKind::Planner));
     Ok(text)
 }
 

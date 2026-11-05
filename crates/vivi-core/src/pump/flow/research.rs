@@ -5,6 +5,7 @@
 //! job is read-only; the researcher answers with its envelope.
 
 use crate::mailspace::shipped::RESEARCHER_ROLE;
+use crate::pump::envelope::format;
 use crate::pump::flow::def::{FlowKind, NodeClass};
 use crate::pump::flow::handlers::{FlowMail, Registry};
 use crate::pump::flow::index::StepRow;
@@ -107,9 +108,7 @@ fn render(
     if let Some(text) = want_thread {
         parts.push(format!("WANT THREAD:\n{text}"));
     }
-    parts.push(String::from(
-        "Answer with the researcher envelope: READY, NOT READY or NEEDS FURTHER REVIEW.",
-    ));
+    parts.push(format::role(RoleKind::Researcher));
     parts.join("\n\n")
 }
 

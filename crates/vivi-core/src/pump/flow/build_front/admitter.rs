@@ -1,6 +1,7 @@
 //! The admitter step handler (admit1, admit2): a read-only admitter role job.
 
 use crate::mailspace::shipped::ADMITTER_ROLE;
+use crate::pump::envelope::format;
 use crate::pump::flow::def::{FlowKind, NodeClass};
 use crate::pump::flow::handlers::{FlowMail, Registry};
 use crate::pump::flow::index::StepRow;
@@ -8,6 +9,7 @@ use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
 use crate::pump::flow::step_inputs;
 use crate::pump::jobs::JobStore;
 use vivi_error::VivariumError;
+use vivi_mail::letter::roles::RoleKind;
 
 /// Starts an admitter step: the plan to check and the need thread.
 struct AdmitterStep;
@@ -19,10 +21,11 @@ impl StepHandler for AdmitterStep {
         }
         let plan = plan_of(cx, step)?;
         let brief = format!(
-            "need: {}\nrun: {}\n\nplan:\n{plan}\n\nthread:\n{}",
+            "need: {}\nrun: {}\n\nplan:\n{plan}\n\nthread:\n{}\n\n{}",
             cx.run.need,
             cx.run.run,
             step_inputs::need_thread(cx.ctx, &cx.run.need)?,
+            format::role(RoleKind::Admitter),
         );
         let spec = step_inputs::read_only_job(
             cx.ctx,

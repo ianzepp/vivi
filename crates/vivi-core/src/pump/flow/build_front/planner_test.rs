@@ -1,6 +1,8 @@
 //! Tests for the planner step handler.
 
+use crate::pump::envelope::format;
 use tempfile::{TempDir, tempdir};
+use vivi_mail::letter::roles::{Planner, PlannerAnswer, RoleKind, parse_role_reply};
 
 use crate::mailspace::shipped::PUMP_PLANNER_ROLE;
 use crate::pump::config::PumpConfig;
@@ -93,6 +95,21 @@ fn result(message: &str) -> String {
     format!("{POOL_RESULT_MARKER}j1: finished\npool p  slot 1  model m\n\n--- receipt\n{message}")
 }
 
+fn assert_planner_footer(body: &str) {
+    let footer = format::role(RoleKind::Planner);
+    assert!(body.ends_with(&footer), "footer is not final:\n{body}");
+    let example = footer
+        .split_once("Example (illustrative only):\n")
+        .expect("shared footer has an example")
+        .1;
+    let parsed = parse_role_reply::<Planner>(example).expect("planner example parses");
+    assert_eq!(parsed.front.answer, PlannerAnswer::Delivered);
+    assert_eq!(
+        parsed.front.reason.as_deref(),
+        Some("The requested work is complete.")
+    );
+}
+
 /// Starts the planner handler on `node` and returns the job's spec.
 fn start(rig: &Rig, node: &str) -> Result<crate::pump::jobs::JobSpec, VivariumError> {
     let def = load(FlowKind::Build)?;
@@ -123,6 +140,7 @@ fn plan_is_a_read_only_planner_job_with_the_thread() -> R {
     assert!(spec.body.contains(THREAD), "{}", spec.body);
     assert!(!spec.body.contains("first plan:"), "{}", spec.body);
     assert!(!spec.body.contains("prior need branch"), "{}", spec.body);
+    assert_planner_footer(&spec.body);
     Ok(())
 }
 
@@ -165,13 +183,22 @@ fn a_need_root_without_front_matter_fails_the_brief_naming_the_handle() -> R {
 
 #[test]
 fn plan2_carries_the_first_plan_and_the_admitter_reasons() -> R {
-    let mut rig = rig(true, 1)?;
+    let mut rig = rig(true, 2)?;
+    rig.store.upsert_need_branch(&NeedBranchRow {
+        need: NEED.into(),
+        branch: "vivi/need/n1".into(),
+        base: None,
+        status: "live".into(),
+        run: 2,
+        target: "default".into(),
+        priors: vec!["vivi/need-prior/n1-r1".into()],
+    })?;
     let plan = rig.mail.send_step("pump", "pump", "plan", "b", &[])?;
     let admit = rig.mail.send_step("pump", "pump", "admit1", "b", &[])?;
     rig.store
-        .insert_step(NEED, &row(1, "plan", &plan, StepState::Done))?;
+        .insert_step(NEED, &row(2, "plan", &plan, StepState::Done))?;
     rig.store
-        .insert_step(NEED, &row(1, "admit1", &admit, StepState::Done))?;
+        .insert_step(NEED, &row(2, "admit1", &admit, StepState::Done))?;
     rig.mail.reply(&plan, &result("the first plan text"))?;
     rig.mail.reply(&admit, &result("the admitter reasons"))?;
 
@@ -183,6 +210,15 @@ fn plan2_carries_the_first_plan_and_the_admitter_reasons() -> R {
         "{}",
         spec.body
     );
+    assert!(
+        spec.body
+            .contains("prior need branch: vivi/need-prior/n1-r1")
+    );
+    assert!(
+        spec.body.find("admitter reasons:").unwrap()
+            < spec.body.find("prior need branch:").unwrap()
+    );
+    assert_planner_footer(&spec.body);
     Ok(())
 }
 
@@ -227,6 +263,7 @@ fn a_later_run_names_the_last_prior_need_branch() -> R {
         "{}",
         spec.body
     );
+    assert_planner_footer(&spec.body);
     Ok(())
 }
 

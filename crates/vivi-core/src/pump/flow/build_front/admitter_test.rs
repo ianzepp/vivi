@@ -2,7 +2,10 @@
 
 use std::collections::BTreeMap;
 
+use crate::pump::envelope::format;
 use tempfile::{TempDir, tempdir};
+use vivi_mail::letter::review::{Admitter, AdmitterAnswer};
+use vivi_mail::letter::roles::{RoleKind, parse_role_reply};
 
 use crate::mailspace::shipped::ADMITTER_ROLE;
 use crate::pump::config::PumpConfig;
@@ -151,6 +154,22 @@ fn job(action: StartAction) -> Result<JobSpec, VivariumError> {
     }
 }
 
+fn assert_admitter_footer(body: &str) {
+    let footer = format::role(RoleKind::Admitter);
+    assert!(body.ends_with(&footer), "footer is not final:\n{body}");
+    let example = footer
+        .split_once("Example (illustrative only):\n")
+        .expect("shared footer has an example")
+        .1;
+    let parsed = parse_role_reply::<Admitter>(example).expect("admitter example parses");
+    assert_eq!(parsed.front.answer, AdmitterAnswer::Revise);
+    assert_eq!(
+        parsed.front.required_changes,
+        ["Clarify the expected output."]
+    );
+    assert!(parsed.front.findings.is_empty());
+}
+
 #[test]
 fn admit1_is_a_read_only_admitter_job_carrying_the_plan_and_thread() -> R {
     let mut rig = rig()?;
@@ -164,6 +183,8 @@ fn admit1_is_a_read_only_admitter_job_carrying_the_plan_and_thread() -> R {
     assert!(spec.body.contains("the need thread"), "{}", spec.body);
     assert!(spec.body.contains("need: n1"), "{}", spec.body);
     assert!(spec.body.contains("run: 1"), "{}", spec.body);
+    assert!(spec.body.find("thread:").unwrap() < spec.body.find("admitter:").unwrap());
+    assert_admitter_footer(&spec.body);
     Ok(())
 }
 
@@ -177,6 +198,7 @@ fn admit2_reads_plan2_not_plan() -> R {
 
     assert!(spec.body.contains("PLAN TWO TEXT"), "{}", spec.body);
     assert!(!spec.body.contains("PLAN ONE TEXT"), "{}", spec.body);
+    assert_admitter_footer(&spec.body);
     Ok(())
 }
 

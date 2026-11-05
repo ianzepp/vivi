@@ -2,7 +2,10 @@
 
 use std::sync::Arc;
 
+use crate::pump::envelope::format;
 use tempfile::{TempDir, tempdir};
+use vivi_mail::letter::review::{Researcher, ResearcherAnswer};
+use vivi_mail::letter::roles::{RoleKind, parse_role_reply};
 
 use super::{for_want, register};
 use crate::pump::config::PumpConfig;
@@ -172,6 +175,20 @@ fn a_research_step_with_a_want_gives_a_read_only_job_with_both_threads() -> R {
     assert!(spec.body.contains("NEED-THREAD-TEXT"), "{}", spec.body);
     assert!(spec.body.contains("WANT-THREAD-TEXT"), "{}", spec.body);
     assert!(spec.body.contains(&rig.need), "{}", spec.body);
+    assert!(spec.body.find("WANT THREAD:").unwrap() < spec.body.find("researcher:").unwrap());
+    let footer = format::role(RoleKind::Researcher);
+    assert!(
+        spec.body.ends_with(&footer),
+        "footer is not final:\n{}",
+        spec.body
+    );
+    let example = footer
+        .split_once("Example (illustrative only):\n")
+        .expect("shared footer has an example")
+        .1;
+    let parsed = parse_role_reply::<Researcher>(example).expect("researcher example parses");
+    assert_eq!(parsed.front.answer, ResearcherAnswer::Ready);
+    assert!(parsed.front.open_questions.is_empty());
     Ok(())
 }
 
