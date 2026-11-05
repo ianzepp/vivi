@@ -1,6 +1,6 @@
 [package]
 name = "vivi-report"
-version = "23.0.1"
+version = "23.0.2"
 edition = "2024"
 description = "vivi pump reports"
 license = "MIT"
