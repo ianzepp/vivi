@@ -76,7 +76,7 @@ pub fn spec(
         row.run,
         row.node,
         original.id,
-        role_row(kind),
+        super::format::role(kind),
         capped(&final_text(original)),
     );
     let mut spec = JobSpec::new(id, KIND, role, format!("envelope fix: {}", row.node), body);
@@ -128,51 +128,6 @@ fn capped(text: &str) -> String {
         end -= 1;
     }
     format!("{}\n[cut at {ORIGINAL_CAP} bytes]", &text[..end])
-}
-
-/// The role's section 1a row as text, with the general envelope rules.
-fn role_row(kind: RoleKind) -> String {
-    format!("{RULES}\n{}", fields(kind))
-}
-
-const RULES: &str = "The reply opens with TOML front matter between two lines containing only \
-`+++`, then the prose body. Unknown keys are refused. Write free text as literal strings \
-'...' (or '''...''' for several lines). Lists default to empty.";
-
-fn fields(kind: RoleKind) -> &'static str {
-    match kind {
-        RoleKind::Researcher => {
-            "researcher: answer = \"READY\" | \"NOT READY\" | \"NEEDS FURTHER REVIEW\"; open_questions (list)"
-        }
-        RoleKind::Planner => {
-            "planner: answer = \"planned\" | \"delivered\" | \"operator\" | \"hold\" | \"design\"; reason (string, required unless planned)"
-        }
-        RoleKind::Admitter => {
-            "admitter: answer = \"admitted\" | \"revise\" | \"escalate\"; required_changes (list, non-empty for revise); findings (list); reason (string, required for escalate)"
-        }
-        RoleKind::Slicer => {
-            "slicer: answer = \"sliced\" | \"escalate\"; mode = \"slice\" | \"rework\" | \"split\"; [[slice]] {id, title, brief, target, write_scope (list), deps (list)}, at least one for sliced and none for escalate; reason (string, required for escalate)"
-        }
-        RoleKind::Auditor => {
-            "auditor: answer = \"clean_pass\" | \"residual\" | \"block_range\" | \"block_ship\"; raise_rung = \"need\" | \"main\" | \"release\" (optional); [[requirement]] {id, text, status = SATISFIED | PARTIAL | MISSING | UNVERIFIED | NOT_APPLICABLE, evidence (list)}; [[finding]] {id, content, paths (list), recheck_trigger}"
-        }
-        RoleKind::Judge => "judge: answer = \"block\" | \"residual\"; reason (string, required)",
-        RoleKind::Cto => {
-            "head-cto: answer = \"research\" | \"plan\" | \"slice\" | \"rework\" | \"lock\"; reason (string, required); new_fact (string, required for a non-lock answer from run 3 on)"
-        }
-        RoleKind::Merge => {
-            "merge: answer = \"merged\" | \"conflict\"; conflicts (list of paths); design_change (bool); [[check]] {cmd, result = pass | fail | skipped, seconds}. No sha, ref, commit or exit code."
-        }
-        RoleKind::Hand => {
-            "hand: answer = \"built\" | \"blocked-scope\" | \"failed\"; change (list); [[check]] {cmd, result = pass | fail | skipped, seconds}; deviations (list); [[follow_up]] {paths (list), need}; remaining (list); scope_paths (list, required for blocked-scope); scope_reason (string, required for blocked-scope); scope_design (bool)"
-        }
-        RoleKind::Repairer => {
-            "repairer: answer = \"built\" | \"failed\"; change (list); [[check]] {cmd, result = pass | fail | skipped, seconds}; deviations (list). No sha, ref, commit or exit code."
-        }
-        RoleKind::HeadCeo => {
-            "head-ceo: answer = \"reviewed\" | \"no-op\"; served, research, dropped (lists of handles)"
-        }
-    }
 }
 
 #[cfg(test)]
