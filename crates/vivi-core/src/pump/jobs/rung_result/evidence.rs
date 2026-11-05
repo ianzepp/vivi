@@ -19,6 +19,12 @@ pub struct Evidence {
     pub recognized: bool,
     /// Whether selected output fits the evidence bound.
     pub bounded: bool,
+    /// Canonical compiler/clippy diagnostic signatures.
+    #[serde(default)]
+    pub diagnostics: Vec<String>,
+    /// Whether every diagnostic-looking block was parsed completely.
+    #[serde(default)]
+    pub diagnostics_complete: bool,
 }
 
 /// Result of comparing a candidate against a prior rung.
@@ -38,16 +44,21 @@ pub fn evidence(result: &RungResult, receipt: &str) -> Evidence {
     let full = failure_text(receipt);
     let byte_bounded = full.len() <= MAX_EVIDENCE_BYTES;
     let complete = capture_complete(receipt, "receipt") && capture_complete(receipt, "stderr");
+    let parsed_diagnostics = diagnostics::parse(&full);
+    let diagnostics_complete = parsed_diagnostics.is_some();
+    let diagnostics = parsed_diagnostics.unwrap_or_default();
     let recognized = full.lines().any(|line| {
         line.starts_with("test ") && line.ends_with(" ... FAILED")
             || line.starts_with("{\"type\":\"test\"")
-    });
+    }) || !diagnostics.is_empty();
     Evidence {
         exit: result.exit,
         failing: result.failing.iter().cloned().collect(),
         complete,
         recognized,
         bounded: byte_bounded,
+        diagnostics,
+        diagnostics_complete,
     }
 }
 
@@ -66,7 +77,14 @@ pub fn compare(baseline: &RungResult, candidate: &RungResult) -> Comparison {
         return Comparison::Unavailable;
     }
     let baseline_ids: std::collections::BTreeSet<_> = baseline.failing.iter().collect();
-    if candidate.failing.iter().all(|id| baseline_ids.contains(id)) {
+    let baseline_diagnostics: std::collections::BTreeSet<_> =
+        baseline_evidence.diagnostics.iter().collect();
+    if candidate.failing.iter().all(|id| baseline_ids.contains(id))
+        && candidate_evidence
+            .diagnostics
+            .iter()
+            .all(|item| baseline_diagnostics.contains(item))
+    {
         Comparison::Acceptable
     } else {
         Comparison::NewRed
@@ -80,6 +98,8 @@ fn evidence_for(result: &RungResult) -> Evidence {
         complete: false,
         recognized: !result.failing.is_empty(),
         bounded: false,
+        diagnostics: Vec::new(),
+        diagnostics_complete: false,
     })
 }
 
@@ -88,7 +108,8 @@ fn valid(evidence: &Evidence) -> bool {
         && evidence.complete
         && evidence.recognized
         && evidence.bounded
-        && !evidence.failing.is_empty()
+        && evidence.diagnostics_complete
+        && (!evidence.failing.is_empty() || !evidence.diagnostics.is_empty())
 }
 
 fn capture_complete(text: &str, name: &str) -> bool {
@@ -97,6 +118,9 @@ fn capture_complete(text: &str, name: &str) -> bool {
         .find_map(|line| line.strip_prefix(&prefix))
         .is_some_and(|value| value.ends_with(" bytes complete"))
 }
+
+#[path = "diagnostics.rs"]
+pub mod diagnostics;
 
 #[cfg(test)]
 #[path = "evidence_test.rs"]

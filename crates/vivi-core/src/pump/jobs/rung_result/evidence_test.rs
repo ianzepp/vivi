@@ -8,6 +8,8 @@ fn evidence_serializes() {
         complete: true,
         recognized: true,
         bounded: true,
+        diagnostics: Vec::new(),
+        diagnostics_complete: true,
     };
     let encoded = serde_json::to_string(&evidence).expect("serialize evidence");
     assert_eq!(
