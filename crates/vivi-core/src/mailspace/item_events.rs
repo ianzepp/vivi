@@ -49,7 +49,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use mail_parser::{HeaderValue, MessageParser};
 use serde::Serialize;
 
-use super::holding::{first_bare_address, is_foreign_account};
+use super::holding::{first_bare_address, is_foreign_account, is_unaddressed};
 use super::{Mailspace, prefix_of_domain};
 use vivi_error::VivariumError;
 use vivi_mail::message::normalize_message_id;
@@ -640,11 +640,15 @@ impl Mailspace {
             }
             let to_role = match (kind, row.local_role.as_str()) {
                 (ItemEventKind::Done, "tasks" | "needs" | "wants") => "done".to_string(),
-                (ItemEventKind::Done, "sent") if self.all_recipients_remote(row) => {
+                (ItemEventKind::Done, "sent")
+                    if self.all_recipients_remote(row) || is_unaddressed(row) =>
+                {
                     "done".to_string()
                 }
                 (ItemEventKind::Promoted, "wants") => "needs".to_string(),
-                (ItemEventKind::Promoted, "sent") if self.all_recipients_remote(row) => {
+                (ItemEventKind::Promoted, "sent")
+                    if self.all_recipients_remote(row) || is_unaddressed(row) =>
+                {
                     "needs".to_string()
                 }
                 (ItemEventKind::Reopened, "done")
@@ -681,7 +685,7 @@ impl Mailspace {
         if let Some(role) = closed_from {
             return Ok(role);
         }
-        if self.all_recipients_remote(row) {
+        if self.all_recipients_remote(row) || is_unaddressed(row) {
             return Ok("sent".into());
         }
         Ok(match item.kind {

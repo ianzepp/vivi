@@ -33,6 +33,23 @@ fn send(mailspace: &Mailspace, kind: &str, to: &str) -> (String, String) {
     (delivered, result.sent)
 }
 
+fn send_unaddressed(mailspace: &Mailspace, kind: &str) -> String {
+    mailspace
+        .send(SendRequest {
+            from: "mind".into(),
+            to: Vec::new(),
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: format!("a {kind}"),
+            body: vivi_mail::letter::fixture::body_for(kind, ""),
+            role: format!("{kind}s"),
+            kind: Some(kind.into()),
+            reply_to: None,
+        })
+        .unwrap()
+        .sent
+}
+
 fn event(kind: ItemEventKind, id: &str, prev: &[&str], date: i64) -> EventLetter {
     EventLetter {
         kind,
@@ -603,6 +620,78 @@ fn event_letters(mailspace: &Mailspace, handle: &str) -> Vec<String> {
     }
     found.sort();
     found.into_iter().map(|(_, bytes)| bytes).collect()
+}
+
+#[test]
+fn unaddressed_work_closes_and_reopens_in_place() {
+    let (_tmp, mailspace) = space();
+    let task = send_unaddressed(&mailspace, "task");
+    let before = mailspace
+        .list("mind", "sent")
+        .unwrap()
+        .into_iter()
+        .find(|row| row.handle == task)
+        .unwrap();
+    mailspace
+        .move_item("mind", &task, "done", None, "close", None)
+        .unwrap();
+    let closed = mailspace
+        .list("mind", "done")
+        .unwrap()
+        .into_iter()
+        .find(|row| row.handle == task)
+        .unwrap();
+    assert_eq!(closed.message_id, before.message_id);
+    mailspace
+        .move_item("mind", &task, "tasks", None, "reopen", None)
+        .unwrap();
+    let reopened = mailspace
+        .list("mind", "sent")
+        .unwrap()
+        .into_iter()
+        .find(|row| row.handle == task)
+        .unwrap();
+    assert_eq!(reopened.message_id, before.message_id);
+    assert!(
+        mailspace
+            .list("mind", "tasks")
+            .unwrap()
+            .iter()
+            .all(|r| r.handle != task)
+    );
+}
+
+#[test]
+fn unaddressed_dependency_blocks_then_unlocks() {
+    let (_tmp, mailspace) = space();
+    let prerequisite = send_unaddressed(&mailspace, "task");
+    let (dependent, _) = send(&mailspace, "task", "mind");
+    let show = mailspace.graph_show("backlog").unwrap();
+    assert!(show.nodes.iter().any(|node| node.kind == "task"));
+    mailspace
+        .move_item("mind", &prerequisite, "done", None, "close", None)
+        .unwrap();
+    assert_eq!(
+        mailspace
+            .item_event_state(&prerequisite)
+            .unwrap()
+            .unwrap()
+            .state,
+        "done"
+    );
+}
+
+#[test]
+fn unaddressed_want_promotes_once() {
+    let (_tmp, mailspace) = space();
+    let want = send_unaddressed(&mailspace, "want");
+    assert!(
+        mailspace
+            .list("mind", "sent")
+            .unwrap()
+            .iter()
+            .any(|r| r.handle == want)
+    );
 }
 
 #[test]
