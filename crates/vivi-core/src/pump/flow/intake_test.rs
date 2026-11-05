@@ -36,16 +36,16 @@ impl JobStore for Jobs {
     }
 }
 
-struct Rig {
-    _dir: TempDir,
-    ctx: Ctx,
-    store: PumpStore,
-    mail: FakeMail,
-    jobs: Jobs,
-    registry: Reg,
+pub(super) struct Rig {
+    pub(super) _dir: TempDir,
+    pub(super) ctx: Ctx,
+    pub(super) store: PumpStore,
+    pub(super) mail: FakeMail,
+    pub(super) jobs: Jobs,
+    pub(super) registry: Reg,
 }
 
-fn rig(cap: Option<u32>) -> Result<Rig, VivariumError> {
+pub(super) fn rig(cap: Option<u32>) -> Result<Rig, VivariumError> {
     let dir = tempdir().map_err(|e| VivariumError::Other(e.to_string()))?;
     let mut cfg = PumpConfig::default();
     cfg.flow.max_live_runs = cap;
@@ -68,11 +68,11 @@ impl Rig {
         MailWriter::open_record(&mut self.mail, need, body).map(|_| ())
     }
 
-    fn open_kind(&mut self, need: &str, kind: &str) -> R {
+    pub(super) fn open_kind(&mut self, need: &str, kind: &str) -> R {
         self.open(need, &record_body(need, kind))
     }
 
-    fn tick(&mut self) -> R {
+    pub(super) fn tick(&mut self) -> R {
         tick_with(
             &self.ctx,
             &mut self.jobs,
@@ -82,7 +82,7 @@ impl Rig {
         )
     }
 
-    fn runs(&self, need: &str) -> Result<Vec<(u32, String, String)>, VivariumError> {
+    pub(super) fn runs(&self, need: &str) -> Result<Vec<(u32, String, String)>, VivariumError> {
         Ok(self
             .store
             .runs_of(need)?

@@ -13,6 +13,8 @@ use std::collections::BTreeMap;
 
 use chrono::DateTime;
 
+use crate::pump::flow::admission::diagnostics::report;
+use crate::pump::flow::admission::{AdmissionState, evaluate};
 use crate::pump::flow::advance::start::{resume, start};
 use crate::pump::flow::def::FlowKind;
 use crate::pump::flow::handlers::{FlowMail, Registry, TickPhase};
@@ -25,7 +27,7 @@ use crate::pump::flow::rank::need_key;
 use crate::pump::flow::tick::{FLOW_INVALID, raise_once};
 use crate::pump::host::Ctx;
 use crate::pump::jobs::JobStore;
-use crate::pump::store::PumpStore;
+use crate::pump::store::{FlowWaitRow, PumpStore, WaitingHandle};
 use vivi_error::VivariumError;
 
 /// Exception kind: a run stayed `starting` too long.
@@ -118,6 +120,7 @@ impl<S: JobStore, M: FlowMail> TickPhase<S, M> for Intake {
             .map(|n| usize::try_from(n).unwrap_or(usize::MAX));
         let found = candidates(ctx, store, mail)?;
         for need in select(found, active, cap, &busy) {
+            store.remove_flow_wait(&need)?;
             start(ctx, store, mail, &need, None)?;
         }
         Ok(())
@@ -186,40 +189,30 @@ fn candidates<M: FlowMail>(
 ) -> Result<Vec<Candidate>, VivariumError> {
     let priorities: BTreeMap<String, i64> = store.need_priorities()?.into_iter().collect();
     let mut found = Vec::new();
-    for (handle, text) in mail.unreadable_records()? {
-        raise_once(ctx, LETTER_INVALID, &handle, &text);
-    }
-    for (handle, text) in mail.unreadable_actions()? {
-        raise_once(ctx, LETTER_INVALID, &handle, &text);
-    }
+    let mut open_waits = Vec::new();
+    report_invalid_letters(ctx, mail)?;
     for (need, date) in mail.open_record_needs()? {
         if has_run_in_flight(store, &need)? {
+            store.remove_flow_wait(&need)?;
             continue;
         }
-        let record = MailReader::open_record(mail, &need)?;
-        let handle = record.as_ref().map_or("", |(handle, _)| handle.as_str());
-        if mail.need_state(&need)? != NeedStatus::Open {
-            raise_once(
-                ctx,
-                RECORD_UNUSABLE,
-                &need,
-                &format!(
-                    "need {need} has open pump record {handle} but the need is done: expected \
-                     an open need; close the record with `vivi pump done {handle}`"
-                ),
-            );
+        let Some((record_handle, record_body)) = ready_record(ctx, store, mail, &need)? else {
             continue;
-        }
-        if let Some(text) = mail.need_letter_error(&need)? {
-            raise_once(ctx, LETTER_INVALID, &need, &text);
-            continue;
-        }
+        };
         let marks = mail.need_marks(&need)?;
-        let body = record.map(|(_, body)| body);
+        let body = Some(record_body);
         let flow_kind = kind::of(body.as_deref(), &marks);
         if let Err(error) = load(flow_kind) {
             raise_once(ctx, FLOW_INVALID, &need, &error.to_string());
             continue;
+        }
+        if flow_kind == FlowKind::Build {
+            open_waits.push((need.clone(), record_handle.clone()));
+            if !build_admitted(ctx, store, mail, &need, &record_handle)? {
+                continue;
+            }
+        } else {
+            store.remove_flow_wait(&need)?;
         }
         let repair = flow_kind == FlowKind::Repair;
         let target = match body.as_deref() {
@@ -237,7 +230,86 @@ fn candidates<M: FlowMail>(
             need,
         });
     }
+    store.reconcile_flow_waits(&open_waits)?;
     Ok(found)
+}
+
+fn ready_record<M: FlowMail>(
+    ctx: &Ctx,
+    store: &PumpStore,
+    mail: &M,
+    need: &str,
+) -> Result<Option<(String, String)>, VivariumError> {
+    let record = MailReader::open_record(mail, need)?;
+    let handle = record.as_ref().map_or("", |(handle, _)| handle.as_str());
+    if mail.need_state(need)? != NeedStatus::Open {
+        raise_once(
+            ctx,
+            RECORD_UNUSABLE,
+            need,
+            &format!(
+                "need {need} has open pump record {handle} but the need is done: expected an open need; close the record with `vivi pump done {handle}`"
+            ),
+        );
+        return Ok(None);
+    }
+    if let Some(text) = mail.need_letter_error(need)? {
+        raise_once(ctx, LETTER_INVALID, need, &text);
+        return Ok(None);
+    }
+    if record.is_none() {
+        store.remove_flow_wait(need)?;
+    }
+    Ok(record)
+}
+
+fn report_invalid_letters<M: FlowMail>(ctx: &Ctx, mail: &M) -> Result<(), VivariumError> {
+    for (handle, text) in mail.unreadable_records()? {
+        raise_once(ctx, LETTER_INVALID, &handle, &text);
+    }
+    for (handle, text) in mail.unreadable_actions()? {
+        raise_once(ctx, LETTER_INVALID, &handle, &text);
+    }
+    Ok(())
+}
+
+fn build_admitted<M: FlowMail>(
+    ctx: &Ctx,
+    store: &PumpStore,
+    mail: &M,
+    need: &str,
+    record: &str,
+) -> Result<bool, VivariumError> {
+    let admission = evaluate(store, mail, need);
+    report(ctx, store, record, need, &admission);
+    match admission.state {
+        AdmissionState::Ready => {
+            store.remove_flow_wait(need)?;
+            Ok(true)
+        }
+        AdmissionState::Unreadable(_) => {
+            store.remove_flow_wait(need)?;
+            Ok(false)
+        }
+        AdmissionState::Waiting | AdmissionState::Blocked => {
+            let handles = admission
+                .details
+                .iter()
+                .map(|p| WaitingHandle {
+                    handle: p.handle.clone(),
+                    state: format!("{:?}", p.state),
+                    detail: format!("{:?}", p.state),
+                })
+                .collect();
+            store.upsert_flow_wait(&FlowWaitRow {
+                need: need.into(),
+                record: record.into(),
+                handles,
+                evaluated_at: ctx.now(),
+            })?;
+            Ok(false)
+        }
+    }
 }
 
 /// Whether a repair record names a configured target; raise once when not.
@@ -288,5 +360,8 @@ fn age_of(date: &str) -> u64 {
 }
 
 #[cfg(test)]
+#[path = "intake_mail_test.rs"]
+mod mail_tests;
+#[cfg(test)]
 #[path = "intake_test.rs"]
-mod tests;
+pub(super) mod tests;
