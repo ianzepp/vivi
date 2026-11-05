@@ -62,6 +62,39 @@ fn want_done(mailspace: &Mailspace) -> bool {
 }
 
 #[test]
+fn an_author_only_serving_want_node_stays_open_and_ready_until_closed() {
+    let (_tmp, mailspace) = space();
+    let want = mailspace
+        .send(SendRequest {
+            from: "mind".into(),
+            to: Vec::new(),
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: "author-only want".into(),
+            body: want_body("q", "p"),
+            role: "wants".into(),
+            kind: Some("want".into()),
+            reply_to: None,
+        })
+        .unwrap()
+        .sent;
+    let view = mailspace.graph_show("backlog").unwrap();
+    let want_node = view.nodes.iter().find(|n| n.kind == "want").unwrap();
+    assert_eq!(want_node.state, "open");
+    assert!(
+        view.ready
+            .iter()
+            .any(|ready| ready.handle == want_node.handle)
+    );
+    assert_eq!(mailspace.want_state(&want).unwrap().state, WantState::Open);
+
+    close(&mailspace, &want, None);
+    assert_eq!(node(&mailspace, "want"), ("done".into(), false));
+    reopen(&mailspace, &want);
+    assert_eq!(node(&mailspace, "want"), ("open".into(), true));
+}
+
+#[test]
 fn the_want_node_follows_its_serving_needs() {
     let (_tmp, mailspace) = space();
     let want = send(&mailspace, "want", want_body("q", "p"));

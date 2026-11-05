@@ -53,6 +53,183 @@ fn letter(headers: &str) -> Vec<u8> {
 }
 
 #[test]
+fn unaddressed_work_closes_and_reopens_in_place() {
+    let (_tmp, mailspace) = space();
+    let result = mailspace
+        .send(SendRequest {
+            from: "mind".into(),
+            to: Vec::new(),
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: "local need".into(),
+            body: vivi_mail::letter::fixture::need_body(&["done"], ""),
+            role: "needs".into(),
+            kind: Some("need".into()),
+            reply_to: None,
+        })
+        .unwrap();
+    let handle = result.sent;
+    let storage = mailspace.storage().unwrap();
+    let id = storage.resolve_message_token(&handle).unwrap();
+    let original = storage.message_by_id(&id).unwrap().unwrap();
+    let node_state = || {
+        mailspace
+            .graph_show("backlog")
+            .unwrap()
+            .nodes
+            .into_iter()
+            .find(|node| node.source_id == handle)
+            .unwrap()
+            .state
+    };
+    assert_eq!(original.local_role, "sent");
+    assert_eq!(node_state(), "open");
+
+    mailspace
+        .move_item("mind", &handle, "done", None, "need done", None)
+        .unwrap();
+    let closed = storage.message_by_id(&id).unwrap().unwrap();
+    assert_eq!(
+        (closed.message_id.as_str(), closed.local_role.as_str()),
+        (original.message_id.as_str(), "done")
+    );
+    assert_eq!(node_state(), "done");
+    assert!(
+        !mailspace
+            .list("mind", "needs")
+            .unwrap()
+            .iter()
+            .any(|r| r.handle == handle)
+    );
+    assert!(
+        mailspace
+            .list("mind", "done")
+            .unwrap()
+            .iter()
+            .any(|r| r.handle == handle)
+    );
+
+    mailspace
+        .move_item("mind", &handle, "needs", None, "need reopen", None)
+        .unwrap();
+    let reopened = storage.message_by_id(&id).unwrap().unwrap();
+    assert_eq!(
+        (reopened.message_id.as_str(), reopened.local_role.as_str()),
+        (original.message_id.as_str(), "sent")
+    );
+    assert_eq!(node_state(), "open");
+}
+
+#[test]
+fn unaddressed_dependency_blocks_then_unlocks() {
+    let (_tmp, mailspace) = space();
+    let send_local = |subject: &str, dependency: Option<&str>| {
+        let body = dependency.map_or_else(
+            || vivi_mail::letter::fixture::need_body(&["done"], ""),
+            |dep| vivi_mail::letter::fixture::body_with_deps("need", "", &[dep.to_string()]),
+        );
+        mailspace
+            .send(SendRequest {
+                from: "mind".into(),
+                to: Vec::new(),
+                cc: Vec::new(),
+                bcc: Vec::new(),
+                subject: subject.into(),
+                body,
+                role: "needs".into(),
+                kind: Some("need".into()),
+                reply_to: None,
+            })
+            .unwrap()
+            .sent
+    };
+    let a = send_local("prerequisite", None);
+    let b = send_local("dependent", Some(&a));
+    let state = |handle: &str| {
+        mailspace
+            .graph_show("backlog")
+            .unwrap()
+            .nodes
+            .into_iter()
+            .find(|n| n.source_id == handle)
+            .unwrap()
+            .readiness
+    };
+    assert_eq!(state(&a), "ready");
+    assert_eq!(state(&b), "blocked");
+    mailspace
+        .move_item("mind", &a, "done", None, "need done", None)
+        .unwrap();
+    assert_eq!(state(&b), "ready");
+    mailspace
+        .move_item("mind", &a, "needs", None, "need reopen", None)
+        .unwrap();
+    assert_eq!(state(&b), "blocked");
+}
+
+#[test]
+fn unaddressed_want_promotes_once() {
+    let (_tmp, mailspace) = space();
+    let result = mailspace
+        .send(SendRequest {
+            from: "mind".into(),
+            to: Vec::new(),
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: "local want".into(),
+            body: vivi_mail::letter::fixture::want_body("q", "p"),
+            role: "wants".into(),
+            kind: Some("want".into()),
+            reply_to: None,
+        })
+        .unwrap();
+    let handle = result.sent;
+    let storage = mailspace.storage().unwrap();
+    let id = storage.resolve_message_token(&handle).unwrap();
+    let content = storage.message_by_id(&id).unwrap().unwrap().content_id;
+    let row = storage.message_by_id(&id).unwrap().unwrap();
+    let item = held_item(&storage, &content).unwrap().unwrap();
+    let planned = mailspace
+        .plan_item_moves(&storage, &item, ItemEventKind::Promoted, false)
+        .unwrap();
+    assert_eq!(planned.len(), 1);
+    assert_eq!(planned[0].to_role, "needs");
+    let move_ = role_move(&item, &planned[0], ItemEventKind::Promoted, None);
+    storage
+        .apply_item_event(&ItemEventWrite {
+            reply_requests: &[],
+            reply_data: None,
+            parent_content_id: "",
+            moves: &[move_],
+        })
+        .unwrap();
+    assert_eq!(
+        storage.message_by_id(&id).unwrap().unwrap().local_role,
+        "needs"
+    );
+    assert_eq!(
+        storage.message_by_id(&id).unwrap().unwrap().message_id,
+        row.message_id
+    );
+    assert_eq!(
+        mailspace
+            .graph_show("backlog")
+            .unwrap()
+            .nodes
+            .iter()
+            .find(|n| n.source_id == handle)
+            .unwrap()
+            .state,
+        "open"
+    );
+    let promoted = held_item(&storage, &content).unwrap().unwrap();
+    let repeated = mailspace
+        .plan_item_moves(&storage, &promoted, ItemEventKind::Promoted, false)
+        .unwrap();
+    assert!(repeated.is_empty());
+}
+
+#[test]
 fn a_property_event_letter_carries_the_payload_its_kind_needs() {
     let marked = letter(
         "In-Reply-To: <item-1@x.test>\r\nX-Vivi-Event: marked\r\n\
