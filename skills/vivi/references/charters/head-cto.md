@@ -18,7 +18,7 @@ Read all of the brief first, then check the failure against the code. Pick the c
 
 | `answer` | Use when | What happens next |
 | --- | --- | --- |
-| `rework` | The plan and the cut were sound and most of the work merged; what is left is a bounded set of failures (named slices, findings, failing checks) | A new run starts at rework on the same need branch: the merged work is kept, and only the failures are cut into new slices |
+| `rework` | The plan and the cut were sound and most of the work merged; what is left is a bounded set of failures (named slices, findings, failing checks) | A new run starts at rework: work already published on the need branch is kept, and only the failures are cut into new slices; a need with nothing published there starts from the current target main tip |
 | `slice` | The plan is sound but the cut was wrong: slices too large, a missing dependency, two slices fighting over one file | A new run re-slices the admitted plan from main; the old need branch is set aside |
 | `plan` | The plan itself was wrong: it missed a requirement, chose an approach the code cannot take, or contradicts the code | A new run plans again from main; the old need branch is set aside |
 | `research` | A fact is missing that nobody in the history established, and planning cannot go on without it | A new run starts at research; the old need branch is set aside |
@@ -26,7 +26,7 @@ Read all of the brief first, then check the failure against the code. Pick the c
 
 Rules:
 
-- Prefer `rework` whenever the merged work is sound. `slice`, `plan` and `research` throw the merged work away; use them only when keeping it would build on a mistake.
+- Prefer `rework` whenever the merged work is sound. It keeps what was published on the need branch; with nothing published there the new run starts from the current target main tip. `slice`, `plan` and `research` throw any merged work away; use them only when keeping it would build on a mistake.
 - One or two exhausted slices among many merged ones is a `rework`, not a re-plan: name the slices and their failures in `reason`.
 - From the third run of a need on, every answer but `lock` must carry `new_fact`: something you established that no earlier run had. If you cannot name one, answer `lock`. Repeating a step that already failed, with nothing new, wastes a run.
 - `reason` is what the next run reads first. Name the slices, paths, findings or questions it must deal with.

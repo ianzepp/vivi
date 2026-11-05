@@ -16,7 +16,7 @@ use crate::pump::flow::load::load;
 use crate::pump::flow::mail::{MailReader, MailWriter, NeedStatus, TaskState, TaskStatus};
 use crate::pump::flow::outcome::Outcome;
 use crate::pump::host::{Ctx, test_ctx};
-use crate::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
+use crate::pump::store::{DB_FILENAME, PumpStore};
 use vivi_error::VivariumError;
 use vivi_mail::letter::fixture::{sentinel_body, step_body};
 use vivi_mail::letter::work::StepFront;
@@ -154,16 +154,6 @@ fn done_closes_step_then_need_then_sentinel_then_record() -> R {
 fn restart_binds_the_new_sentinel_before_the_old_one_closes() -> R {
     let mut rig = rig()?;
     let cto = rig.step("cto", "rework")?;
-    // A rework answer is refused without a recorded need branch: seed the
-    // live row the routing prerequisite asks for.
-    rig.store.upsert_need_branch(&NeedBranchRow::for_run(
-        &run_row(),
-        "vivi/unit/n1-a1".into(),
-        Some("main".into()),
-        "live",
-        ".",
-        vec![],
-    ))?;
     let other = rig.step("build1", "")?.task;
     rig.mail.calls.clear();
 

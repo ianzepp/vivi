@@ -45,7 +45,7 @@ const WORDS: &str = "## Your words\n\n\
 - research: restart the need at the research entry\n\
 - plan: restart the need at the plan entry\n\
 - slice: restart the need at the slice entry\n\
-- rework: restart the need at the rework1 entry on the existing need branch\n\
+- rework: restart the need at the rework1 entry, preserving work already published on the need branch and otherwise starting from the current target main\n\
 - lock: lock the need for the operator\n";
 
 /// Starts a cto step as a head-cto job.
@@ -125,18 +125,21 @@ fn brief(cx: &StartCx<'_>) -> Result<String, VivariumError> {
     Ok(out)
 }
 
-/// The availability of rework, judged only by the stored need-branch row.
+/// The rework guidance of the brief, judged only by the stored need-branch
+/// row. It is advisory: no ref is resolved and no future job base is chosen.
 fn branch_availability(cx: &StartCx<'_>) -> Result<String, VivariumError> {
     let mut out = String::from("\n## Rework availability\n\n");
     match cx.store.need_branch(&cx.run.need)? {
         Some(row) => out.push_str(&format!(
             "A need-branch row is stored: rework restarts the need at rework1 on the existing \
-             branch {} for target {}. The row itself is not evidence that any slice merged.\n",
+             branch {} for target {}, preserving work already published there. The row itself \
+             is not evidence that any slice merged.\n",
             row.branch, row.target
         )),
         None => out.push_str(
-            "No need-branch row exists, so rework is unavailable for this need. Research, \
-             plan, slice and lock remain the choices.\n",
+            "No need-branch row is stored: rework restarts the need at rework1 from the current \
+             target main tip, so nothing is preserved beyond what main holds. Research, plan, \
+             slice and lock remain the choices.\n",
         ),
     }
     Ok(out)
