@@ -114,6 +114,7 @@ fn cand(need: &str, repair: bool, target: &str, priority: i64, age: u64) -> Cand
         target: target.into(),
         priority,
         age,
+        restart: None,
     }
 }
 

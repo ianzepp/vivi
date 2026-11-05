@@ -1,20 +1,25 @@
 //! Idempotent restart of a flow run.
 //!
 //! A restart records the requested entry, sets the old run `restarting`, then
-//! starts the next run (which is itself resumable) once the shared prerequisite
-//! assessment admits one, closes every open task of the old run `superseded`
-//! with its sentinel last, then sets the old run `superseded`. A failure at any
-//! write leaves the old run `restarting`; the [`Restarts`] tick phase resumes
-//! it and drops the old run's queued jobs. A restart an unlanded prerequisite
-//! blocks is not a failure: the old run waits `restarting` with its entry and
-//! starts no successor.
+//! finishes it through [`finish_deferred`]: start the next run (which is itself
+//! resumable) once the shared prerequisite assessment admits one, close every
+//! open task of the old run `superseded` with its sentinel last, then set the
+//! old run `superseded`. A failure at any write leaves the old run
+//! `restarting`; the [`Restarts`] tick phase resumes it and drops the old run's
+//! queued jobs. A restart an unlanded prerequisite blocks is not a failure: the
+//! old run waits `restarting` with its entry and starts no successor.
+//!
+//! A build that no successor has claimed is left to the intake phase, which
+//! ranks its saved intent against the fresh needs and starts it there. Capacity
+//! and prerequisite waiting are deliberate, so neither raises an alarm; a
+//! restart with no recorded entry stays a detectable inconsistency.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::mailspace::pump_note::note_body;
 use crate::pump::flow::advance::start::{SENTINEL_NODE, start};
 use crate::pump::flow::build_prereq::assess;
-use crate::pump::flow::def::VERDICT_SUPERSEDED;
+use crate::pump::flow::def::{FlowKind, VERDICT_SUPERSEDED};
 use crate::pump::flow::fanout::{close_slice, is_slice_row};
 use crate::pump::flow::handlers::{FlowMail, Registry, TickPhase};
 use crate::pump::flow::index::run_state;
@@ -66,6 +71,24 @@ pub(crate) fn restart<M: MailWriter + MailReader>(
 ) -> Result<RestartResult, VivariumError> {
     store.set_restart_entry(&old.need, old.run, entry)?;
     store.set_run_state(&old.need, old.run, run_state::RESTARTING)?;
+    finish_deferred(ctx, store, mail, old, entry)
+}
+
+/// Finish a restart whose intent is already durable: assess the prerequisites
+/// afresh, start the successor at `entry` (it binds its own sentinel while the
+/// parent's is still open), then supersede the parent. A restart the
+/// assessment still blocks returns [`RestartResult::Waiting`] and changes
+/// nothing, so the entry and the `restarting` state stay durable.
+///
+/// # Errors
+/// Returns a [`VivariumError`] when the start, a close or a store write fails.
+pub(crate) fn finish_deferred<M: MailWriter + MailReader>(
+    ctx: &Ctx,
+    store: &PumpStore,
+    mail: &mut M,
+    old: &RunRow,
+    entry: &str,
+) -> Result<RestartResult, VivariumError> {
     if !admits(ctx, store, mail, &old.need) {
         return Ok(RestartResult::Waiting);
     }
@@ -92,13 +115,15 @@ fn admits<M: MailReader>(ctx: &Ctx, store: &PumpStore, mail: &M, need: &str) -> 
 
 /// Finish a restart left `restarting`: the newer run of the same need
 /// (starting or live) is the restart target; resume it if it is still
-/// starting, then finish the closes. With no newer run (the start failed
-/// before it wrote a run row, or a prerequisite deferred it), start one at the
-/// entry [`restart`] recorded, unless the assessment still blocks it.
+/// starting, then finish the closes. With no newer run the recorded entry is
+/// required. A build waits there for intake, which ranks its saved intent
+/// against the fresh needs and starts it at that entry; any other kind starts
+/// its successor here unless the assessment blocks it.
 ///
-/// A restart that an unlanded prerequisite blocks is deliberate waiting, not a
-/// failed recovery: the old run stays `restarting` with its entry, and no
-/// successor artifacts appear.
+/// A restart that an unlanded prerequisite, capacity or a queue position
+/// defers is deliberate waiting, not a failed recovery: the old run stays
+/// `restarting` with its entry, no successor artifacts appear, and nothing is
+/// raised. Only a restarting run with no recorded entry is an error.
 ///
 /// # Errors
 /// Returns a [`VivariumError`] when no newer run exists and no entry was
@@ -128,6 +153,9 @@ pub(crate) fn resume<M: MailWriter + MailReader>(
                     old.need, old.run
                 ))
             })?;
+            if old.kind == FlowKind::Build.name() {
+                return Ok(());
+            }
             if !admits(ctx, store, mail, &old.need) {
                 return Ok(());
             }
@@ -354,3 +382,7 @@ mod tests;
 #[cfg(test)]
 #[path = "restart_entry_test.rs"]
 mod entry_tests;
+
+#[cfg(test)]
+#[path = "restart_queue_test.rs"]
+mod queue_tests;

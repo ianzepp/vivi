@@ -9,7 +9,8 @@ use std::sync::Arc;
 use super::register;
 use crate::mailspace::SendRequest;
 use crate::mailspace::pump_note::Note;
-use crate::pump::fixture::{Project, project};
+use crate::pump::fixture::{Project, T0, project};
+use crate::pump::flow::advance::restart::RESTART_STUCK;
 use crate::pump::flow::build_prereq::{PREREQ_HELD, PREREQ_UNREADABLE};
 use crate::pump::flow::fanout::SliceEdges;
 use crate::pump::flow::handlers::Registry;
@@ -120,6 +121,68 @@ fn waiting_build_uses_no_live_run_slot() -> R {
     assert!(jobs.jobs.is_empty());
     // The wait was assessed even though the cap was full.
     assert_eq!(store.build_waits()?.len(), 1);
+
+    // A deferred build restart, a higher-priority waiter that lands, and
+    // another ready need: all three compete for the freed slots by rank.
+    let parked = send_need(&project, "deferred restart", &[]);
+    open_record(&mut port, &parked)?;
+    store.insert_run(&RunRow {
+        need: parked.clone(),
+        run: 1,
+        flow: "build".into(),
+        flow_version: FLOW_VERSION_NUMBER,
+        kind: "build".into(),
+        entry: "plan".into(),
+        state: "restarting".into(),
+    })?;
+    store.set_restart_entry(&parked, 1, "rework1")?;
+    store.set_need_priority(&parked, 5, 1)?;
+    let later = send_need(&project, "later ready", &[]);
+    open_record(&mut port, &later)?;
+    store.set_need_priority(&later, 1, 1)?;
+
+    // The prerequisite lands; the waiting build now outranks the restart.
+    MailWriter::close_need(&mut port, &prereq, "landed")?;
+    Arc::make_mut(&mut ctx.cfg).flow.max_live_runs = Some(2);
+    tick_with(&ctx, &mut jobs, &store, &mut port, &registry)?;
+    assert_eq!(runs(&store, &waiting)?, 1, "the higher rank took the slot");
+    assert_eq!(
+        runs(&store, &parked)?,
+        1,
+        "the deferred restart stays queued"
+    );
+    assert_eq!(
+        store.restart_entry(&parked, 1)?.as_deref(),
+        Some("rework1"),
+        "the requested entry stays durable"
+    );
+    assert!(store.build_waits()?.is_empty());
+
+    // A reopened store still knows the queued restart.
+    let reopened = PumpStore::open(&ctx.home.join(DB_FILENAME))?;
+    assert_eq!(
+        reopened.restart_entry(&parked, 1)?.as_deref(),
+        Some("rework1")
+    );
+
+    // One more slot, past the stuck interval: the restart starts its one
+    // successor at its saved entry, and the parent takes no slot of its own.
+    project.host.set_now(T0 + 700);
+    Arc::make_mut(&mut ctx.cfg).flow.max_live_runs = Some(3);
+    tick_with(&ctx, &mut jobs, &store, &mut port, &registry)?;
+    let rows = store.runs_of(&parked)?;
+    assert_eq!(rows.len(), 2, "exactly one successor");
+    assert_eq!(
+        (rows[1].run, rows[1].entry.as_str(), rows[1].state.as_str()),
+        (2, "rework1", "live")
+    );
+    assert_eq!(rows[0].state, "superseded");
+    assert_eq!(
+        runs(&store, &later)?,
+        0,
+        "parent and successor count once: the cap is full"
+    );
+    assert_eq!(held(&store, RESTART_STUCK)?, 0, "queued is not stuck");
     Ok(())
 }
 
