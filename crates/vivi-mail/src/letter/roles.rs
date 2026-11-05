@@ -188,12 +188,32 @@ pub enum CheckResult {
 }
 
 /// One `[[check]]` row.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Check {
     pub cmd: String,
     pub result: CheckResult,
-    pub seconds: u64,
+    #[serde(deserialize_with = "deserialize_seconds")]
+    pub seconds: f64,
+}
+
+/// `seconds` is a duration: any finite, non-negative number, TOML integer or
+/// float alike. Fractions are preserved and signed zero accepted; the number
+/// must stay native so a string or a negative or non-finite value is refused
+/// at deserialization, under the ordinary TOML error path.
+fn deserialize_seconds<'de, D>(deserializer: D) -> Result<f64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let seconds = toml::Value::deserialize(deserializer)?;
+    match seconds {
+        toml::Value::Integer(n) if n >= 0 => Ok(n as f64),
+        toml::Value::Float(n) if n.is_finite() && n >= 0.0 => Ok(n),
+        other => Err(serde::de::Error::custom(format!(
+            "`seconds` must be a finite, non-negative number, found {}",
+            other.type_str()
+        ))),
+    }
 }
 
 /// One `[[follow_up]]` row.
@@ -209,7 +229,7 @@ pub struct FollowUp {
 }
 
 /// A hand's envelope.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Hand {
     pub answer: HandAnswer,
@@ -258,7 +278,7 @@ pub enum RepairerAnswer {
 
 /// A repairer's envelope. `overtime` is the collector's word for a job past
 /// its time cap, never a reply.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Repairer {
     pub answer: RepairerAnswer,
