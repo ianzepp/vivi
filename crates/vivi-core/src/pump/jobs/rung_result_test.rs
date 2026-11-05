@@ -83,7 +83,7 @@ fn posted_facts(
     stderr: &str,
     log: &str,
 ) -> String {
-    use crate::pool::collect::{Collected, JobResult, Outcome};
+    use crate::pool::collect::{ChannelProof, Collected, JobResult, Outcome};
     use crate::pool::record::{DispatchRecord, OpenDispatch, collected_text};
     use std::collections::BTreeMap;
     let record = DispatchRecord {
@@ -118,6 +118,8 @@ fn posted_facts(
         receipt: receipt.into(),
         stderr: stderr.into(),
         log: log.into(),
+        stdout_proof: ChannelProof::default(),
+        stderr_proof: ChannelProof::default(),
     };
     let open = OpenDispatch {
         task: "aaaa1111".into(),

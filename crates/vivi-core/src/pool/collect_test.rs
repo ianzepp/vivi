@@ -238,6 +238,45 @@ fn the_result_of_another_job_on_a_readable_stopped_disk_is_lost_or_timed_out() {
 }
 
 #[test]
+fn proof_input_is_bounded_and_missing_or_truncated_channels_are_unusable() {
+    let mut files = BTreeMap::from([
+        (RESULT_PATHS[0].to_string(), b"job=j9\n".to_vec()),
+        (RESULT_PATHS[1].to_string(), vec![b'o'; PROOF_BYTES + 1]),
+        (
+            RESULT_PATHS[2].to_string(),
+            [b"FAIL early\n".to_vec(), vec![b'e'; 5000]].concat(),
+        ),
+    ]);
+    let got = collected_from_files(&files).unwrap();
+    assert_eq!(
+        got.stdout_proof.original_size,
+        Some((PROOF_BYTES + 1) as u64)
+    );
+    assert_eq!(got.stdout_proof.captured_size, PROOF_BYTES);
+    assert!(!got.stdout_proof.complete);
+    assert!(got.stderr_proof.bytes.starts_with("FAIL early\n"));
+    assert!(got.stderr_proof.complete);
+    assert!(!got.stderr_proof.bytes.is_empty());
+    files.remove(RESULT_PATHS[2]);
+    let missing = collected_from_files(&files).unwrap();
+    assert_eq!(missing.stderr_proof.original_size, None);
+    assert!(!missing.stderr_proof.complete);
+}
+
+#[test]
+fn live_and_stopped_collection_have_matching_proof_facts() {
+    let files = BTreeMap::from([
+        (RESULT_PATHS[0].to_string(), b"job=j\nagent_out_size=4\nagent_out_captured=4\nagent_out_complete=1\nagent_err_size=5\nagent_err_captured=5\nagent_err_complete=1\n".to_vec()),
+        (RESULT_PATHS[1].to_string(), b"out\n".to_vec()),
+        (RESULT_PATHS[2].to_string(), b"err!\n".to_vec()),
+    ]);
+    let stopped = collected_from_files(&files).unwrap();
+    let live = parse_collected("@@vivi-pool result\njob=j\nagent_out_size=4\nagent_out_captured=4\nagent_out_complete=1\nagent_err_size=5\nagent_err_captured=5\nagent_err_complete=1\n@@vivi-pool proof stdout\nout\n@@vivi-pool proof stderr\nerr!\n").unwrap();
+    assert_eq!(live.stdout_proof, stopped.stdout_proof);
+    assert_eq!(live.stderr_proof, stopped.stderr_proof);
+}
+
+#[test]
 fn collected_from_files_keeps_the_head_of_the_receipt_and_the_tails_of_the_logs() {
     let mut files = BTreeMap::new();
     files.insert(RESULT_PATHS[0].to_string(), b"job=j9\n".to_vec());

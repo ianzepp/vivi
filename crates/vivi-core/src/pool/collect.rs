@@ -34,6 +34,8 @@ const SECTION_RESULT: &str = "@@vivi-pool result";
 const SECTION_RECEIPT: &str = "@@vivi-pool receipt";
 const SECTION_STDERR: &str = "@@vivi-pool stderr";
 const SECTION_LOG: &str = "@@vivi-pool log";
+const SECTION_PROOF_OUT: &str = "@@vivi-pool proof stdout";
+const SECTION_PROOF_ERR: &str = "@@vivi-pool proof stderr";
 
 /// Runs inside the slot (`WORK` names its root where that is not `/work`).
 /// Prints nothing until the job's result exists, then the result, the receipt,
@@ -42,7 +44,9 @@ pub const COLLECT_SCRIPT: &str = r#"J="${WORK:-/work}/job"
 [ -f "$J/result" ] || exit 0
 echo '@@vivi-pool result'; cat "$J/result"
 echo '@@vivi-pool receipt'; head -c 262144 "$J/agent.out" 2>/dev/null; echo
-echo '@@vivi-pool stderr'; tail -c 4096 "$J/agent.err" 2>/dev/null; echo
+ echo '@@vivi-pool proof stdout'; head -c 262144 "$J/agent.out" 2>/dev/null; echo
+ echo '@@vivi-pool proof stderr'; head -c 262144 "$J/agent.err" 2>/dev/null; echo
+ echo '@@vivi-pool stderr'; tail -c 4096 "$J/agent.err" 2>/dev/null; echo
 echo '@@vivi-pool log'; tail -c 4096 "$J/run.log" 2>/dev/null; echo
 "#;
 
@@ -71,6 +75,7 @@ pub const READ_ONLY_DISCARDED: &str = "read_only_discarded";
 /// (the revision input budget is 50 KB), with room for the receipt around it.
 const RECEIPT_BYTES: usize = 262_144;
 const TAIL_BYTES: usize = 4096;
+const PROOF_BYTES: usize = 262_144;
 
 /// How the engine paces its polling.
 #[derive(Debug, Clone)]
@@ -300,6 +305,17 @@ pub struct Collected {
     pub receipt: String,
     pub stderr: String,
     pub log: String,
+    /// Bounded full-channel inputs and runner-verified capture facts.
+    pub stdout_proof: ChannelProof,
+    pub stderr_proof: ChannelProof,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ChannelProof {
+    pub bytes: String,
+    pub original_size: Option<u64>,
+    pub captured_size: usize,
+    pub complete: bool,
 }
 
 /// Parse the collect script's output. `None` when it is empty or lacks a
@@ -309,9 +325,16 @@ pub fn parse_collected(output: &str) -> Option<Collected> {
     let mut sections: BTreeMap<&str, String> = BTreeMap::new();
     let mut current: Option<&str> = None;
     for line in output.lines() {
-        let marker = [SECTION_RESULT, SECTION_RECEIPT, SECTION_STDERR, SECTION_LOG]
-            .into_iter()
-            .find(|m| line == *m);
+        let marker = [
+            SECTION_RESULT,
+            SECTION_RECEIPT,
+            SECTION_STDERR,
+            SECTION_LOG,
+            SECTION_PROOF_OUT,
+            SECTION_PROOF_ERR,
+        ]
+        .into_iter()
+        .find(|m| line == *m);
         if let Some(marker) = marker {
             current = Some(marker);
             sections.entry(marker).or_default();
@@ -326,11 +349,41 @@ pub fn parse_collected(output: &str) -> Option<Collected> {
         return None;
     }
     let take = |key: &str| sections.get(key).cloned().unwrap_or_default();
+    let proof = |channel: &str| {
+        let prefix = if channel == "stdout" {
+            "agent_out"
+        } else {
+            "agent_err"
+        };
+        let bytes = sections
+            .get(if channel == "stdout" {
+                SECTION_PROOF_OUT
+            } else {
+                SECTION_PROOF_ERR
+            })
+            .cloned()
+            .unwrap_or_default();
+        let original_size = result.get(&format!("{prefix}_size")).parse::<u64>().ok();
+        let captured_size = result
+            .get(&format!("{prefix}_captured"))
+            .parse::<usize>()
+            .unwrap_or(0);
+        ChannelProof {
+            bytes,
+            original_size,
+            captured_size,
+            complete: result.get(&format!("{prefix}_complete")) == "1" && original_size.is_some(),
+        }
+    };
+    let stdout_proof = proof("stdout");
+    let stderr_proof = proof("stderr");
     Some(Collected {
         result,
         receipt: take(SECTION_RECEIPT),
         stderr: take(SECTION_STDERR),
         log: take(SECTION_LOG),
+        stdout_proof,
+        stderr_proof,
     })
 }
 
@@ -343,16 +396,29 @@ pub fn collected_from_files(files: &BTreeMap<String, Vec<u8>>) -> Option<Collect
     if result.get("job").is_empty() {
         return None;
     }
-    let receipt = bytes_of(RESULT_PATHS[1]);
     let tail = |path: &str| {
         let bytes = bytes_of(path);
         text_of(&bytes[bytes.len().saturating_sub(TAIL_BYTES)..])
     };
+    let stdout = bytes_of(RESULT_PATHS[1]);
+    let stderr = bytes_of(RESULT_PATHS[2]);
+    let proof = |bytes: &[u8], key: &str| {
+        let size = files.get(key).map(|_| bytes.len() as u64);
+        let captured = bytes.len().min(PROOF_BYTES);
+        ChannelProof {
+            bytes: String::from_utf8_lossy(&bytes[..captured]).into_owned(),
+            original_size: size,
+            captured_size: captured,
+            complete: size.is_some_and(|n| n as usize <= PROOF_BYTES),
+        }
+    };
     Some(Collected {
         result,
-        receipt: text_of(&receipt[..receipt.len().min(RECEIPT_BYTES)]),
+        receipt: text_of(&stdout[..stdout.len().min(RECEIPT_BYTES)]),
         stderr: tail(RESULT_PATHS[2]),
         log: tail(RESULT_PATHS[3]),
+        stdout_proof: proof(stdout, RESULT_PATHS[1]),
+        stderr_proof: proof(stderr, RESULT_PATHS[2]),
     })
 }
 
