@@ -118,6 +118,12 @@ impl Rig {
         ] {
             std::fs::write(job.join(name), content).unwrap();
         }
+        if let Some(manifest) = params
+            .lines()
+            .find_map(|line| line.strip_prefix("TEST_PUBLISH_IF='"))
+        {
+            std::fs::write(job.join("publish-if.list"), manifest.trim_end_matches('\'')).unwrap();
+        }
         if !with.is_empty() {
             let list: String = with.iter().map(|e| format!("{e}\n")).collect();
             std::fs::write(job.join("with.list"), list).unwrap();
@@ -206,6 +212,7 @@ impl Rig {
         params.push_str(controls);
         self.stage(&params, harness, &[]);
         let home = self.work.path().join("home");
+
         let shims = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/pool/local-bin");
         let path = format!("{}:{}", shims.display(), std::env::var("PATH").unwrap());
         let out = Command::new("bash")
@@ -414,6 +421,80 @@ fn in_worktree_mode_an_agent_merge_of_a_local_branch_is_committed_with_both_pare
         "Bot <bot@localhost> Bot <bot@localhost>",
         "the agent's unconfigured worktree merge kept the pool identity"
     );
+}
+
+#[test]
+fn publication_assertions_are_checked_immediately_before_push() {
+    let rig = Rig::new(1).as_worktree();
+    let main = git(&rig.f.repo, &["rev-parse", "refs/heads/main"]);
+    let manifest = format!("refs/heads/main\t{main}\n");
+    let result = rig.run_with_controls(
+        "git commit -q --allow-empty -m guarded",
+        true,
+        "refs/heads/integration",
+        None,
+        &format!("TEST_PUBLISH_IF='{manifest}'\n"),
+    );
+    assert_eq!(result.get("publish_state"), "pushed", "{:?}", result.fields);
+
+    for (reference, harness) in [
+        ("refs/heads/main", "git update-ref refs/heads/main B"),
+        ("refs/heads/B", "git update-ref refs/heads/B A"),
+    ] {
+        let rig = Rig::new(1).as_worktree();
+        let expected = if reference.ends_with("main") {
+            git(&rig.f.repo, &["rev-parse", "refs/heads/main"])
+        } else {
+            rig.b_sha()
+        };
+        let manifest = format!("{reference}\t{expected}\n");
+        let result = rig.run_with_controls(
+            harness,
+            true,
+            "refs/heads/integration",
+            None,
+            &format!("TEST_PUBLISH_IF='{manifest}'\n"),
+        );
+        assert_eq!(
+            result.get("publish_state"),
+            "publish_guard_changed",
+            "{:?}",
+            result.fields
+        );
+        assert!(!remote_has_ref(&rig.f.repo, "refs/heads/integration"));
+    }
+}
+
+#[test]
+fn publication_assertions_are_runner_owned_and_missing_heads_refuse() {
+    let rig = Rig::new(1).as_worktree();
+    let main = git(&rig.f.repo, &["rev-parse", "refs/heads/main"]);
+    let manifest = format!("refs/heads/main\t{main}\n");
+    let result = rig.run_with_controls(
+        "printf 'refs/heads/B\t%s\n' \"$(git rev-parse B)\" > \"$WORK/job/publish-if.list\"; git commit -q --allow-empty -m altered",
+        true, "refs/heads/integration", None,
+        &format!("TEST_PUBLISH_IF='{manifest}'\n"),
+    );
+    assert_eq!(result.get("publish_state"), "pushed", "{:?}", result.fields);
+
+    let missing = Rig::new(1).as_worktree();
+    let result = missing.run_with_controls(
+        "git commit -q --allow-empty -m guarded",
+        true,
+        "refs/heads/integration",
+        None,
+        &format!(
+            "TEST_PUBLISH_IF='refs/heads/absent\t{}\n'\n",
+            missing.a_sha()
+        ),
+    );
+    assert_eq!(
+        result.get("publish_state"),
+        "publish_guard_failed",
+        "{:?}",
+        result.fields
+    );
+    assert!(!remote_has_ref(&missing.f.repo, "refs/heads/integration"));
 }
 
 #[test]

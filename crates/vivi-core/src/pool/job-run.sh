@@ -122,6 +122,15 @@ PUBLISH_HOME=
 PUBLISH_GIT=
 PUBLISH_PATH=
 PUBLISH_ASKPASS=
+PUBLISH_GUARDS=
+PUBLISH_GUARDS_STATE=absent
+if [ -e "$J/publish-if.list" ]; then
+  if [ -f "$J/publish-if.list" ] && [ ! -L "$J/publish-if.list" ] && PUBLISH_GUARDS=$(cat "$J/publish-if.list"); then
+    PUBLISH_GUARDS_STATE=loaded
+  else
+    PUBLISH_GUARDS_STATE=failed
+  fi
+fi
 if [ -n "${UNPRIVILEGED:-}" ]; then
   as_hand() { "$@"; }
   AGENT_HOME=$W/home
@@ -401,6 +410,7 @@ publish_candidate_to() {
     }
   fi
   history_clean "$candidate" || { PUBLISH_STATE=$HISTORY_STATE; return 1; }
+  check_publish_guards "$url" || return 1
   if [ -n "${PUBLISH_EXPECT:-}" ] && [[ "$ref" == refs/heads/vivi/need/* ]]; then
     guarded_need_create "$url" "$ref" "$candidate" || return 1
     push_state=$GUARDED_PUSH_STATE
@@ -444,6 +454,29 @@ publish_candidate_to() {
   PUBLISH_STATE=not_ancestor
   PUBLISH_SHA=
   return 1
+}
+
+# Assertions were snapshotted before the harness ran so the worker cannot
+# change its own freshness requirements. Check each exact remote tip at the
+# last possible point before any push.
+check_publish_guards() {
+  local url=$1 line ref sha observed observed_ref
+  [ "$PUBLISH_GUARDS_STATE" != failed ] || { PUBLISH_STATE=publish_guard_failed; return 1; }
+  [ "$PUBLISH_GUARDS_STATE" = loaded ] || return 0
+  while IFS=$'\t' read -r ref sha || [ -n "$ref$sha" ]; do
+    [ -n "$ref" ] && [ -n "$sha" ] && valid_git_oid "$sha" || {
+      PUBLISH_STATE=publish_guard_failed
+      return 1
+    }
+    case "$ref" in refs/heads/*) ;; *) PUBLISH_STATE=publish_guard_failed; return 1 ;; esac
+    line=$(publisher_git ls-remote --heads "$url" "$ref") || { PUBLISH_STATE=publish_guard_failed; return 1; }
+    [ -n "$line" ] || { PUBLISH_STATE=publish_guard_failed; return 1; }
+    read -r observed observed_ref <<< "$line"
+    if [ "$observed_ref" != "$ref" ] || [ "$observed" != "$sha" ]; then
+      PUBLISH_STATE=publish_guard_changed
+      return 1
+    fi
+  done <<< "$PUBLISH_GUARDS"
 }
 
 # An exact-candidate expectation on an owned need ref is a create-only grant.
