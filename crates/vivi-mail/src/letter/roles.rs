@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 use super::review::{Admitter, Auditor, Cto, HeadCeo, Judge, Merge, Researcher};
 use super::{Envelope, FENCE, LetterError as EnvelopeError, Validate, parse};
 
+pub mod structured;
+
 /// Which role wrote a reply.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RoleKind {
@@ -74,7 +76,7 @@ impl RoleKind {
 }
 
 /// A reply parsed for its role, with the front matter as JSON.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Parsed {
     pub answer: String,
     pub front: serde_json::Value,
@@ -96,6 +98,15 @@ pub fn parse_for(kind: RoleKind, text: &str) -> Result<Parsed, EnvelopeError> {
         RoleKind::Merge => parsed::<Merge>(text),
         RoleKind::HeadCeo => parsed::<HeadCeo>(text),
     }
+}
+
+/// Parse structured role fields without a fenced envelope.
+pub fn parse_structured_for(
+    kind: RoleKind,
+    fields: serde_json::Value,
+    body: &str,
+) -> Result<Parsed, EnvelopeError> {
+    structured::parse_for(kind, fields, body)
 }
 
 /// Parse one role's reply envelope, the way every reader of a role reply
@@ -120,8 +131,12 @@ where
     T: serde::de::DeserializeOwned + Serialize + Validate,
 {
     let envelope = parse_role_reply::<T>(text)?;
-    let front = serde_json::to_value(&envelope.front)
-        .map_err(|err| EnvelopeError::Invalid(err.to_string()))?;
+    parsed_fields(envelope.front, envelope.body)
+}
+
+pub(super) fn parsed_fields<T: Serialize>(front: T, body: String) -> Result<Parsed, EnvelopeError> {
+    let front =
+        serde_json::to_value(front).map_err(|err| EnvelopeError::Invalid(err.to_string()))?;
     let answer = front
         .get("answer")
         .and_then(serde_json::Value::as_str)
@@ -130,7 +145,7 @@ where
     Ok(Parsed {
         answer,
         front,
-        body: envelope.body,
+        body,
     })
 }
 
@@ -428,6 +443,10 @@ impl Slicer {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "roles/structured_test.rs"]
+mod structured_tests;
 
 #[cfg(test)]
 #[path = "roles_test.rs"]
