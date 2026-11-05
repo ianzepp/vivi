@@ -16,7 +16,7 @@ use crate::pump::flow::fake_mail::FakeMail;
 use crate::pump::flow::handlers::Registry;
 use crate::pump::flow::index::{FLOW_VERSION_NUMBER, RunRow, run_state};
 use crate::pump::flow::intake::register as register_intake;
-use crate::pump::flow::mail::MailWriter;
+use crate::pump::flow::mail::{MailReader, MailWriter};
 use crate::pump::flow::tick::tick_with;
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::jobs::{JobStore, PoolJob};
@@ -280,6 +280,88 @@ fn an_immediate_restart_still_replaces_its_occupied_slot() -> R {
             (1, "plan".into(), "superseded".into()),
             (2, "rework1".into(), "live".into())
         ]
+    );
+    Ok(())
+}
+
+/// A parked build with a queued wait, as a blocked prerequisite leaves it.
+fn parked_with_wait(rig: &mut Rig) -> R {
+    rig.park(NEED, Some("rework1"))?;
+    rig.mail.set_prerequisites(NEED, &["dep"]);
+    rig.tick()?;
+    assert_eq!(rig.store.build_waits()?.len(), 1, "the wait is queued");
+    Ok(())
+}
+
+#[test]
+fn a_need_that_closes_withdraws_its_deferred_parent() -> R {
+    let mut rig = rig(None)?;
+    parked_with_wait(&mut rig)?;
+    rig.mail.close_need(NEED, "done")?;
+
+    rig.tick()?;
+
+    assert_eq!(
+        rig.runs()?,
+        [(1, "plan".into(), "withdrawn".into())],
+        "a closed need withdraws the waiting parent"
+    );
+    assert!(
+        rig.store.build_waits()?.is_empty(),
+        "withdrawal drops the stale wait projection"
+    );
+    let sentinel = rig
+        .store
+        .steps_of(NEED, 1)?
+        .into_iter()
+        .find(|row| row.node == "sentinel")
+        .expect("sentinel row");
+    assert_eq!(
+        rig.mail.task_state(&sentinel.task)?.verdict.as_deref(),
+        Some("withdrawn")
+    );
+    assert_eq!(rig.mail.record_outcome(NEED), Some("withdrawn"));
+
+    rig.tick()?;
+    assert_eq!(
+        rig.runs()?,
+        [(1, "plan".into(), "withdrawn".into())],
+        "a withdrawn parent never starts a successor"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_record_that_closes_withdraws_its_deferred_parent() -> R {
+    let mut rig = rig(None)?;
+    parked_with_wait(&mut rig)?;
+    MailWriter::close_record(&mut rig.mail, NEED, "withdrawn")?;
+
+    rig.tick()?;
+
+    assert_eq!(
+        rig.runs()?,
+        [(1, "plan".into(), "withdrawn".into())],
+        "a closed record withdraws the waiting parent"
+    );
+    assert!(rig.store.build_waits()?.is_empty());
+    let sentinel = rig
+        .store
+        .steps_of(NEED, 1)?
+        .into_iter()
+        .find(|row| row.node == "sentinel")
+        .expect("sentinel row");
+    assert_eq!(
+        rig.mail.task_state(&sentinel.task)?.verdict.as_deref(),
+        Some("withdrawn")
+    );
+
+    rig.mail.set_prerequisites(NEED, &[]);
+    rig.tick()?;
+    assert_eq!(
+        rig.runs()?,
+        [(1, "plan".into(), "withdrawn".into())],
+        "a landed prerequisite cannot revive a withdrawn parent"
     );
     Ok(())
 }

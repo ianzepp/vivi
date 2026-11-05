@@ -12,19 +12,22 @@
 //! A build that no successor has claimed is left to the intake phase, which
 //! ranks its saved intent against the fresh needs and starts it there. Capacity
 //! and prerequisite waiting are deliberate, so neither raises an alarm; a
-//! restart with no recorded entry stays a detectable inconsistency.
+//! restart with no recorded entry stays a detectable inconsistency. A deferred
+//! parent that loses its need or pump record is withdrawn instead, sentinel
+//! last, with its queued wait dropped, so it never starts a successor later.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::mailspace::pump_note::note_body;
 use crate::pump::flow::advance::start::{SENTINEL_NODE, start};
+use crate::pump::flow::advance::terminal::withdraw;
 use crate::pump::flow::build_prereq::assess;
 use crate::pump::flow::def::{FlowKind, VERDICT_SUPERSEDED};
 use crate::pump::flow::fanout::{close_slice, is_slice_row};
 use crate::pump::flow::handlers::{FlowMail, Registry, TickPhase};
 use crate::pump::flow::index::run_state;
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
-use crate::pump::flow::mail::{MailReader, MailWriter, TaskStatus};
+use crate::pump::flow::mail::{MailReader, MailWriter, NeedStatus, TaskStatus};
 use crate::pump::flow::tick::raise_once;
 use crate::pump::host::Ctx;
 use crate::pump::jobs::{JobStatus, JobStore, mark_applied};
@@ -69,9 +72,22 @@ pub(crate) fn restart<M: MailWriter + MailReader>(
     old: &RunRow,
     entry: &str,
 ) -> Result<RestartResult, VivariumError> {
-    store.set_restart_entry(&old.need, old.run, entry)?;
-    store.set_run_state(&old.need, old.run, run_state::RESTARTING)?;
+    record_intent(store, old, entry)?;
     finish_deferred(ctx, store, mail, old, entry)
+}
+
+/// Record a restart's intent before any later write can fail: the entry the
+/// successor starts at and the parent's `restarting` state.
+///
+/// # Errors
+/// Returns a [`VivariumError`] when the entry or state cannot be written.
+pub(crate) fn record_intent(
+    store: &PumpStore,
+    old: &RunRow,
+    entry: &str,
+) -> Result<(), VivariumError> {
+    store.set_restart_entry(&old.need, old.run, entry)?;
+    store.set_run_state(&old.need, old.run, run_state::RESTARTING)
 }
 
 /// Finish a restart whose intent is already durable: assess the prerequisites
@@ -147,6 +163,10 @@ pub(crate) fn resume<M: MailWriter + MailReader>(
         }
         Some(_) => {}
         None => {
+            if closed(mail, &old.need)? {
+                withdraw_parent(store, mail, old)?;
+                return Ok(());
+            }
             let entry = store.restart_entry(&old.need, old.run)?.ok_or_else(|| {
                 VivariumError::Message(format!(
                     "need {} r{}: restarting but no newer run exists, so its entry is unknown",
@@ -163,6 +183,26 @@ pub(crate) fn resume<M: MailWriter + MailReader>(
         }
     }
     supersede(store, mail, old)
+}
+
+/// Whether the need or its pump record closed while a deferred restart waited.
+fn closed<M: MailReader>(mail: &M, need: &str) -> Result<bool, VivariumError> {
+    Ok(
+        MailReader::open_record(mail, need)?.is_none()
+            || mail.need_state(need)? != NeedStatus::Open,
+    )
+}
+
+/// Withdraw a deferred parent whose need or record closed, its sentinel last,
+/// and drop the queued wait it projected. A withdrawn parent starts no
+/// successor; the committed-successor path above never reaches here.
+fn withdraw_parent<M: MailWriter + MailReader>(
+    store: &PumpStore,
+    mail: &mut M,
+    old: &RunRow,
+) -> Result<(), VivariumError> {
+    withdraw(store, mail, old)?;
+    store.remove_build_wait(&old.need)
 }
 
 /// Close every open task of `old` `superseded`, the sentinel last, then set the

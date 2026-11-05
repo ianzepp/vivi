@@ -10,7 +10,7 @@
 //! `applied_actions` either way, and a refusal raises [`UNLOCK_REFUSED`].
 
 use crate::mailspace::{PumpAction, PumpActionKind};
-use crate::pump::flow::advance::restart::restart;
+use crate::pump::flow::advance::restart::{finish_deferred, record_intent};
 use crate::pump::flow::def::{FlowDef, FlowKind, NodeClass};
 use crate::pump::flow::handlers::{FlowMail, Registry, TickPhase};
 use crate::pump::flow::index::run_state;
@@ -148,12 +148,17 @@ fn apply_one<M: MailWriter + MailReader>(
     let def = flow_of(&run)?;
     let row = locked_step(store, need, &run, &def)?;
     let entry = entry_of(action, &def)?;
+    // The requested entry and the `restarting` state go down before the lock
+    // close, so a failed close or start cannot lose the operator's intent: the
+    // restart phase (or intake, for a queued build) finishes it.
+    record_intent(store, &run, &entry)
+        .map_err(|error| format!("cannot record the restart entry `{entry}`: {error}"))?;
     mail.close_task(&row.task, UNLOCKED, None, None)
         .map_err(|error| format!("closing the lock step failed: {error}"))?;
     store
         .set_step_state(&row.task, StepState::Done, Some(UNLOCKED))
         .map_err(|error| format!("cannot record the unlock: {error}"))?;
-    restart(ctx, store, mail, &run, &entry)
+    finish_deferred(ctx, store, mail, &run, &entry)
         .map(|_| ())
         .map_err(|error| format!("restarting at `{entry}` failed: {error}"))
 }

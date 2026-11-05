@@ -574,7 +574,16 @@ fills that slot meanwhile. A prerequisite held by an operator-only step raises
 the other needs admitted. The wait is reassessed every tick, even with the cap
 full, and dropped once the need is admitted, its record closes, or the need is
 done. This gates new runs only: a run already `starting` is recovered even when
-a dependency was added after it crossed admission. The flow is the record's
+a dependency was added after it crossed admission. Intake and a deferred
+restart ask one shared assessment, so both read the same landing classification
+and raise the same three diagnostics. Capacity is logical: a parent waiting
+`restarting` with a saved entry takes no live-run slot; intake ranks it with the
+fresh needs and counts its successor once, at admission. A replan, unlock or
+thread change that a prerequisite blocks keeps the parent `restarting` with one
+requested entry, starts no successor and needs no second operator action. If
+the need or record closes while it waits, the parent is withdrawn (its sentinel
+last) and its queued wait is dropped, so it never starts a successor later. A
+committed successor is still recovered even with the cap full. The flow is the record's
 `kind` (`build`, `research`, `release` or `repair`), else the need's mark
 (`research`, `release`, `repair`), else `build`. A landing closes the need and closes the
 record `landed`. A record also closes `withdrawn` or `superseded`. A send is
