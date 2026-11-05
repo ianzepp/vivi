@@ -104,7 +104,7 @@ fn keep_running_paths(ctx: &Ctx, cfg: &mut PumpConfig) -> Vec<String> {
             "pump home changed; restart the pump to apply it",
         ));
     }
-    if ctx.cfg.targets.is_empty() || cfg.targets.is_empty() {
+    if ctx.cfg.targets.is_empty() {
         return reasons;
     }
     let new_paths = runtime_repo_paths(cfg, &ctx.project);
@@ -204,6 +204,10 @@ fn raise_once(ctx: &Ctx, last_error: &mut Option<String>, text: String, what: &s
     }
     *last_error = Some(text);
 }
+
+#[cfg(test)]
+#[path = "intake_reload_test.rs"]
+mod intake_reload_test;
 
 #[cfg(test)]
 #[path = "reload_test.rs"]
