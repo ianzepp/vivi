@@ -5,9 +5,13 @@
 //! resumable) once the shared prerequisite assessment admits one, close every
 //! open task of the old run `superseded` with its sentinel last, then set the
 //! old run `superseded`. A failure at any write leaves the old run
-//! `restarting`; the [`Restarts`] tick phase resumes it and drops the old run's
-//! queued jobs. A restart an unlanded prerequisite blocks is not a failure: the
-//! old run waits `restarting` with its entry and starts no successor.
+//! `restarting`; the [`Restarts`] tick phase resumes it, and a parent still
+//! restarting is retired like a dead run: its pending jobs are dropped, its
+//! dispatched jobs are listed abandoned and their late results are applied
+//! without routing them. The [`RestartCleanup`] phase repeats that sweep after
+//! every phase that can request a restart. A restart an unlanded prerequisite
+//! blocks is not a failure: the old run waits `restarting` with its entry and
+//! starts no successor.
 //!
 //! A build that no successor has claimed is left to the intake phase, which
 //! ranks its saved intent against the fresh needs and starts it there. Capacity
@@ -40,9 +44,18 @@ pub(crate) const RESTART_STUCK: &str = "flow-run-restart-stuck";
 /// Seconds a run may stay `restarting` before the alarm.
 const RESTART_STUCK_SECS: u64 = 600;
 
+/// Phase name of the late dead-job sweep.
+pub(crate) const CLEANUP: &str = "restart-cleanup";
+
 /// Registry hook: the restart phase.
 pub(crate) fn register<S: JobStore, M: FlowMail>(registry: &mut Registry<S, M>) {
     registry.phase(Box::new(Restarts));
+}
+
+/// Registry hook: the late cleanup, registered after every phase that can
+/// request a restart.
+pub(crate) fn register_cleanup<S: JobStore, M: FlowMail>(registry: &mut Registry<S, M>) {
+    registry.phase(Box::new(RestartCleanup));
 }
 
 /// What a restart did.
@@ -263,6 +276,27 @@ impl<S: JobStore, M: FlowMail> TickPhase<S, M> for Restarts {
     }
 }
 
+/// The late phase: drop the queued jobs of the runs an earlier phase retired,
+/// so a restart requested by an unlock, an operator action, a thread change or
+/// the build front retires the old run's work before the outer dispatch.
+struct RestartCleanup;
+
+impl<S: JobStore, M: FlowMail> TickPhase<S, M> for RestartCleanup {
+    fn name(&self) -> &'static str {
+        CLEANUP
+    }
+
+    fn run(
+        &self,
+        ctx: &Ctx,
+        st: &mut S,
+        store: &PumpStore,
+        mail: &mut M,
+    ) -> Result<(), VivariumError> {
+        prune_dead_jobs(ctx, st, store, mail)
+    }
+}
+
 /// Resume one restart; past [`RESTART_STUCK_SECS`] raise the stuck alarm once.
 fn resume_one<M: MailWriter + MailReader>(
     ctx: &Ctx,
@@ -292,7 +326,7 @@ fn resume_one<M: MailWriter + MailReader>(
     }
 }
 
-/// A superseded or withdrawn run with its step rows.
+/// A superseded, withdrawn or restarting run with its step rows.
 struct DeadRun {
     run: RunRow,
     rows: Vec<StepRow>,
@@ -308,10 +342,17 @@ impl DeadRun {
     }
 }
 
-/// Every superseded or withdrawn run with its step rows.
+/// Every superseded, withdrawn or restarting run with its step rows. A
+/// `restarting` parent is included for the whole deferred-restart interval: it
+/// starts no more work of its own run, so its jobs are retired like a dead
+/// run's, without cancelling the physical pool work of a dispatched one.
 fn dead_runs(store: &PumpStore) -> Result<Vec<DeadRun>, VivariumError> {
     let mut dead = Vec::new();
-    for state in [run_state::SUPERSEDED, run_state::WITHDRAWN] {
+    for state in [
+        run_state::SUPERSEDED,
+        run_state::WITHDRAWN,
+        run_state::RESTARTING,
+    ] {
         for run in store.runs_in_state(state)? {
             let rows = store.steps_of(&run.need, run.run)?;
             dead.push(DeadRun { run, rows });
@@ -320,7 +361,8 @@ fn dead_runs(store: &PumpStore) -> Result<Vec<DeadRun>, VivariumError> {
     Ok(dead)
 }
 
-/// Account for the jobs of dead runs.
+/// Account for the jobs of dead runs: a superseded, withdrawn or restarting
+/// parent.
 ///
 /// Pending jobs are removed. Dispatched jobs finish on their own: there is no
 /// `vivi pool cancel` verb, so the slot of a running job cannot be freed here.
