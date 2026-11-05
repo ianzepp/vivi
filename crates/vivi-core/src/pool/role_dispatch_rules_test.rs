@@ -1,3 +1,4 @@
+use super::{RoleFacts, validate_publish};
 use std::path::{Path, PathBuf};
 
 use crate::mailspace::Mailspace;
@@ -25,6 +26,55 @@ fn files_containing(dir: &Path, needle: &str) -> Vec<PathBuf> {
         }
     }
     found
+}
+
+#[test]
+fn intake_publication_authority() {
+    let role = |name: &str, kind: &str| RoleFacts {
+        name: name.to_owned(),
+        kind: Some(kind.to_owned()),
+        band: None,
+        thinking: None,
+        charter: String::new(),
+        read_only: None,
+    };
+    let merge = role("merge", "merge");
+    let hand = role("hand", "hand");
+    let repairer = role("repairer", "repairer");
+    let unknown = role("unknown", "unknown");
+    let mains = vec!["trunk".to_owned()];
+
+    assert!(
+        validate_publish(
+            Some(&merge),
+            Some("refs/heads/vivi/intake/item-1"),
+            None,
+            &mains
+        )
+        .is_ok()
+    );
+    assert!(validate_publish(Some(&merge), Some("refs/heads/trunk"), None, &mains).is_ok());
+    for denied in [&hand, &repairer, &unknown] {
+        assert!(
+            validate_publish(
+                Some(denied),
+                Some("refs/heads/vivi/intake/item-1"),
+                None,
+                &mains
+            )
+            .is_err()
+        );
+    }
+    for destination in [
+        "refs/heads/vivi/intake/",
+        "refs/heads/vivi/intake/item-1/nested",
+        "refs/heads/vivi/intake/item-1/",
+        "refs/heads/vivi/intake-item-1",
+        "refs/heads/vivi/arbitrary/item-1",
+    ] {
+        assert!(validate_publish(Some(&merge), Some(destination), None, &mains).is_err());
+    }
+    assert!(validate_publish(Some(&merge), Some("refs/heads/unconfigured"), None, &mains).is_err());
 }
 
 #[test]
