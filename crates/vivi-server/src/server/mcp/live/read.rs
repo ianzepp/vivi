@@ -5,8 +5,8 @@ use std::collections::HashSet;
 use serde_json::{Value, json};
 use vivi_core::mailspace::board::BoardOptions;
 use vivi_core::mailspace::{
-    folded_marks, frontier_from_show, is_foreign_account, is_gate_kind, marks_include,
-    prefix_of_domain, validate_marks_filter,
+    folded_marks, frontier_from_show, is_foreign_account, is_gate_kind, is_unaddressed,
+    marks_include, prefix_of_domain, validate_marks_filter,
 };
 use vivi_mail::message::{render_message, to_json_message};
 use vivi_storage::storage::{MailspaceEvent, StoredMessageView};
@@ -132,14 +132,19 @@ fn open_role(kind: &str) -> &'static str {
     }
 }
 
-/// Whose folders a listing reads: the acting identity unless `for` names
-/// another role, or `all` for every role of the mailspace (what the CLI
-/// lists without `--for`).
+/// Whose folders a listing reads: project-wide by default, one role for
+/// `for`, or every role for `all` (both latter cases have the same scope).
 fn list_scope(h: &Hosted, arguments: &Value) -> Result<Option<String>, ToolError> {
     match opt_str(arguments, "for")? {
-        None => Ok(Some(h.actor.clone())),
-        Some("all") => Ok(None),
+        None | Some("all") => Ok(None),
         Some(other) => h.ms.resolve_identity(other).map(Some).map_err(lib_error),
+    }
+}
+
+fn memo_scope(h: &Hosted, arguments: &Value) -> Result<Option<String>, ToolError> {
+    match opt_str(arguments, "for")? {
+        None => Ok(Some(h.actor.clone())),
+        _ => list_scope(h, arguments),
     }
 }
 
@@ -194,7 +199,7 @@ pub(super) fn list(h: &Hosted, arguments: &Value) -> Result<Value, ToolError> {
     let scope = scope.as_deref();
     match kind {
         Some("memo") => {
-            let mut memos = memo_items(h, scope)?;
+            let mut memos = memo_items(h, memo_scope(h, arguments)?.as_deref())?;
             memos.truncate(limit);
             Ok(json!({ "kind": "memo", "items": memos }))
         }
@@ -276,7 +281,7 @@ fn list_mail(
     marks: &[String],
     limit: usize,
 ) -> Result<Value, ToolError> {
-    let views = match scope {
+    let mut views = match scope {
         Some(identity) => h.ms.list(identity, "inbox").map_err(lib_error)?,
         None => {
             h.ms.storage()
@@ -285,6 +290,8 @@ fn list_mail(
                 .map_err(lib_error)?
         }
     };
+    let mut sent = h.ms.list_kind(scope, "sent", "mail").map_err(lib_error)?;
+    views.extend(sent.drain(..).filter(is_unaddressed));
     let storage = h.ms.storage().map_err(lib_error)?;
     let mut items = Vec::new();
     for view in views {
