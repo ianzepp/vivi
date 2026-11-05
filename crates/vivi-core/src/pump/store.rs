@@ -17,6 +17,7 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, pa
 
 use vivi_error::VivariumError;
 
+pub mod build_waits;
 mod codec;
 mod flow_index;
 pub mod flow_links;
@@ -489,6 +490,23 @@ impl PumpStore {
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(db_err("read exceptions"))
     }
+
+    /// True when an exception row of exactly `kind` and `unit` exists.
+    ///
+    /// # Errors
+    /// Returns [`VivariumError`] when the table cannot be read.
+    pub fn has_exception(&self, kind: &str, unit: &str) -> Result<bool, VivariumError> {
+        self.conn()
+            .query_row(
+                "SELECT EXISTS(
+                   SELECT 1 FROM exceptions WHERE kind = ?1 AND unit = ?2
+                 )",
+                params![kind, unit],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|found| found != 0)
+            .map_err(db_err("look for exception"))
+    }
 }
 
 /// Record one accepted plan revision in `<home>/pump.db`.
@@ -559,6 +577,7 @@ fn ensure_schema(conn: &Connection) -> Result<(), VivariumError> {
     drop_request_queues(conn)?;
     flow_index::ensure_tables(conn)?;
     flow_links::ensure_tables(conn)?;
+    build_waits::ensure_tables(conn)?;
     step_payload::ensure_table(conn)?;
     job_release::ensure_table(conn)?;
     if version > 0 && version < SCHEMA_VERSION {
