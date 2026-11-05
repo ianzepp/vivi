@@ -1,9 +1,15 @@
 //! Intake: start a run for each need with an open pump record.
 //!
 //! Each tick the phase resumes runs left `starting`, then ranks the needs that
-//! have an open pump record and no run in flight, and starts as many as the
-//! `[pump.flow] max_live_runs` cap allows, at most one repair-kind run per
-//! target. Repair-kind runs neither count toward the cap nor wait for it. The addressee of the need plays no part.
+//! have an open pump record, no run in flight and every build prerequisite
+//! landed, and starts as many as the `[pump.flow] max_live_runs` cap allows,
+//! at most one repair-kind run per target. Repair-kind runs neither count
+//! toward the cap nor wait for it. The addressee of the need plays no part.
+//!
+//! A build whose prerequisites have not landed is assessed every tick, even
+//! with the cap full, so its wait projection stays current: it enters no
+//! ranking and consumes no slot, and a lower-ranked eligible need fills the
+//! slot meanwhile.
 //!
 //! Assumption: the target of a repair-kind need is read from the `target` of
 //! the open pump record's front matter, which is written together with
@@ -14,6 +20,7 @@ use std::collections::BTreeMap;
 use chrono::DateTime;
 
 use crate::pump::flow::advance::start::{resume, start};
+use crate::pump::flow::build_prereq::assess;
 use crate::pump::flow::def::FlowKind;
 use crate::pump::flow::handlers::{FlowMail, Registry, TickPhase};
 use crate::pump::flow::index::run_state;
@@ -26,6 +33,7 @@ use crate::pump::flow::tick::{FLOW_INVALID, raise_once};
 use crate::pump::host::Ctx;
 use crate::pump::jobs::JobStore;
 use crate::pump::store::PumpStore;
+use crate::pump::store::build_waits::BuildWait;
 use vivi_error::VivariumError;
 
 /// Exception kind: a run stayed `starting` too long.
@@ -110,6 +118,7 @@ impl<S: JobStore, M: FlowMail> TickPhase<S, M> for Intake {
         mail: &mut M,
     ) -> Result<(), VivariumError> {
         resume_starting(ctx, store, mail);
+        sweep_waits(ctx, store, mail)?;
         let (active, busy) = in_flight(store, mail)?;
         let cap = ctx
             .cfg
@@ -177,8 +186,43 @@ fn in_flight<M: FlowMail>(
     Ok((active, busy))
 }
 
-/// The needs with an open record, an open need state, and no run in flight,
-/// with their rank inputs.
+/// Drop every queued wait whose need is done, whose record closed or was
+/// replaced, or that is no longer a queued build. A wait whose lifecycle
+/// cannot be read is left in place: a failed read never erases an
+/// observation.
+fn sweep_waits<M: FlowMail>(ctx: &Ctx, store: &PumpStore, mail: &M) -> Result<(), VivariumError> {
+    for wait in store.build_waits()? {
+        match stale(mail, &wait) {
+            Ok(true) => store.remove_build_wait(&wait.need)?,
+            Ok(false) => {}
+            Err(error) => {
+                ctx.log(&format!(
+                    "flow intake: cannot read build wait of {}: {error}",
+                    wait.need
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Whether the queued wait no longer describes a queued build.
+fn stale<M: MailReader>(mail: &M, wait: &BuildWait) -> Result<bool, VivariumError> {
+    if mail.need_state(&wait.need)? != NeedStatus::Open {
+        return Ok(true);
+    }
+    let Some((handle, body)) = mail.open_record(&wait.need)? else {
+        return Ok(true);
+    };
+    if handle != wait.record {
+        return Ok(true);
+    }
+    let marks = mail.need_marks(&wait.need)?;
+    Ok(kind::of(Some(&body), &marks) != FlowKind::Build)
+}
+
+/// The needs with an open record, an open need state, no run in flight and
+/// an admitted build, with their rank inputs.
 fn candidates<M: FlowMail>(
     ctx: &Ctx,
     store: &PumpStore,
@@ -186,12 +230,7 @@ fn candidates<M: FlowMail>(
 ) -> Result<Vec<Candidate>, VivariumError> {
     let priorities: BTreeMap<String, i64> = store.need_priorities()?.into_iter().collect();
     let mut found = Vec::new();
-    for (handle, text) in mail.unreadable_records()? {
-        raise_once(ctx, LETTER_INVALID, &handle, &text);
-    }
-    for (handle, text) in mail.unreadable_actions()? {
-        raise_once(ctx, LETTER_INVALID, &handle, &text);
-    }
+    warn_unreadable(ctx, mail)?;
     for (need, date) in mail.open_record_needs()? {
         if has_run_in_flight(store, &need)? {
             continue;
@@ -229,6 +268,9 @@ fn candidates<M: FlowMail>(
         if repair && !known_target(ctx, &need, &target) {
             continue;
         }
+        if !admitted(ctx, store, mail, &need) {
+            continue;
+        }
         found.push(Candidate {
             repair,
             target,
@@ -238,6 +280,31 @@ fn candidates<M: FlowMail>(
         });
     }
     Ok(found)
+}
+
+/// Whether the shared build assessment admits `need` this tick. A blocked
+/// build stays queued with its wait projection; a read error is raised for
+/// this need alone and unrelated needs are still admitted.
+fn admitted<M: FlowMail>(ctx: &Ctx, store: &PumpStore, mail: &M, need: &str) -> bool {
+    match assess(ctx, store, mail, need) {
+        Ok(gate) => gate.eligible,
+        Err(error) => {
+            ctx.log(&format!("flow intake: cannot assess build {need}: {error}"));
+            false
+        }
+    }
+}
+
+/// Raise once for every pump record or operator action letter that does not
+/// parse; each names no need and is skipped.
+fn warn_unreadable<M: FlowMail>(ctx: &Ctx, mail: &M) -> Result<(), VivariumError> {
+    for (handle, text) in mail.unreadable_records()? {
+        raise_once(ctx, LETTER_INVALID, &handle, &text);
+    }
+    for (handle, text) in mail.unreadable_actions()? {
+        raise_once(ctx, LETTER_INVALID, &handle, &text);
+    }
+    Ok(())
 }
 
 /// Whether a repair record names a configured target; raise once when not.
@@ -290,3 +357,11 @@ fn age_of(date: &str) -> u64 {
 #[cfg(test)]
 #[path = "intake_test.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "intake_prereq_test.rs"]
+mod prereq_tests;
+
+#[cfg(test)]
+#[path = "intake_mail_test.rs"]
+mod mail_tests;
