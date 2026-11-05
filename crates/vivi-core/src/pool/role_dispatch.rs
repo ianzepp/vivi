@@ -135,8 +135,8 @@ pub fn resolve(config: &PoolConfig, pool: &str, input: &Input) -> Result<Resolve
 /// roles, to a hand job publishing only its unit-namespace branch, or to a
 /// repairer job publishing only one `vivi/repair/<segment>` branch. A merge
 /// role publishes only a configured main (`mains`, one branch name per
-/// target), a `vivi/need/<segment>` or `vivi/need-prior/<segment>` branch, or
-/// a `pump/merge-main/<segment>` scratch branch.
+/// target), a `vivi/need/<segment>`, `vivi/need-prior/<segment>`, or
+/// `vivi/intake/<segment>` branch, or a `pump/merge-main/<segment>` scratch branch.
 /// A release role binds publication to one expected full commit SHA.
 pub fn validate_publish(
     role: Option<&RoleFacts>,
@@ -176,6 +176,7 @@ pub fn validate_publish(
 fn merge_publish_ref(reference: &str, mains: &[String]) -> bool {
     one_segment(reference, "refs/heads/vivi/need/")
         || one_segment(reference, "refs/heads/vivi/need-prior/")
+        || one_segment(reference, "refs/heads/vivi/intake/")
         || one_segment(reference, "refs/heads/pump/merge-main/")
         || mains
             .iter()
