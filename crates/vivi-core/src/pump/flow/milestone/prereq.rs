@@ -45,7 +45,9 @@ pub(crate) fn prerequisites<M: MailReader>(
     mail.need_prerequisites(need)?
         .into_iter()
         .map(|handle| {
-            let state = classify(store, mail, &handle)?;
+            let state = classify(store, mail, &handle).map_err(|error| {
+                VivariumError::Message(format!("prerequisite {handle}: {error}"))
+            })?;
             Ok(Prereq { handle, state })
         })
         .collect()
