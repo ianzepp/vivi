@@ -7,9 +7,11 @@ pub(super) fn send(
     limiter: &RateLimiter,
     project_id: &str,
     identity: &IdentityRecord,
+    acting_as: Option<&str>,
     arguments: &Value,
 ) -> Result<Value, ToolError> {
     rate_limit(limiter, project_id, &identity.name)?;
+    let effective = transport_author(identity, acting_as, arguments)?;
     let kind = req_str(arguments, "kind")?;
     if !matches!(kind, "need" | "task" | "want" | "mail" | "chat") {
         return Err(ToolError::new(
@@ -26,7 +28,7 @@ pub(super) fn send(
     // dependencies ride in it; the composer gates the body and writes the
     // format header.
     let body = sugared_body(kind, body, arguments)?;
-    let composed = compose_send(identity, &to, subject, &body, kind).map_err(ToolError::new)?;
+    let composed = compose_send(&effective, &to, subject, &body, kind).map_err(ToolError::new)?;
     let outcome = append_composed(store, project_id, identity, composed).map_err(map_project)?;
     Ok(json!({
         "message_id": outcome.message_id,
@@ -42,9 +44,11 @@ pub(super) fn reply(
     limiter: &RateLimiter,
     project_id: &str,
     identity: &IdentityRecord,
+    acting_as: Option<&str>,
     arguments: &Value,
 ) -> Result<Value, ToolError> {
     rate_limit(limiter, project_id, &identity.name)?;
+    let effective = transport_author(identity, acting_as, arguments)?;
     let handle = req_str(arguments, "handle")?;
     let body = req_str(arguments, "body")?;
     if body.trim().is_empty() {
@@ -52,7 +56,7 @@ pub(super) fn reply(
     }
     let parent = lookup_one(store, project_id, identity, handle)?;
     let to = parse_to(arguments)?;
-    let composed = compose_reply(identity, &parent, &to, body).map_err(ToolError::new)?;
+    let composed = compose_reply(&effective, &parent, &to, body).map_err(ToolError::new)?;
     let outcome = append_composed(store, project_id, identity, composed).map_err(map_project)?;
     Ok(json!({
         "message_id": outcome.message_id,
@@ -60,6 +64,30 @@ pub(super) fn reply(
         "in_reply_to": handle,
         "sequence": outcome.sequence,
     }))
+}
+
+fn transport_author(
+    identity: &IdentityRecord,
+    acting_as: Option<&str>,
+    arguments: &Value,
+) -> Result<IdentityRecord, ToolError> {
+    let name = acting_as.unwrap_or(&identity.name);
+    if let Some(assertion) = arguments.get("from").and_then(Value::as_str) {
+        let matches = assertion == name
+            || identity
+                .mailspace_prefix()
+                .is_some_and(|prefix| assertion == format!("{name}@{prefix}.local"));
+        if !matches {
+            return Err(ToolError::new(
+                "from must assert the effective acting identity",
+            ));
+        }
+    } else if arguments.get("from").is_some() {
+        return Err(ToolError::new("from must be a string"));
+    }
+    let mut effective = identity.clone();
+    effective.name = name.to_owned();
+    Ok(effective)
 }
 
 pub(crate) fn parse_to(arguments: &Value) -> Result<Vec<String>, ToolError> {

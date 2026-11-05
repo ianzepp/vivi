@@ -390,7 +390,7 @@ fn initialize(params: &Value, surface: &Surface<'_>) -> Value {
     })
 }
 
-const PROJECT_INSTRUCTIONS: &str = "This is a vivi project mailspace. You are the authenticated member; never pass a from address. Start with overview, then list/show/thread to read, send/reply for new work, done/reopen for lifecycle, memo for durable notes, and graph for ready/blocked. On a hosted project, mark/unmark label a need or want, depend adds or drops prerequisites after the send, and board returns the project board.";
+const PROJECT_INSTRUCTIONS: &str = "This is a vivi project mailspace. The authenticated member is the transport identity; hosted tools use the effective grant identity (the grant's actor, with existing own-member/default/foreign-member fallback). Optional from on send/reply is only an assertion and cannot change authorship. Send/reply may omit to or use []; this stores an author-only letter with no recipient delivery or wake. Ordinary lists and board show project-wide defaults; use explicit filters to narrow them. Private memo defaults are private. Start with overview, then list/show/thread to read, send/reply for new work, done/reopen for lifecycle, memo for durable notes, and graph for ready/blocked. On hosted projects, mark/unmark label a need or want, depend selects the acting actor (not the holder) and adds or drops prerequisites after the send, and board returns the project board.";
 
 fn tools_list() -> Value {
     json!({
@@ -436,11 +436,13 @@ fn tools_list() -> Value {
                 "additionalProperties": false
             })),
             tool_schema::send_tool(),
-            tool("reply", "Reply to a letter by handle as the authenticated caller.", json!({
+            tool("reply", "Reply to a letter by handle. Optional from asserts the effective acting identity and never overrides it; omitted to or to: [] stores an author-only reply with no delivery or wake.", json!({
                 "type": "object",
                 "properties": {
                     "handle": { "type": "string" },
-                    "body": { "type": "string" }
+                    "body": { "type": "string" },
+                    "from": { "type": "string", "description": "Optional assertion of the effective author; cannot select another identity" },
+                    "to": { "oneOf": [ { "type": "string" }, { "type": "array", "items": { "type": "string" } } ] }
                 },
                 "required": ["handle", "body"],
                 "additionalProperties": false
