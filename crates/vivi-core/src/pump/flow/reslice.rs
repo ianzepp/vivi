@@ -71,6 +71,26 @@ impl Mode {
             Self::FollowUp => "follow-up",
         }
     }
+
+    /// The instruction the dispatched brief opens with: the slicer returns a
+    /// slice list, it does not implement anything.
+    #[must_use]
+    pub fn instruction(self) -> &'static str {
+        match self {
+            Self::Split => {
+                "Return a slice list for this slice (sliced) or escalate. Do not implement it; \
+                 your checkout is read-only."
+            }
+            Self::Rework => {
+                "Return a slice list for this blocked-scope rework (sliced) or escalate. Do not \
+                 implement it; your checkout is read-only."
+            }
+            Self::FollowUp => {
+                "Return a slice list for this follow-up (sliced) or escalate. Do not implement \
+                 it; your checkout is read-only."
+            }
+        }
+    }
 }
 
 /// Send a slicer job on one slice, in `mode`, with `input` as the ask; returns
@@ -208,6 +228,11 @@ fn body_tail(body: &str) -> &str {
     body.find("mode: ").map_or("", |at| &body[at..])
 }
 
+/// The heading the dispatched request is rendered under.
+const REQUEST_HEADING: &str = "## request";
+
+/// The dispatched slicer brief: the slicing instruction first, then the mode
+/// and sizing metadata, then the labelled request, then the filtered history.
 fn brief<M: FlowMail>(
     ctx: &Ctx,
     mail: &M,
@@ -217,7 +242,9 @@ fn brief<M: FlowMail>(
 ) -> Result<String, VivariumError> {
     let context = reslice_context::quoted_context(&mail.task_body(&slice.task)?);
     Ok(format!(
-        "mode: {}\nslice size: aim for 5 to {} minutes\ntargets: {}\n{input}\n{}\n{context}",
+        "{}\n\nmode: {}\nslice size: aim for 5 to {} minutes\ntargets: {}\n\n\
+         {REQUEST_HEADING}\n\n{input}\n\n{}\n\n{context}",
+        mode.instruction(),
         mode.word(),
         ctx.cfg.slice.minutes(),
         targets(ctx).join(", "),

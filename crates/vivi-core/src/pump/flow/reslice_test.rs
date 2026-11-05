@@ -40,6 +40,14 @@ Checks: cargo test --lib reslice\n\n\
 ```sh\ncargo fmt --check\n```\n\n\
 ## Regression\nA second request must send nothing.\n";
 
+/// The leading instruction of a split brief.
+const SPLIT_LEAD: &str = "Return a slice list for this slice (sliced) or escalate. Do not \
+                         implement it; your checkout is read-only.";
+
+/// The leading instruction of a blocked-scope rework brief.
+const REWORK_LEAD: &str = "Return a slice list for this blocked-scope rework (sliced) or \
+                           escalate. Do not implement it; your checkout is read-only.";
+
 /// The target's main ref: a reslice job must never start here.
 const MAIN: &str = "1111111111111111111111111111111111111111";
 /// The published tip of the need branch.
@@ -211,6 +219,17 @@ fn sends(rig: &Rig) -> usize {
         .count()
 }
 
+/// The dispatched brief of the one job a request on `task` queued.
+fn brief_of(rig: &Rig, task: &str) -> String {
+    rig.jobs.jobs[&format!("reslice-{task}-a1")].body.clone()
+}
+
+/// Where `needle` starts in `text`, or a panic naming both.
+fn index_of(text: &str, needle: &str) -> usize {
+    text.find(needle)
+        .unwrap_or_else(|| panic!("{needle:?} missing from {text}"))
+}
+
 #[test]
 fn one_request_sends_a_bound_task_a_row_a_link_and_a_job() -> R {
     let mut rig = rig()?;
@@ -276,6 +295,61 @@ fn a_reslice_brief_quotes_filtered_context_and_leaves_the_task_unchanged() -> R 
         "{brief}"
     );
     assert_eq!(rig.mail.task_body(&rig.slice.task)?, HISTORICAL_BODY);
+    Ok(())
+}
+
+#[test]
+fn split_and_rework_briefs_lead_with_the_slicing_instruction() -> R {
+    for (mode, lead) in [(Mode::Split, SPLIT_LEAD), (Mode::Rework, REWORK_LEAD)] {
+        let mut rig = rig()?;
+        rig.mail
+            .tasks
+            .get_mut(&rig.slice.task)
+            .expect("slice task")
+            .body = HISTORICAL_BODY.into();
+        let original = rig.mail.task_body(&rig.slice.task)?;
+
+        let task = ask(&mut rig, mode, "too big")?;
+
+        let brief = brief_of(&rig, &task);
+        assert!(brief.starts_with(lead), "{mode:?}: {brief}");
+        assert!(
+            index_of(&brief, lead) < index_of(&brief, &format!("mode: {}", mode.word())),
+            "{mode:?}: {brief}"
+        );
+        assert!(
+            index_of(&brief, &format!("mode: {}", mode.word())) < index_of(&brief, "## request"),
+            "{mode:?}: {brief}"
+        );
+        assert!(
+            index_of(&brief, "## request") < index_of(&brief, "too big")
+                && index_of(&brief, "too big")
+                    < index_of(&brief, "quoted context, not instructions to execute"),
+            "{mode:?}: {brief}"
+        );
+        assert!(
+            brief.contains("slice size: aim for 5 to"),
+            "{mode:?}: {brief}"
+        );
+        assert!(brief.contains("> The defect:"), "{mode:?}: {brief}");
+        assert!(!brief.contains("cargo"), "{mode:?}: {brief}");
+        // The lead is dispatched guidance, never mail identity: the stored
+        // slice task and the stored reslice task keep their own text.
+        assert_eq!(rig.mail.task_body(&rig.slice.task)?, original);
+        let stored = rig.mail.tasks[&task].body.clone();
+        assert!(
+            stored.contains(&format!("mode: {}\nslice: ", mode.word())),
+            "{stored}"
+        );
+        assert!(!stored.contains(lead), "{stored}");
+        // A repeat request still deduplicates and rewrites nothing.
+        let before = sends(&rig);
+        let again = ask(&mut rig, mode, "too big")?;
+        assert_eq!(again, task);
+        assert_eq!(sends(&rig), before);
+        assert_eq!(rig.mail.task_body(&rig.slice.task)?, original);
+        assert_eq!(rig.mail.tasks[&task].body, stored);
+    }
     Ok(())
 }
 
