@@ -98,6 +98,68 @@ fn a_sent_copy_of_remote_work_is_tracked_and_never_dispatched() {
 }
 
 #[test]
+fn author_only_work_is_local_ready_not_awaiting() {
+    let (_tmp, mailspace) = space();
+    let author_only = |kind: &str| -> String {
+        let subject = format!("{kind} alone");
+        mailspace
+            .send(SendRequest {
+                from: "mind".into(),
+                to: Vec::new(),
+                cc: Vec::new(),
+                bcc: Vec::new(),
+                subject,
+                body: work_body(kind, &[]),
+                role: format!("{kind}s"),
+                kind: Some(kind.into()),
+                reply_to: None,
+            })
+            .unwrap()
+            .sent
+    };
+    let task = author_only("task");
+    let need = author_only("need");
+    let want = author_only("want");
+    let remote = send_work(&mailspace, "task", REMOTE, "away", &[]).unwrap();
+
+    // No audience means no other mailspace was handed the work: it stays
+    // here, ready, instead of awaiting a receiver.
+    for handle in [&task, &need, &want] {
+        assert_eq!(readiness(&mailspace, handle), "ready", "{handle}");
+    }
+    assert_eq!(readiness(&mailspace, &remote), "awaiting");
+
+    let manifest = mailspace.step_shadow().unwrap();
+    let dispatched: Vec<&str> = manifest
+        .dispatches
+        .iter()
+        .map(|dispatch| dispatch.subject.as_str())
+        .collect();
+    assert!(dispatched.contains(&"task alone"), "{manifest:?}");
+    assert!(dispatched.contains(&"need alone"), "{manifest:?}");
+    assert!(!dispatched.contains(&"want alone"), "{manifest:?}");
+
+    let reason = |item: &str| {
+        manifest
+            .exceptions
+            .iter()
+            .find(|exception| exception.item == item)
+            .map(|exception| exception.reason.clone())
+            .unwrap_or_else(|| panic!("no exception for {item}"))
+    };
+    // The want is parked here, not handed over: neither it nor the author-only
+    // task and need appears as remote work.
+    assert_ne!(reason(&want), "awaiting_remote");
+    assert!(
+        !manifest
+            .exceptions
+            .iter()
+            .any(|e| e.item == task || e.item == need)
+    );
+    assert_eq!(reason(&remote), "awaiting_remote");
+}
+
+#[test]
 fn a_local_item_beside_a_sent_copy_still_dispatches() {
     let (_tmp, mailspace) = space();
     let remote = send_work(&mailspace, "task", REMOTE, "away", &[]).unwrap();
@@ -338,6 +400,14 @@ fn open_work_content_ids_follow_open_nodes_only() {
         .unwrap();
 
     assert!(mailspace.open_work_content_ids().unwrap().is_empty());
+}
+
+#[test]
+fn only_an_empty_audience_is_unaddressed() {
+    assert!(is_unaddressed("", ""));
+    assert!(is_unaddressed("  ", "\t\n"));
+    assert!(!is_unaddressed(REMOTE, ""));
+    assert!(!is_unaddressed("", "hand@3f9a1c7e.local"));
 }
 
 #[test]
