@@ -29,7 +29,7 @@ Fields:
 - `answer` (first key): `merged` or `conflict`.
 - `conflicts` (list of paths): the files that still conflict. Leave it out for `merged`.
 - `design_change` (bool, default false): `true` when a conflict needs a design choice. With `conflict` only.
-- `[[check]]` tables, one per check you ran: `cmd`, `result` (`pass`, `fail` or `skipped`), `seconds` (an integer).
+- `[[check]]` tables, one per check you ran: `cmd`, `result` (`pass`, `fail` or `skipped`), `seconds` (a finite, non-negative number: integer or decimal, e.g. `41.5`).
 
 Rules:
 
