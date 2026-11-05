@@ -93,7 +93,7 @@ const CONTRACT_RULES: &str = "Rules:
 - If you find nothing to change, change nothing and answer `built`; the runner sees that no files changed.
 - `failed` means you could not finish; say what is left in `remaining`.
 - Put surprises a later slice must know in `deviations`, and work outside this slice in `[[follow_up]]` (`paths`, `need`).
-- `[[check]]` lists the checks you ran on the final tree, each with the result it gave there: `result` is exactly `pass`, `fail` or `skipped`, and any detail goes in the prose. With `answer = \"built\"`, any `fail` among them fails the attempt. A failure you reproduced before your change is prose, never a `[[check]]` entry.
+- `[[check]]` lists the checks you ran on the final tree, each with the result it gave there: `result` is exactly `pass`, `fail` or `skipped`, `seconds` is the check's duration — a finite, non-negative number, integer or float alike, with the fraction kept (`seconds = 12.5` is fine) — and any detail goes in the prose. With `answer = \"built\"`, any `fail` among them fails the attempt. A failure you reproduced before your change is prose, never a `[[check]]` entry.
 - `change` is a report only. The pump decides the outcome from the runner's exit code and push result, so do not claim SHAs, refs, merges or exit codes.";
 
 /// What a finished hand job amounts to.
