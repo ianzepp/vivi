@@ -43,8 +43,9 @@ pub(crate) struct RepairRecord {
     pub target: String,
     /// The main tip that was tested, when the record names one.
     pub tested: Option<String>,
-    /// The failing output tail: the record prose after the front matter.
-    pub tail: String,
+    /// The record prose after the front matter: all of it, not necessarily an
+    /// output tail.
+    pub context: String,
 }
 
 /// Read a repair need's open record body.
@@ -63,7 +64,7 @@ pub(crate) fn record(body: &str) -> Result<RepairRecord, VivariumError> {
             Ok(RepairRecord {
                 target,
                 tested: envelope.front.tested,
-                tail: envelope.body.trim().to_owned(),
+                context: envelope.body.trim().to_owned(),
             })
         }
         Err(error) => Err(VivariumError::Parse(format!("repair record: {error}"))),

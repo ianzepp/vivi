@@ -106,14 +106,14 @@ fn brief(
     let mut text = format!(
         "Repair need: {need}\nTarget: {target}\nTested tip: {tested}\n\
          Current main tip: {main_tip}\nPublish to branch: {name}\n\n\
-         Failing output:\n{tail}\n\n\
+         Failing output:\n{context}\n\n\
          Run the failing tests first.\n\
          Never weaken, delete, ignore or gate a test; fix the cause.\n\
          Time cap: {budget_secs} seconds for this attempt; no diff cap.\n\
          Reply with the repairer envelope (answer built or failed).\n",
         need = cx.run.need,
         target = rec.target,
-        tail = rec.tail,
+        context = rec.context,
         budget_secs = budget_secs,
     );
     if attempt >= 2 {

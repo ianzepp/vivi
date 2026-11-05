@@ -345,7 +345,7 @@ fn published_facts<M: FlowMail>(
 
 /// The audit target and brief. The target is the record's, else the need's
 /// branch row's (the record is closed once the repair has landed); the tested
-/// tip and failing tail are named only while the record body is still readable.
+/// tip and record prose are named only while the record body is still readable.
 fn brief<M: FlowMail>(
     ctx: &Ctx,
     store: &PumpStore,
@@ -383,7 +383,7 @@ fn brief<M: FlowMail>(
         text.push_str(&format!(
             "Tested tip: {}\n\nFailing output:\n{}\n",
             rec.tested.as_deref().unwrap_or("unknown"),
-            rec.tail
+            rec.context
         ));
     }
     text.push_str(
