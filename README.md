@@ -559,9 +559,18 @@ step's task, state and verdict.
 | `release` | Waits until every dependency need is on main |
 | `repair` | Two repairer attempts, the `main` rung on the repair branch, then a merge; otherwise the need is unrepaired, main stays red and the pump raises an alarm. A red main files a repair need |
 
-A need runs when it has an open **pump record**. `vivi pump send --need <need>`
-files one, and sending is the dispatch. The flow is the record's `kind`
-(`build`, `research`, `release` or `repair`), else the need's mark (`research`,
+A need runs when it has an open **pump record**. An open record is queued
+eligibility, not a promise of immediate start: a prospective build waits until
+its effective dependencies are satisfied, including dependency-letter additions
+and removals. Every prerequisite must land; held, closed-but-unlanded and
+unreadable blockers are identifiable in `status.txt` and `vivi pump health`.
+Landing or removing the final blocker needs no extra operator reply. Active work
+is grandfathered, while replacements compete through admission. Parked, locked
+and prerequisite-waiting runs consume no ordinary live-run slot; repair
+exceptions remain. Cap-only queuing is distinct from dependency waiting. The
+status and health details are the last persisted evaluation, not a live
+admission decision. `vivi pump send --need <need>` files one record, making the
+need eligible. The flow is the record's `kind` (`build`, `research`, `release` or `repair`), else the need's mark (`research`,
 `release`, `repair`), else `build`. A landing closes the need and closes the
 record `landed`. A record also closes `withdrawn` or `superseded`. A send is
 refused for a need that already has an open record, a need that is done, or a

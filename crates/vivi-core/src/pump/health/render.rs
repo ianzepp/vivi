@@ -21,8 +21,9 @@ pub fn render(h: &PumpHealth) -> String {
         format!("writer   {} ({}){pid}", h.writer.state, h.writer.source),
         format!("tick     {tick} (stale after {}s)", h.stale_after_secs),
         format!("exceptions {}", h.exceptions.len()),
-        format!("as_of    {}", h.as_of),
     ]);
+    lines.extend(h.waiting.iter().cloned());
+    lines.push(format!("as_of    {}", h.as_of));
     let mut out = lines.join("\n");
     out.push('\n');
     out

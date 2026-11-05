@@ -98,3 +98,31 @@ impl Snapshot {
         &self.exceptions
     }
 }
+
+/// Human-readable persisted prerequisite projection lines. This is historical
+/// evaluation data, not a fresh admission decision.
+#[must_use]
+pub fn wait_lines(rows: &[FlowWaitRow]) -> Vec<String> {
+    let mut rows = rows.to_vec();
+    rows.sort_by(|a, b| a.need.cmp(&b.need).then(a.record.cmp(&b.record)));
+    let mut lines = Vec::new();
+    for row in rows {
+        let mut handles = row.handles;
+        handles.sort_by(|a, b| a.handle.cmp(&b.handle));
+        let names = handles
+            .iter()
+            .map(|h| h.handle.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        lines.push(format!(
+            "waiting need {} record {}: waiting on {} (evaluated_at {})",
+            row.need, row.record, names, row.evaluated_at
+        ));
+        lines.extend(
+            handles
+                .into_iter()
+                .map(|h| format!("  {}: {} ({})", h.handle, h.state, h.detail)),
+        );
+    }
+    lines
+}

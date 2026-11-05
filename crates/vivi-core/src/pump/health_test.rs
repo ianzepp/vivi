@@ -250,6 +250,82 @@ fn a_saved_store_reads_into_control_tick_and_exceptions() {
 }
 
 #[test]
+fn waits_render_without_changing_health_json_verdict_or_keys() {
+    let dir = project(TOML);
+    let now = epoch_now();
+    let home = dir.path().join(".vivi/pump");
+    write_pump_home(&home, now);
+    let before = health(
+        dir.path(),
+        &HealthOptions {
+            now: Some(now),
+            ..HealthOptions::default()
+        },
+    )
+    .unwrap();
+    let store = PumpStore::open(&home.join(DB_FILENAME)).unwrap();
+    store
+        .upsert_flow_wait(&crate::pump::store::FlowWaitRow {
+            need: "n1".into(),
+            record: "r1".into(),
+            evaluated_at: now,
+            handles: vec![crate::pump::store::WaitingHandle {
+                handle: "n2".into(),
+                state: "open".into(),
+                detail: "unlanded".into(),
+            }],
+        })
+        .unwrap();
+    drop(store);
+    let after = health(
+        dir.path(),
+        &HealthOptions {
+            now: Some(now),
+            ..HealthOptions::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        (before.verdict, before.reasons.clone()),
+        (after.verdict, after.reasons.clone())
+    );
+    assert_eq!(
+        after.waiting,
+        [
+            format!("waiting need n1 record r1: waiting on n2 (evaluated_at {now})"),
+            "  n2: open (unlanded)".into()
+        ]
+    );
+    let json = serde_json::to_value(&after).unwrap();
+    assert!(json.get("waiting").is_none());
+    let mut keys = json
+        .as_object()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    keys.sort();
+    assert_eq!(
+        keys,
+        [
+            "as_of",
+            "control",
+            "exceptions",
+            "last_tick",
+            "reasons",
+            "schema",
+            "shutdown_requested",
+            "stale_after_secs",
+            "status_age_secs",
+            "tick_secs",
+            "verdict",
+            "writer"
+        ]
+    );
+    assert!(super::render(&after).contains("waiting need n1 record r1"));
+}
+
+#[test]
 fn the_json_shape_names_the_verdict_in_lowercase() {
     let dir = project(TOML);
     let now = epoch_now();

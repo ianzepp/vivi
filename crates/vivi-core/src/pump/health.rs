@@ -79,6 +79,9 @@ pub struct PumpHealth {
     /// The pump.db schema this binary reads.
     pub schema: i64,
     pub exceptions: Vec<ExceptionView>,
+    /// Last-evaluated prerequisite waits; intentionally absent from wire formats.
+    #[serde(skip)]
+    pub waiting: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub changed_since: Option<ChangedSince>,
 }
@@ -168,6 +171,7 @@ fn blank(now: u64, tick_secs: u64, opts: &HealthOptions) -> PumpHealth {
         status_age_secs: None,
         schema: SCHEMA_VERSION,
         exceptions: Vec::new(),
+        waiting: Vec::new(),
         changed_since: None,
     }
 }
@@ -182,6 +186,7 @@ fn fill(out: &mut PumpHealth, home: &Path, snapshot: &Snapshot, opts: &HealthOpt
     let window = opts
         .since
         .unwrap_or_else(|| now.saturating_sub(DEFAULT_WINDOW_SECS));
+    out.waiting = report::wait_lines(snapshot.flow_waits());
     out.exceptions = views::exceptions(snapshot.exception_rows(), window);
     out.changed_since = opts
         .since

@@ -86,6 +86,39 @@ fn mailspace_project(toml: &str) -> tempfile::TempDir {
 }
 
 #[test]
+fn status_includes_persisted_wait_projection_but_missing_data_is_ignored() {
+    let (dir, ctx, _host) = setup();
+    write_status(&ctx, &State::default());
+    assert_eq!(
+        fs::read_to_string(dir.path().join("home/status.txt"))
+            .unwrap()
+            .lines()
+            .count(),
+        1
+    );
+    let store = PumpStore::open(&ctx.home.join(DB_FILENAME)).unwrap();
+    store
+        .upsert_flow_wait(&crate::pump::store::FlowWaitRow {
+            need: "n1".into(),
+            record: "r1".into(),
+            evaluated_at: T0,
+            handles: vec![crate::pump::store::WaitingHandle {
+                handle: "n2".into(),
+                state: "held".into(),
+                detail: "dispatch refused".into(),
+            }],
+        })
+        .unwrap();
+    write_status(&ctx, &State::default());
+    let text = fs::read_to_string(dir.path().join("home/status.txt")).unwrap();
+    assert!(
+        text.contains("waiting need n1 record r1: waiting on n2 (evaluated_at 1000000)"),
+        "{text}"
+    );
+    assert!(text.contains("n2: held (dispatch refused)"), "{text}");
+}
+
+#[test]
 fn config_changes_are_applied_before_the_next_tick() {
     let initial = format!("{PUMP_TOML}{PUMP_TOML_IDENTITIES}");
     let dir = mailspace_project(&initial);
