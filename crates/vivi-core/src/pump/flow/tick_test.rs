@@ -105,6 +105,13 @@ fn rig_with(kind: &str) -> Result<Rig, VivariumError> {
     let ctx = ctx.with_routing(routing);
     let store = PumpStore::open(&dir.path().join(DB_FILENAME))?;
     seed_need_branch(&store)?;
+    // A reslice job resolves the target's main before it starts from the
+    // branch, so the main ref is scripted here.
+    host.reply(
+        "ls-remote origin refs/heads/main",
+        0,
+        &format!("{TIP}\trefs/heads/main\n"),
+    );
     let mut mail = FakeMail::new("mind");
     MailWriter::open_record(&mut mail, NEED, &record_body(NEED, kind))?;
     Ok(Rig {
