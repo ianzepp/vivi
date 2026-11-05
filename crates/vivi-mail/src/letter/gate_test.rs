@@ -4,8 +4,9 @@ use super::gate;
 use crate::letter::fixture::{need_body, task_body_with};
 use crate::letter::plain::{MemoFront, RuleFront};
 use crate::letter::records::{MailFront, RecordFront};
+use crate::letter::roles::RoleKind;
 use crate::letter::work::{NeedFront, TaskFront};
-use crate::letter::{Front, LetterKind, render};
+use crate::letter::{Front, LetterError, LetterKind, render};
 
 const HAND_ENVELOPE: &str =
     "+++\nanswer = \"built\"\nchange = []\ndeviations = []\nremaining = []\n+++\n\nall done\n";
@@ -116,6 +117,67 @@ fn a_role_reply_envelope_passes_as_formatted_mail() {
     assert!(gated.formatted);
     let letter = gated.letter.expect("envelope parses");
     assert!(matches!(letter.kind, LetterKind::Reply(_)));
+}
+
+#[test]
+fn decimal_check_seconds_pass_the_mail_gate() {
+    // A hand and a repairer share this minimal envelope: the `answer` word
+    // and decimal `[[check]]` rows are all both envelopes need. Dispatch
+    // names the reply, not the seat, so no role identity is asserted here.
+    let hand_and_repairer = "+++\nanswer = \"built\"\n\n[[check]]\ncmd = \"cargo test --lib --quiet\"\nresult = \"pass\"\nseconds = 0.0\n\n[[check]]\ncmd = \"cargo fmt --check\"\nresult = \"pass\"\nseconds = 12.5\n+++\n\nall done\n";
+    let gated = gate("mail", hand_and_repairer).unwrap();
+    assert!(gated.formatted);
+    let letter = gated.letter.expect("envelope parses");
+    assert!(matches!(letter.kind, LetterKind::Reply(_)));
+    assert_eq!(letter.prose, "all done");
+    let Front::Reply(parsed) = letter.front else {
+        panic!("a role reply envelope parses as a reply front");
+    };
+    assert_eq!(parsed.answer, "built");
+    assert_eq!(parsed.front["check"][0]["seconds"].as_f64(), Some(0.0));
+    assert_eq!(parsed.front["check"][1]["seconds"].as_f64(), Some(12.5));
+
+    let merge = "+++\nanswer = \"merged\"\n\n[[check]]\ncmd = \"cargo test --quiet\"\nresult = \"pass\"\nseconds = 0.0\n\n[[check]]\ncmd = \"cargo fmt --check\"\nresult = \"pass\"\nseconds = 12.5\n+++\n\nmerged clean\n";
+    let gated = gate("mail", merge).unwrap();
+    assert!(gated.formatted);
+    let letter = gated.letter.expect("merge envelope parses");
+    let LetterKind::Reply(role) = letter.kind else {
+        panic!("a merge envelope parses as a reply");
+    };
+    assert_eq!(role, RoleKind::Merge);
+    assert_eq!(letter.prose, "merged clean");
+    let Front::Reply(parsed) = letter.front else {
+        panic!("a merge envelope parses as a reply front");
+    };
+    assert_eq!(parsed.answer, "merged");
+    assert_eq!(parsed.front["check"][0]["seconds"].as_f64(), Some(0.0));
+    assert_eq!(parsed.front["check"][1]["seconds"].as_f64(), Some(12.5));
+}
+
+#[test]
+fn a_negative_check_duration_is_refused_by_the_mail_gate() {
+    let err = gate(
+        "mail",
+        "+++\nanswer = \"built\"\n\n[[check]]\ncmd = \"cargo test --lib --quiet\"\nresult = \"pass\"\nseconds = -1\n+++\n\nall done\n",
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, LetterError::Toml { ref message, .. } if message.contains("seconds")),
+        "{err:?}"
+    );
+}
+
+#[test]
+fn a_non_numeric_check_duration_is_refused_by_the_mail_gate() {
+    let err = gate(
+        "mail",
+        "+++\nanswer = \"built\"\n\n[[check]]\ncmd = \"cargo test --lib --quiet\"\nresult = \"pass\"\nseconds = \"12.5\"\n+++\n\nall done\n",
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, LetterError::Toml { ref message, .. } if message.contains("seconds")),
+        "{err:?}"
+    );
 }
 
 #[test]
