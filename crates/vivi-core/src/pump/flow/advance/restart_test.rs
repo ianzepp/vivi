@@ -8,7 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use tempfile::{TempDir, tempdir};
 
-use super::{RESTART_STUCK, prune_dead_jobs, register, restart};
+use super::{RESTART_STUCK, RestartResult, prune_dead_jobs, register, restart};
 use crate::mailspace::pump_note::Note;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::advance::start::{SENTINEL_NODE, start};
@@ -112,7 +112,7 @@ impl Rig {
         )
     }
 
-    fn restart(&mut self) -> Result<RunRow, VivariumError> {
+    fn restart(&mut self) -> Result<RestartResult, VivariumError> {
         let old = self.old()?;
         restart(&self.ctx, &self.store, &mut self.mail, &old, "plan")
     }
@@ -157,7 +157,9 @@ fn epoch() -> u64 {
 fn a_restart_closes_the_old_tasks_superseded_with_the_sentinel_last() -> R {
     let mut rig = rig()?;
     rig.mail.calls.clear();
-    let next = rig.restart()?;
+    let RestartResult::Started(next) = rig.restart()? else {
+        panic!("a restart with a free start starts its next run");
+    };
 
     assert_eq!((next.run, next.state.as_str()), (2, "live"));
     assert_eq!(rig.state_of(1)?, "superseded");
@@ -287,7 +289,9 @@ fn the_phase_removes_pending_jobs_of_dead_runs_only() -> R {
         },
     )?;
 
-    let next = rig.restart()?;
+    let RestartResult::Started(next) = rig.restart()? else {
+        panic!("a restart with a free start starts its next run");
+    };
     let new_task = rig.store.steps_of(NEED, next.run)?[0].task.clone();
     rig.add_job("j-new-pending", &new_task, next.run)?;
     rig.tick()?;

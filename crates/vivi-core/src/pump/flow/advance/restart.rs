@@ -33,6 +33,17 @@ pub(crate) fn register<S: JobStore, M: FlowMail>(registry: &mut Registry<S, M>) 
     registry.phase(Box::new(Restarts));
 }
 
+/// What a restart did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RestartResult {
+    /// The next run started and the old run is superseded.
+    Started(RunRow),
+    /// The restart deferred: no next run has started yet. Admission returns
+    /// this once it exists; nothing returns it yet.
+    #[allow(dead_code)]
+    Waiting,
+}
+
 /// Restart `need` from `old` at `entry`: set `old` restarting, start the next
 /// run, close the old run's open tasks `superseded` (the sentinel last), set
 /// `old` superseded. Safe to repeat after a failure: see [`resume`].
@@ -45,12 +56,12 @@ pub(crate) fn restart<M: MailWriter + MailReader>(
     mail: &mut M,
     old: &RunRow,
     entry: &str,
-) -> Result<RunRow, VivariumError> {
+) -> Result<RestartResult, VivariumError> {
     store.set_restart_entry(&old.need, old.run, entry)?;
     store.set_run_state(&old.need, old.run, run_state::RESTARTING)?;
     let next = start(ctx, store, mail, &old.need, Some(entry))?;
     supersede(store, mail, old)?;
-    Ok(next)
+    Ok(RestartResult::Started(next))
 }
 
 /// Finish a restart left `restarting`: the newer run of the same need

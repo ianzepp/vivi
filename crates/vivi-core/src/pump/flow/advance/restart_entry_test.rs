@@ -3,7 +3,7 @@
 
 use tempfile::tempdir;
 
-use super::{restart, resume};
+use super::{RestartResult, restart, resume};
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::advance::start::start;
 use crate::pump::flow::fake_mail::FakeMail;
@@ -52,7 +52,8 @@ fn restart_records_its_entry_before_it_marks_the_run_restarting() -> Result<(), 
     let mut mail = FakeMail::new("pump");
     MailWriter::open_record(&mut mail, NEED, "record")?;
     let old = start(&ctx, &store, &mut mail, NEED, None)?;
-    restart(&ctx, &store, &mut mail, &old, "plan")?;
+    let started = restart(&ctx, &store, &mut mail, &old, "plan")?;
+    assert!(matches!(started, RestartResult::Started(_)));
     assert_eq!(store.restart_entry(NEED, old.run)?.as_deref(), Some("plan"));
     Ok(())
 }

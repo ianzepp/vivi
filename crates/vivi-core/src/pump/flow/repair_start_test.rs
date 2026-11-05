@@ -8,7 +8,7 @@ use tempfile::{TempDir, tempdir};
 use super::RepairerStart;
 use crate::mailspace::pump_note::note_body;
 use crate::pump::config::PumpConfig;
-use crate::pump::flow::advance::restart::restart;
+use crate::pump::flow::advance::restart::{RestartResult, restart};
 use crate::pump::flow::advance::start::start as start_run;
 use crate::pump::flow::def::FlowKind;
 use crate::pump::flow::fake_mail::FakeMail;
@@ -369,7 +369,10 @@ fn a_restarted_repair_run_publishes_to_fresh_refs() -> R {
     assert_eq!(first.branch.as_deref(), Some(old_refs[0].as_str()));
     assert_eq!(rig.store.need_branch(NEED)?.expect("row").run, 1);
 
-    let next = restart(&rig.ctx, &rig.store, &mut rig.mail, &old, "fix1")?;
+    let RestartResult::Started(next) = restart(&rig.ctx, &rig.store, &mut rig.mail, &old, "fix1")?
+    else {
+        panic!("a restart with a free start starts its next run");
+    };
 
     assert_eq!(next.run, 2);
     let new_fix1 = rig

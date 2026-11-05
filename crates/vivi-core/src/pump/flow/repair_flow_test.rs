@@ -5,7 +5,7 @@ use serde_json::json;
 use tempfile::{TempDir, tempdir};
 
 use crate::pump::config::PumpConfig;
-use crate::pump::flow::advance::restart::restart;
+use crate::pump::flow::advance::restart::{RestartResult, restart};
 use crate::pump::flow::advance::route::JoinInput;
 use crate::pump::flow::advance::start::{SENTINEL_NODE, start};
 use crate::pump::flow::advance::terminal::Finished;
@@ -227,7 +227,10 @@ fn a_restart_at_fix1_from_unrepaired_supersedes_the_old_run() -> R {
     rig.feed("fix2", "overtime")?;
     let old = rig.run(1)?;
 
-    let next = restart(&rig.ctx, &rig.store, &mut rig.mail, &old, "fix1")?;
+    let RestartResult::Started(next) = restart(&rig.ctx, &rig.store, &mut rig.mail, &old, "fix1")?
+    else {
+        panic!("a restart with a free start starts its next run");
+    };
 
     assert_eq!(
         (next.run, next.entry.as_str(), next.kind.as_str()),
