@@ -211,13 +211,21 @@ former delegate can act.
 
 **Roles.** A role is a named seat with a mailbox and metadata: `kind` (`hand`,
 `head`, `mind`, `operator`, `steward`, or freeform), `status`, `labels`,
-`harness`, `provider`, `model`, `thinking`, a `pid`/`host` binding the live
-process sets for itself, a `cadence` (the maximum silence between its outbound
-signals) and a `charter` (its standing prompt, stored at
-`.vivi/charters/<name>.md`). `vivi role status <name>` computes liveness fresh
-on each call and reports schedule health (`none`, `never`, `ok`, `due`,
-`overdue`) from the cadence; a role bound to another host reports `remote`
-instead of being probed locally.
+`harness`, `provider`, `model`, `thinking`, a `command` (the shell text the seat
+runs, stored verbatim, including quoted and multiline text), a `target` (the
+repository the seat works in: a `[pump.targets.<id>]` key, or the implicit
+`default` target of a pump with no target tables), a `pid`/`host` binding the
+live process sets for itself, a `cadence` (the maximum silence between its
+outbound signals) and a `charter` (its standing prompt, stored at
+`.vivi/charters/<name>.md`). `vivi role add` and `vivi role set` take
+`--command` and `--target`; `role set` additionally takes `--clear-command` and
+`--clear-target`, and a clear wins when both forms are given. A command or
+target change is a configuration edit, so it takes the guard; only a
+pid/host-only set is left alone. A target the pump does not configure is
+refused before the write, leaving the config unchanged. `vivi role status <name>`
+computes liveness fresh on each call and reports schedule health (`none`,
+`never`, `ok`, `due`, `overdue`) from the cadence; a role bound to another host
+reports `remote` instead of being probed locally.
 
 **Goals.** `vivi goal add --path <file>` registers the path of a goal document.
 Vivi stores the pointer, not the file; `board` and `boot` list registered goals.
@@ -354,7 +362,7 @@ mailspaces with one id collide at `vivi sync join`.
 | --- | --- |
 | `id`, `name`, `description` | Identity of the mailspace. `id` is minted for you |
 | `archive` | Path of a Git repository that receives absorbed records (`vivi mailspace archive --set <path>`) |
-| `[[identities]]` | The role roster: `name`, `kind`, `status`, `labels`, `harness`, `provider`, `model`, `models`, `thinking`, `pid`, `host`, `cadence`, `aliases`, `pool`, `read_only`. `vivi role add` writes it |
+| `[[identities]]` | The role roster: `name`, `kind`, `status`, `labels`, `harness`, `provider`, `model`, `models`, `thinking`, `command`, `target`, `pid`, `host`, `cadence`, `aliases`, `pool`, `read_only`. `target` names a `[pump.targets.<id>]` key or the implicit `default` target. `vivi role add` writes it |
 | `[memo]` | `hidden_tags` and per-tag `retain` durations; the built-in `digest` tag is hidden by default |
 | `[[probes]]` | Boot probes: `name` and `command`. `command` is an executable path (relative to the mailspace root), run directly with no arguments and no shell, that prints one JSON object with `facts`, `sections` and `verdicts` on stdout. A missing, failing or non-JSON probe is reported as skipped and never fails `boot` |
 | `[absorb]` | `quiet_hours` (default 24, `0` turns the wait off): how long an item's newest event must stand before a role that may close it can absorb it |
