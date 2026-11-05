@@ -832,6 +832,93 @@ fn config_file(dir: &tempfile::TempDir) -> std::path::PathBuf {
 }
 
 #[test]
+fn intake_config_round_trip() {
+    let dir = init_project();
+    let root = dir.path().to_str().unwrap();
+    let target = "pump.targets.app";
+    for (key, value) in [
+        (format!("{target}.path"), "app"),
+        (format!("{target}.main"), "trunk"),
+        (format!("{target}.intake"), "[\"peer/main\", \"release\"]"),
+        (format!("{target}.intake_rung"), "task"),
+        ("pump.targets.other.path".to_owned(), "other"),
+    ] {
+        assert_success(&vivi(&["config", "set", &key, value, "--project", root]));
+    }
+    let mailspace = vivi_core::mailspace::Mailspace::discover(Some(dir.path())).unwrap();
+    let pump = mailspace.config.pump.unwrap();
+    assert_eq!(pump.targets["app"].intake, ["peer/main", "release"]);
+    assert_eq!(pump.targets["app"].intake_rung, "task");
+    assert!(pump.targets["other"].intake.is_empty());
+    assert_eq!(pump.targets["other"].intake_rung, "need");
+
+    for key in [format!("{target}.intake"), format!("{target}.intake_rung")] {
+        assert_success(&vivi(&["config", "unset", &key, "--project", root]));
+    }
+    let restored = vivi_core::mailspace::Mailspace::discover(Some(dir.path())).unwrap();
+    let pump = restored.config.pump.unwrap();
+    assert!(pump.targets["app"].intake.is_empty());
+    assert_eq!(pump.targets["app"].intake_rung, "need");
+}
+
+#[test]
+fn intake_invalid_branch() {
+    let dir = init_project();
+    let root = dir.path().to_str().unwrap();
+    for (key, value) in [
+        ("pump.targets.app.path", "app"),
+        ("pump.targets.app.main", "trunk"),
+    ] {
+        assert_success(&vivi(&["config", "set", key, value, "--project", root]));
+    }
+    for branches in [
+        "[\"trunk\"]",
+        "[\"release\", \"release\"]",
+        "[\"main~1\"]",
+        "[\"refs/heads/release\"]",
+    ] {
+        let before = fs::read(config_file(&dir)).unwrap();
+        let out = vivi(&[
+            "config",
+            "set",
+            "pump.targets.app.intake",
+            branches,
+            "--project",
+            root,
+        ]);
+        assert!(!out.status.success(), "{branches}: {}", stdout(&out));
+        assert_eq!(fs::read(config_file(&dir)).unwrap(), before, "{branches}");
+    }
+}
+
+#[test]
+fn intake_invalid_rung() {
+    let dir = init_project();
+    let root = dir.path().to_str().unwrap();
+    assert_success(&vivi(&[
+        "config",
+        "set",
+        "pump.targets.app.path",
+        "app",
+        "--project",
+        root,
+    ]));
+    for rung in ["release", "Task", "task "] {
+        let before = fs::read(config_file(&dir)).unwrap();
+        let out = vivi(&[
+            "config",
+            "set",
+            "pump.targets.app.intake_rung",
+            rung,
+            "--project",
+            root,
+        ]);
+        assert!(!out.status.success(), "{rung:?}: {}", stdout(&out));
+        assert_eq!(fs::read(config_file(&dir)).unwrap(), before, "{rung:?}");
+    }
+}
+
+#[test]
 fn config_set_writes_a_typed_value_and_a_backup() {
     let dir = init_project();
     let root = dir.path().to_str().unwrap();
