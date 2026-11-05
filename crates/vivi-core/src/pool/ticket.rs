@@ -626,9 +626,27 @@ fn no_slots() -> VivariumError {
     VivariumError::Message("a ticket pool has no slots; it only makes job tickets".into())
 }
 
+#[cfg(test)]
+#[path = "ticket_test.rs"]
+mod tests;
+
+/// An exact-intake job publishes its scratch branch from the privileged
+/// runner, not from the worker's receipt, so a ticket host never takes one.
+fn refuse_exact_intake(plan: &JobPlan) -> Result<(), VivariumError> {
+    if plan.exact_intake() {
+        return Err(VivariumError::Message(
+            "a ticket pool cannot run an exact-intake job: its scratch branch is published by \
+             the privileged runner, not by a worker receipt"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
 impl TicketProvider {
     fn submit(&self, request: &TicketRequest) -> Result<OpenedSlot, VivariumError> {
         let plan = request.plan;
+        refuse_exact_intake(plan)?;
         if plan.read_only || plan.refs.branch.is_empty() {
             return Err(VivariumError::Message(
                 "a ticket pool runs jobs that push a branch; read-only jobs are not supported"

@@ -132,12 +132,16 @@ pub fn resolve(config: &PoolConfig, pool: &str, input: &Input) -> Result<Resolve
 }
 
 /// Require privileged publication to be explicitly addressed to merge/release
-/// roles, to a hand job publishing only its unit-namespace branch, or to a
-/// repairer job publishing only one `vivi/repair/<segment>` branch. A merge
+/// roles, to a hand job publishing only its unit-namespace branch, to a
+/// repairer job publishing only one `vivi/repair/<segment>` branch, or to an
+/// allowed merge role publishing one exact-intake scratch branch. A merge
 /// role publishes only a configured main (`mains`, one branch name per
-/// target), a `vivi/need/<segment>` or `vivi/need-prior/<segment>` branch, or
-/// a `pump/merge-main/<segment>` scratch branch.
-/// A release role binds publication to one expected full commit SHA.
+/// target), a `vivi/need/<segment>` or `vivi/need-prior/<segment>` branch, a
+/// `pump/merge-main/<segment>` scratch branch, or exactly one
+/// `vivi/intake/<segment>` branch when it gives a full expected commit SHA.
+/// A release role binds publication to one expected full commit SHA. A
+/// read-only role never publishes intake, and a nested or foreign ref is
+/// refused.
 pub fn validate_publish(
     role: Option<&RoleFacts>,
     publish_ref: Option<&str>,
@@ -154,9 +158,12 @@ pub fn validate_publish(
         };
     };
     let kind = role.and_then(|role| role.kind.as_deref());
+    let read_only = role.is_some_and(|role| {
+        crate::routing::resolve_read_only(false, role.read_only, role.kind.as_deref())
+    });
     match kind {
         Some(kind) if kind.eq_ignore_ascii_case("merge") && merge_publish_ref(reference, mains) => {
-            Ok(())
+            merge_publish_grant(reference, publish_expect, read_only, role)
         }
         Some(kind) if kind.eq_ignore_ascii_case("release") && publish_expect.is_some() => Ok(()),
         Some(kind) if kind.eq_ignore_ascii_case("release") => Err(VivariumError::Config(
@@ -177,9 +184,35 @@ fn merge_publish_ref(reference: &str, mains: &[String]) -> bool {
     one_segment(reference, "refs/heads/vivi/need/")
         || one_segment(reference, "refs/heads/vivi/need-prior/")
         || one_segment(reference, "refs/heads/pump/merge-main/")
+        || super::job::intake_branch(reference).is_some()
         || mains
             .iter()
             .any(|main| reference.strip_prefix("refs/heads/") == Some(main.as_str()))
+}
+
+/// A merge role's publication of an already shaped branch: an intake scratch
+/// branch additionally needs a writable role and a full expected commit.
+fn merge_publish_grant(
+    reference: &str,
+    publish_expect: Option<&str>,
+    read_only: bool,
+    role: Option<&RoleFacts>,
+) -> Result<(), VivariumError> {
+    if super::job::intake_branch(reference).is_none() {
+        return Ok(());
+    }
+    let name = role.map_or("(none)", |role| role.name.as_str());
+    if read_only {
+        return Err(VivariumError::Config(format!(
+            "read-only role {name} is not authorized to publish {reference}"
+        )));
+    }
+    if !publish_expect.is_some_and(super::job::full_commit_sha) {
+        return Err(VivariumError::Config(format!(
+            "role {name} publishing {reference} requires a full expected commit SHA"
+        )));
+    }
+    Ok(())
 }
 
 fn one_segment(reference: &str, prefix: &str) -> bool {

@@ -1,5 +1,9 @@
 //! The pool's `restore` setting: tracked file paths the runner puts back to
 //! the start commit before a job commits.
+//!
+//! A validated exact-intake job never carries this list: its plan drops it, so
+//! the bundle it is delivered as holds no `restore.list`. See
+//! [`super::job::JobPlan::exact_intake`].
 
 use super::config::PoolConfig;
 use vivi_error::VivariumError;
@@ -11,6 +15,9 @@ impl PoolConfig {
     /// Check the pool's `restore` setting: a list of repository-relative file
     /// paths, each non-empty, without a leading `/`, without a `..` component,
     /// and without a newline or any other control character.
+    ///
+    /// The setting applies to ordinary jobs only; a validated exact-intake
+    /// plan carries no restore list and writes no `restore.list`.
     ///
     /// # Errors
     /// Returns a configuration error naming `[pools.<pool>] restore` when a

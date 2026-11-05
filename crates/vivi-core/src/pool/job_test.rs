@@ -75,6 +75,7 @@ fn plan() -> JobPlan {
         read_only: false,
         facts: Vec::new(),
         restore: Vec::new(),
+        intake_grant: false,
         bridge: None,
     }
 }
@@ -956,4 +957,80 @@ fn the_integration_branch_may_appear_in_a_commit_message_but_need_and_unit_branc
 
     p.refs.from = "pump/old".into();
     assert!(forbidden_tokens(&p).iter().any(|t| t == "pump/old"));
+}
+
+/// A plan of the one shape exact-intake execution is validated as.
+fn intake_plan() -> JobPlan {
+    JobPlan {
+        model: String::new(),
+        harness_cmd: "sh -c 'true'".into(),
+        publish_ref: Some(format!("{INTAKE_PREFIX}abc123").into()),
+        publish_expect: Some("a".repeat(40)),
+        intake_grant: true,
+        ..plan()
+    }
+}
+
+#[test]
+fn exact_intake_needs_the_whole_validated_shape() {
+    assert!(intake_plan().exact_intake());
+    let no_grant = JobPlan {
+        intake_grant: false,
+        ..intake_plan()
+    };
+    assert!(!no_grant.exact_intake(), "the grant is explicit");
+    let nested = JobPlan {
+        publish_ref: Some(format!("{INTAKE_PREFIX}abc/nested")),
+        ..intake_plan()
+    };
+    assert!(!nested.exact_intake(), "one segment only");
+    let foreign = JobPlan {
+        publish_ref: Some("refs/heads/factory/x".into()),
+        ..intake_plan()
+    };
+    assert!(!foreign.exact_intake(), "the intake namespace only");
+    let short = JobPlan {
+        publish_expect: Some("a".repeat(12)),
+        ..intake_plan()
+    };
+    assert!(!short.exact_intake(), "a full expected commit");
+    let read_only = JobPlan {
+        read_only: true,
+        ..intake_plan()
+    };
+    assert!(!read_only.exact_intake(), "intake execution is writable");
+    let modeled = JobPlan {
+        model: "m/ok".into(),
+        ..intake_plan()
+    };
+    assert!(!modeled.exact_intake(), "a no-model command");
+    let no_command = JobPlan {
+        harness_cmd: String::new(),
+        ..intake_plan()
+    };
+    assert!(!no_command.exact_intake(), "a command is run");
+}
+
+#[test]
+fn an_exact_intake_bundle_carries_no_restore_list() {
+    let p = JobPlan {
+        restore: vec!["Cargo.lock".into()],
+        ..intake_plan()
+    };
+    let bundle = build_bundle(&p, "s", &Secret::new("tok".into()));
+    assert!(
+        !bundle.files.iter().any(|f| f.name == "restore.list"),
+        "a validated exact-intake job is never restored"
+    );
+    let ordinary = JobPlan {
+        restore: vec!["Cargo.lock".into()],
+        ..plan()
+    };
+    assert!(
+        build_bundle(&ordinary, "s", &Secret::new("tok".into()))
+            .files
+            .iter()
+            .any(|f| f.name == "restore.list"),
+        "an ordinary job still restores"
+    );
 }

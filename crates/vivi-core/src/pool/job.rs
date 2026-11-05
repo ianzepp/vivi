@@ -33,6 +33,10 @@ pub const AGENT_MCP: &str = "/home/hand/mcp.json";
 /// Where the job archive lands (config file; replaced by each dispatch).
 pub const JOB_ARCHIVE: &str = "/work/job.tgz";
 
+/// The reserved namespace one exact-intake job publishes into: a scratch
+/// branch the privileged runner publishes, never a worker receipt.
+pub const INTAKE_PREFIX: &str = "refs/heads/vivi/intake/";
+
 /// Seconds the runner may use beyond the agent's budget (fetch, commit, push).
 pub const RUNNER_SLACK_SECS: u64 = 600;
 /// Largest archive a dispatch will deliver.
@@ -249,6 +253,25 @@ fn bad_ref(what: &str, value: &str) -> VivariumError {
     ))
 }
 
+/// The single branch segment after [`INTAKE_PREFIX`] when `reference` is
+/// exactly one branch there. A nested (`vivi/intake/a/b`) or foreign ref is
+/// no exact-intake ref.
+#[must_use]
+pub fn intake_branch(reference: &str) -> Option<&str> {
+    reference
+        .strip_prefix(INTAKE_PREFIX)
+        .filter(|rest| !rest.is_empty() && !rest.contains('/'))
+}
+
+/// Whether `value` is a full 40- or 64-character lowercase hex commit id.
+#[must_use]
+pub fn full_commit_sha(value: &str) -> bool {
+    matches!(value.len(), 40 | 64)
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
 /// A plain commit or branch name: letters, digits, dot, underscore, dash and
 /// slash; no leading dash or slash, no `..`, no trailing slash.
 #[must_use]
@@ -291,7 +314,8 @@ pub enum BranchAction {
     /// is.
     Continue,
     /// A read-only job: no branch is made or touched; the work stays on a
-    /// detached HEAD.
+    /// detached HEAD. A detached job is never an exact-intake job: intake
+    /// execution is writable and publishes its own scratch branch.
     Detached,
 }
 
@@ -383,13 +407,39 @@ pub struct JobPlan {
     /// (the pool's `facts`).
     pub facts: Vec<String>,
     /// Tracked file paths the runner puts back to the start commit before it
-    /// commits (the pool's `restore`).
+    /// commits (the pool's `restore`). A validated exact-intake plan holds
+    /// none, so its bundle carries no `restore.list`.
     pub restore: Vec<String>,
+    /// The explicit publication grant for one `vivi/intake/<segment>` scratch
+    /// branch. Set only by trusted dispatch settings (see
+    /// [`Self::exact_intake`]); prose, a worker receipt and a provenance-only
+    /// kind never set it.
+    pub intake_grant: bool,
     /// The MCP bridge grant minted at dispatch when the pool's bridge is
     /// enabled: delivered only as the archive's `bridge.key` file, its
     /// server and project id also into `params.env` and into the agent's
     /// `mcp.json`.
     pub bridge: Option<Grant>,
+}
+
+impl JobPlan {
+    /// A validated exact-intake execution: one writable, no-model command job
+    /// publishing exactly one branch under [`INTAKE_PREFIX`] at a full
+    /// expected commit, under an explicit publication grant. Only this shape
+    /// may publish intake scratch refs, and it carries no restore list.
+    #[must_use]
+    pub fn exact_intake(&self) -> bool {
+        self.intake_grant
+            && self
+                .publish_ref
+                .as_deref()
+                .and_then(intake_branch)
+                .is_some()
+            && self.publish_expect.as_deref().is_some_and(full_commit_sha)
+            && !self.read_only
+            && self.model.is_empty()
+            && !self.harness_cmd.trim().is_empty()
+    }
 }
 
 /// One file inside the job archive, under `job/`.
@@ -475,7 +525,7 @@ pub fn build_bundle(spec: &JobPlan, slot: &str, token: &Secret) -> Bundle {
     if !spec.extras.is_empty() {
         files.push(file("extra-targets.env", &extras_env(&spec.extras), 0o600));
     }
-    if !spec.restore.is_empty() {
+    if !spec.restore.is_empty() && !spec.exact_intake() {
         let list = spec.restore.join("\n") + "\n";
         files.push(file("restore.list", &list, 0o600));
     }

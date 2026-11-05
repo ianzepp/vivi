@@ -742,3 +742,59 @@ fn a_role_value_that_is_neither_band_nor_harness_model_is_refused() {
     assert!(message.contains("nope/model"), "got: {message}");
     assert!(message.contains("harness.models"), "got: {message}");
 }
+
+#[test]
+fn intake_publication_grants_are_namespace_scoped() {
+    let sha = "b".repeat(40);
+    let merge = role("merger", Some("merge"), None);
+    let mains = vec!["main".to_owned()];
+    let ok = Some("refs/heads/vivi/intake/abc123");
+    assert!(validate_publish(Some(&merge), ok, Some(&sha), &mains).is_ok());
+    assert!(
+        validate_publish(Some(&merge), ok, None, &mains).is_err(),
+        "a full expectation is required"
+    );
+    assert!(
+        validate_publish(
+            Some(&merge),
+            Some("refs/heads/vivi/intake/abc/nested"),
+            Some(&sha),
+            &mains
+        )
+        .is_err(),
+        "nested refs are foreign"
+    );
+    assert!(
+        validate_publish(
+            Some(&merge),
+            Some("refs/heads/factory/intake/abc"),
+            Some(&sha),
+            &mains
+        )
+        .is_err()
+    );
+    assert!(
+        validate_publish(
+            Some(&merge),
+            Some("refs/heads/vivi/intake/"),
+            Some(&sha),
+            &mains
+        )
+        .is_err(),
+        "an empty segment is no intake ref"
+    );
+    let mut read_only = merge.clone();
+    read_only.read_only = Some(true);
+    assert!(
+        validate_publish(Some(&read_only), ok, Some(&sha), &mains).is_err(),
+        "a read-only role publishes no intake ref"
+    );
+    let auditor = role("auditor", Some("auditor"), None);
+    assert!(validate_publish(Some(&auditor), ok, Some(&sha), &mains).is_err());
+    let hand = role("hand", Some("hand"), None);
+    assert!(validate_publish(Some(&hand), ok, Some(&sha), &mains).is_err());
+    assert!(
+        validate_publish(Some(&merge), Some("refs/heads/main"), None, &mains).is_ok(),
+        "ordinary merge publication keeps its behavior"
+    );
+}

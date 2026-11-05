@@ -1074,3 +1074,107 @@ fn every_owned_cleanup_prefix_takes_one_segment_and_no_more() {
         assert_eq!(plan(&cleanup).is_ok(), ok, "{name}");
     }
 }
+
+/// The flags of an exact-intake request: a no-model command publishing one
+/// intake scratch branch at a full expected commit.
+fn intake_flags() -> DispatchFlags {
+    DispatchFlags {
+        model: String::new(),
+        command: Some("sh -c 'true'".into()),
+        publish_ref: Some("refs/heads/vivi/intake/abc123".into()),
+        publish_expect: Some("a".repeat(40)),
+        ..flags("m/ok")
+    }
+}
+
+#[test]
+fn exact_intake_requests_need_their_whole_grant_shape() {
+    let mut config = config();
+    config.restore = vec!["Cargo.lock".into()];
+    let intake = plan_job(
+        &config,
+        "p",
+        ("abcd1234", "Subject line", &body_text()),
+        &intake_flags(),
+        "rules".into(),
+        "job000000001".into(),
+    )
+    .unwrap();
+    assert!(intake.exact_intake());
+    assert!(intake.intake_grant);
+    assert!(intake.restore.is_empty(), "no restore for exact intake");
+    assert!(
+        !build_bundle(&intake, "s", &Secret::new("t".into()))
+            .files
+            .iter()
+            .any(|f| f.name == "restore.list")
+    );
+
+    let ordinary = plan_job(
+        &config,
+        "p",
+        ("abcd1234", "Subject line", &body_text()),
+        &flags("m/ok"),
+        "rules".into(),
+        "job000000002".into(),
+    )
+    .unwrap();
+    assert!(!ordinary.exact_intake());
+    assert!(!ordinary.intake_grant);
+    assert_eq!(
+        ordinary.restore,
+        ["Cargo.lock"],
+        "ordinary jobs still restore"
+    );
+}
+
+#[test]
+fn a_reserved_intake_request_without_the_whole_shape_is_refused() {
+    let mut config = config();
+    config.restore = vec!["Cargo.lock".into()];
+    let refused = |flags: &DispatchFlags| {
+        plan_job(
+            &config,
+            "p",
+            ("abcd1234", "Subject line", &body_text()),
+            flags,
+            "rules".into(),
+            "job000000001".into(),
+        )
+        .unwrap_err()
+        .to_string()
+    };
+    let no_expect = DispatchFlags {
+        publish_expect: None,
+        ..intake_flags()
+    };
+    assert!(
+        refused(&no_expect).contains("exact-intake"),
+        "{}",
+        refused(&no_expect)
+    );
+    let nested = DispatchFlags {
+        publish_ref: Some("refs/heads/vivi/intake/abc/nested".into()),
+        ..intake_flags()
+    };
+    assert!(refused(&nested).contains("exact-intake"));
+    let modeled = DispatchFlags {
+        model: "m/ok".into(),
+        ..intake_flags()
+    };
+    assert!(refused(&modeled).contains("exact-intake"));
+    let harness = DispatchFlags {
+        command: None,
+        ..intake_flags()
+    };
+    assert!(refused(&harness).contains("exact-intake"));
+    let read_only = DispatchFlags {
+        read_only: true,
+        branch: None,
+        ..intake_flags()
+    };
+    assert!(
+        refused(&read_only).contains("read-only"),
+        "a read-only job never publishes intake"
+    );
+}

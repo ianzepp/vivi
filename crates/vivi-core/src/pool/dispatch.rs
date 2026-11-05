@@ -32,6 +32,7 @@ struct ResolvedJob {
     budget: u64,
     reasoning: Option<String>,
     committer: PoolCommitter,
+    intake_grant: bool,
 }
 
 /// The flags of `vivi pool dispatch`.
@@ -131,8 +132,9 @@ pub fn plan_job(
     let (handle, _, body) = task;
     validate_source(config, pool)?;
     let committer = plan_committer(config, pool)?;
-    let (harness, reasoning) = plan_harness(config, pool, flags)?;
     validate_publish_flags(flags)?;
+    let intake_grant = plan_intake_grant(flags)?;
+    let (harness, reasoning) = plan_harness(config, pool, flags)?;
     check_task_letter(handle, body)?;
     let refs = plan_refs(flags, body)?;
     let with = job::resolve_with(&flags.with, body, &refs.from, &refs.branch)?
@@ -163,6 +165,7 @@ pub fn plan_job(
             budget,
             reasoning,
             committer,
+            intake_grant,
         },
     ))
 }
@@ -183,6 +186,7 @@ fn assemble_job_plan(
         budget,
         reasoning,
         committer,
+        intake_grant,
     } = resolved;
     JobPlan {
         target: None,
@@ -211,19 +215,32 @@ fn assemble_job_plan(
         model: flags.model.clone(),
         budget,
         depth: config.fetch_depth(),
-        harness_cmd: match (&flags.command, harness) {
-            (Some(command), _) => command.clone(),
-            (None, Some(harness)) => {
-                job::render_harness(&harness.run, &flags.model, reasoning.as_deref())
-            }
-            (None, None) => String::new(),
-        },
+        harness_cmd: plan_harness_cmd(flags, harness, reasoning.as_deref()),
         env_names: harness.map(|h| h.env.clone()).unwrap_or_default(),
         committer,
         read_only: flags.read_only,
         facts: config.facts.clone(),
-        restore: config.restore.clone(),
+        restore: if intake_grant {
+            Vec::new()
+        } else {
+            config.restore.clone()
+        },
+        intake_grant,
         bridge: None,
+    }
+}
+
+/// The command the harness runs: the job's own command, else the rendered
+/// harness template, else nothing.
+fn plan_harness_cmd(
+    flags: &DispatchFlags,
+    harness: Option<&super::config::PoolHarness>,
+    reasoning: Option<&str>,
+) -> String {
+    match (&flags.command, harness) {
+        (Some(command), _) => command.clone(),
+        (None, Some(harness)) => job::render_harness(&harness.run, &flags.model, reasoning),
+        (None, None) => String::new(),
     }
 }
 
@@ -247,7 +264,7 @@ fn validate_publish_flags(flags: &DispatchFlags) -> Result<(), VivariumError> {
         }
     }
     if let Some(expected) = flags.publish_expect.as_deref()
-        && !full_commit_sha(expected)
+        && !job::full_commit_sha(expected)
     {
         return Err(VivariumError::Config(
             "publish expectation must be a full 40- or 64-character commit SHA".into(),
@@ -256,9 +273,45 @@ fn validate_publish_flags(flags: &DispatchFlags) -> Result<(), VivariumError> {
     validate_runner_guards(flags)
 }
 
+/// The explicit publication grant for exact-intake execution, established
+/// from the trusted dispatch settings alone. A request naming the reserved
+/// `refs/heads/vivi/intake/` namespace without that whole shape is refused
+/// here, before any plan exists; prose, a worker receipt and a
+/// provenance-only kind never grant it.
+fn plan_intake_grant(flags: &DispatchFlags) -> Result<bool, VivariumError> {
+    let reserved = flags
+        .publish_ref
+        .as_deref()
+        .and_then(|reference| reference.strip_prefix("refs/heads/"))
+        .is_some_and(|branch| branch.starts_with("vivi/intake/"));
+    if !reserved {
+        return Ok(false);
+    }
+    let exact = flags
+        .publish_ref
+        .as_deref()
+        .and_then(job::intake_branch)
+        .is_some()
+        && flags
+            .publish_expect
+            .as_deref()
+            .is_some_and(job::full_commit_sha)
+        && flags.command.is_some()
+        && flags.model.is_empty()
+        && !flags.read_only;
+    if exact {
+        return Ok(true);
+    }
+    Err(VivariumError::Config(
+        "refs/heads/vivi/intake/ is reserved for exact-intake execution: it needs one branch \
+         segment, a full --publish-expect, a no-model --command and a writable job"
+            .into(),
+    ))
+}
+
 fn validate_runner_guards(flags: &DispatchFlags) -> Result<(), VivariumError> {
     if let Some(sha) = &flags.publish_contains {
-        if flags.publish_ref.is_none() || !full_commit_sha(sha) {
+        if flags.publish_ref.is_none() || !job::full_commit_sha(sha) {
             return Err(VivariumError::Config(
                 "publish-contains requires a publish ref and a full commit SHA".into(),
             ));
@@ -275,7 +328,12 @@ fn validate_runner_guards(flags: &DispatchFlags) -> Result<(), VivariumError> {
             .as_deref()
             .and_then(owned_cleanup_segment)
             .is_some_and(|id| !id.is_empty() && !id.contains('/') && valid_publish_ref(id));
-        if !valid || !flags.delete_expect.as_deref().is_some_and(full_commit_sha) {
+        if !valid
+            || !flags
+                .delete_expect
+                .as_deref()
+                .is_some_and(job::full_commit_sha)
+        {
             return Err(VivariumError::Config("branch cleanup requires one owned refs/heads/vivi/need/<id>, refs/heads/vivi/unit/<attempt>, refs/heads/vivi/need-prior/<id>, refs/heads/vivi/repair/<id> or refs/heads/pump/merge-main/<id> ref and a full expected commit SHA".into()));
         }
     }
@@ -294,13 +352,6 @@ fn owned_cleanup_segment(name: &str) -> Option<&str> {
         "refs/heads/pump/merge-main/",
     ];
     PREFIXES.iter().find_map(|prefix| name.strip_prefix(prefix))
-}
-
-fn full_commit_sha(value: &str) -> bool {
-    matches!(value.len(), 40 | 64)
-        && value
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 fn valid_publish_ref(branch: &str) -> bool {
