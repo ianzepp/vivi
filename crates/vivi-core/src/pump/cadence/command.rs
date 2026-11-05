@@ -19,16 +19,18 @@ use super::{CadenceState, DISABLED_STATUSES, RoleScan, epoch_label};
 /// The repository target a cadence job works on.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TargetChoice {
-    /// A configured target: the job names it and starts from its main.
+    /// A single repository whose legacy settings form the `default` target.
     Named { id: String, main: String },
-    /// No target: the legacy single-repository pump and its workspace main.
+    /// No configured target: the model path keeps the workspace-main behavior.
     Legacy,
+    /// Several explicit targets have no primary target to choose.
+    Ambiguous,
     /// The role names a target this pump does not configure.
     Unavailable { id: String },
 }
 
 /// Select the target for one cadence job: the role's own target, else the
-/// pump's primary target, else the legacy implicit default.
+/// pump's primary target, else a legacy default or an ambiguous selection.
 #[must_use]
 pub fn target_choice(ctx: &Ctx, role_target: Option<&str>) -> TargetChoice {
     let named = |id: &str| match ctx.cfg.for_target(id) {
@@ -41,9 +43,12 @@ pub fn target_choice(ctx: &Ctx, role_target: Option<&str>) -> TargetChoice {
     if let Some(id) = role_target.map(str::trim).filter(|id| !id.is_empty()) {
         return named(id);
     }
+    if ctx.cfg.targets.is_empty() {
+        return named("default");
+    }
     ctx.cfg
         .primary_target()
-        .map_or(TargetChoice::Legacy, |id| named(&id))
+        .map_or(TargetChoice::Ambiguous, |id| named(&id))
 }
 
 /// The main ref a cadence job starts from for `choice`.
@@ -51,7 +56,9 @@ pub fn target_choice(ctx: &Ctx, role_target: Option<&str>) -> TargetChoice {
 pub fn main_of(ctx: &Ctx, choice: &TargetChoice) -> String {
     match choice {
         TargetChoice::Named { main, .. } => main.clone(),
-        TargetChoice::Legacy | TargetChoice::Unavailable { .. } => ctx.cfg.main.clone(),
+        TargetChoice::Legacy | TargetChoice::Ambiguous | TargetChoice::Unavailable { .. } => {
+            ctx.cfg.main.clone()
+        }
     }
 }
 
@@ -66,7 +73,7 @@ pub fn unavailable(choice: &TargetChoice) -> bool {
 pub fn apply_target(spec: &mut JobSpec, ctx: &Ctx, choice: &TargetChoice) {
     spec.target = match choice {
         TargetChoice::Named { id, .. } => Some(id.clone()),
-        TargetChoice::Legacy | TargetChoice::Unavailable { .. } => None,
+        TargetChoice::Legacy | TargetChoice::Ambiguous | TargetChoice::Unavailable { .. } => None,
     };
     spec.from_ref = Some(main_of(ctx, choice));
 }
@@ -76,7 +83,7 @@ pub fn apply_target(spec: &mut JobSpec, ctx: &Ctx, choice: &TargetChoice) {
 pub fn fingerprint_of(role: &str, choice: &TargetChoice, command: &str) -> String {
     match choice {
         TargetChoice::Named { id, main } => check::fingerprint(role, id, main, command),
-        TargetChoice::Legacy | TargetChoice::Unavailable { .. } => {
+        TargetChoice::Legacy | TargetChoice::Ambiguous | TargetChoice::Unavailable { .. } => {
             check::fingerprint(role, "", "", command)
         }
     }
@@ -94,7 +101,7 @@ pub fn ready(st: &State, role: &RoleScan, check: Option<&CommandCheck>, now: u64
     let Some(command) = role.command.as_deref().filter(|c| !c.trim().is_empty()) else {
         return false;
     };
-    if command.trim().is_empty() || role.target_unavailable {
+    if command.trim().is_empty() {
         return false;
     }
     if DISABLED_STATUSES
@@ -173,7 +180,8 @@ fn brief(
 ) -> String {
     let target = match choice {
         TargetChoice::Named { id, .. } => id.as_str(),
-        TargetChoice::Legacy | TargetChoice::Unavailable { .. } => "legacy",
+        TargetChoice::Legacy | TargetChoice::Ambiguous => "ambiguous/legacy",
+        TargetChoice::Unavailable { .. } => "unavailable",
     };
     format!(
         "Run the configured command check for role `{}`.\n\
@@ -211,7 +219,9 @@ pub fn enqueue(
         fingerprint: fingerprint.clone(),
         target: match &choice {
             TargetChoice::Named { id, .. } => id.clone(),
-            TargetChoice::Legacy | TargetChoice::Unavailable { .. } => String::new(),
+            TargetChoice::Legacy | TargetChoice::Ambiguous | TargetChoice::Unavailable { .. } => {
+                String::new()
+            }
         },
         main: main_of(ctx, &choice),
         command,

@@ -19,6 +19,9 @@ use super::check::{self, CommandCheck, CommandException};
 use super::command::{self, TargetChoice};
 use super::{CadenceState, RoleScan, backoff_secs};
 
+/// Exception kind for a cadence command with no unambiguous configured target.
+pub const TARGET_EXCEPTION: &str = "cadence-command-target-unavailable";
+
 /// Exception kind for a command check whose target main tip could not be read.
 pub const TIP_EXCEPTION: &str = "cadence-command-main-tip";
 
@@ -61,7 +64,7 @@ pub fn tip_gate(
             }
             None => return TipGate::Failed(format!("target {id} has no repository")),
         },
-        TargetChoice::Legacy => (ctx.clone(), ctx.cfg.main.clone()),
+        TargetChoice::Legacy | TargetChoice::Ambiguous => (ctx.clone(), ctx.cfg.main.clone()),
         TargetChoice::Unavailable { id } => {
             return TipGate::Failed(format!("target {id} is not configured"));
         }
@@ -89,6 +92,17 @@ pub fn gate_due(ctx: &Ctx, cadence: &mut CadenceState, scan: &RoleScan, now: u64
     if entry.pending_exception(now).is_some() {
         return false;
     }
+    let target_reason = match &choice {
+        TargetChoice::Ambiguous => Some(String::from(
+            "multiple repository targets are configured without a primary target",
+        )),
+        TargetChoice::Unavailable { id } => Some(format!("target {id} is not configured")),
+        TargetChoice::Named { .. } | TargetChoice::Legacy => None,
+    };
+    if let Some(reason) = target_reason {
+        back_off(ctx, &scan.name, entry, TARGET_EXCEPTION, &reason, now);
+        return false;
+    }
     match tip_gate(ctx, &scan.name, &command_text, &choice, Some(entry)) {
         TipGate::Run => {
             entry.waiting_main = None;
@@ -106,27 +120,27 @@ pub fn gate_due(ctx: &Ctx, cadence: &mut CadenceState, scan: &RoleScan, now: u64
             false
         }
         TipGate::Failed(reason) => {
-            back_off(ctx, &scan.name, entry, &reason, now);
+            back_off(ctx, &scan.name, entry, TIP_EXCEPTION, &reason, now);
             false
         }
     }
 }
 
 /// Raise the tip exception and record the backoff that follows it.
-fn back_off(ctx: &Ctx, name: &str, entry: &mut CommandCheck, reason: &str, now: u64) {
+fn back_off(ctx: &Ctx, name: &str, entry: &mut CommandCheck, kind: &str, reason: &str, now: u64) {
     let attempt = entry
         .exception
         .as_ref()
         .map_or(1, |exception| exception.attempt.saturating_add(1).max(1));
     entry.waiting_main = None;
     entry.exception = Some(CommandException {
-        kind: String::from(TIP_EXCEPTION),
+        kind: String::from(kind),
         reason: String::from(reason),
         at: now,
         attempt,
         retry_at: Some(now.saturating_add(backoff_secs(attempt))),
     });
-    ctx.exception(TIP_EXCEPTION, name, reason);
+    ctx.exception(kind, name, reason);
 }
 
 /// What one terminal execution amounts to.

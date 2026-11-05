@@ -69,7 +69,8 @@ pub struct RoleScan {
     /// The repository target the role itself names, before selection.
     #[serde(default)]
     pub target: Option<String>,
-    /// The selected target: the role's, else the pump's primary, else none.
+    /// The selected target: the role's, else the pump's primary, else none
+    /// when the explicit targets are ambiguous.
     #[serde(default)]
     pub effective_target: Option<String>,
     /// The main ref the selected target starts from.
@@ -370,7 +371,9 @@ fn role_scan(
         target: role.target,
         effective_target: match &choice {
             command::TargetChoice::Named { id, .. } => Some(id.clone()),
-            command::TargetChoice::Legacy | command::TargetChoice::Unavailable { .. } => None,
+            command::TargetChoice::Legacy
+            | command::TargetChoice::Ambiguous
+            | command::TargetChoice::Unavailable { .. } => None,
         },
         target_main: Some(command::main_of(ctx, &choice)),
         target_unavailable: command::unavailable(&choice),

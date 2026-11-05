@@ -1,7 +1,7 @@
 use super::*;
 use chrono::TimeZone;
 
-use crate::mailspace::SendRequest;
+use crate::mailspace::{RoleUpdate, SendRequest};
 use crate::pump::config::{PumpConfig, PumpTarget};
 use crate::pump::jobs::JobStatus;
 use vivi_mail::letter::fixture::{need_body_with, want_body};
@@ -230,7 +230,7 @@ fn cadence_spec_is_read_only_without_a_branch_for_writable_roles() {
         );
         assert!(spec.read_only, "{kind}");
         assert!(spec.branch.is_none(), "{kind}");
-        assert!(spec.target.is_none(), "{kind}");
+        assert_eq!(spec.target.as_deref(), Some("default"), "{kind}");
         assert_eq!(
             spec.from_ref.as_deref(),
             Some(ctx.cfg.main.as_str()),
@@ -395,6 +395,159 @@ fn model_cadence_with_target_uses_that_targets_main() {
 }
 
 #[test]
+fn legacy_cadence_jobs_select_the_default_target() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = PumpConfig::default();
+    cfg.main = String::from("legacy-main");
+    let (ctx, _host) = crate::pump::host::test_ctx(dir.path(), cfg);
+    let choice = command::target_choice(&ctx, None);
+    assert_eq!(
+        choice,
+        TargetChoice::Named {
+            id: String::from("default"),
+            main: String::from("legacy-main"),
+        }
+    );
+
+    let role = command_role("checker", "make check", None);
+    let scan = target_scan("checker", None, Some("make check"));
+    let spec = job_spec(&ctx, &role, &scan, 1, 1_000);
+    assert_eq!(spec.target.as_deref(), Some("default"));
+    assert_eq!(spec.from_ref.as_deref(), Some("legacy-main"));
+
+    let mut st = State::default();
+    let mut cadence = CadenceState::default();
+    command::enqueue(&ctx, &mut st, &mut cadence, &role, &scan, 1_000);
+    let latest = cadence.checks["checker"].latest.as_ref().unwrap();
+    assert_eq!(latest.target, "default");
+    assert_eq!(latest.main, "legacy-main");
+    assert_eq!(st.jobs[&latest.job].target.as_deref(), Some("default"));
+    assert_eq!(
+        st.jobs[&latest.job].from_ref.as_deref(),
+        Some("legacy-main")
+    );
+}
+
+#[test]
+fn primary_and_sole_targets_are_selected_for_untargeted_cadence() {
+    for (cfg, id, main) in [
+        (
+            {
+                let mut cfg = three_targets();
+                cfg.targets.insert(
+                    String::from("default"),
+                    PumpTarget {
+                        main: String::from("primary"),
+                        ..PumpTarget::default()
+                    },
+                );
+                cfg
+            },
+            "default",
+            "primary",
+        ),
+        (
+            {
+                let mut cfg = PumpConfig::default();
+                cfg.targets.insert(
+                    String::from("only"),
+                    PumpTarget {
+                        main: String::from("sole-main"),
+                        ..PumpTarget::default()
+                    },
+                );
+                cfg
+            },
+            "only",
+            "sole-main",
+        ),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let (ctx, _host) = crate::pump::host::test_ctx(dir.path(), cfg);
+        let choice = command::target_choice(&ctx, None);
+        assert_eq!(
+            choice,
+            TargetChoice::Named {
+                id: id.into(),
+                main: main.into()
+            }
+        );
+        let role = command_role("checker", "make check", None);
+        let scan = target_scan("checker", None, Some("make check"));
+        let model = job_spec(&ctx, &role, &scan, 1, 1_000);
+        assert_eq!(model.target.as_deref(), Some(id));
+        assert_eq!(model.from_ref.as_deref(), Some(main));
+        let mut st = State::default();
+        let mut cadence = CadenceState::default();
+        command::enqueue(&ctx, &mut st, &mut cadence, &role, &scan, 1_000);
+        let latest = cadence.checks["checker"].latest.as_ref().unwrap();
+        assert_eq!(latest.target, id);
+        assert_eq!(latest.main, main);
+    }
+}
+
+#[test]
+fn ambiguous_untargeted_command_raises_retryable_target_exception() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (ctx, host) = crate::pump::host::test_ctx(tmp.path(), three_targets());
+    host.set_now(1_000);
+    let project = tmp.path().join("project");
+    let mut mailspace = Mailspace::init(Some(&project)).unwrap();
+    mailspace
+        .add_role(
+            "checker",
+            RoleUpdate {
+                command: Some(Some(String::from("make check"))),
+                cadence: Some(Some(String::from("15m"))),
+                ..RoleUpdate::default()
+            },
+        )
+        .unwrap();
+    let mut st = State::default();
+    prepare_due(&ctx, &mut st);
+    let first = state(&st).checks["checker"].exception.clone().unwrap();
+    assert_eq!(first.kind, "cadence-command-target-unavailable");
+    assert_eq!(first.retry_at, Some(1_000 + backoff_secs(1)));
+    assert!(st.jobs.is_empty());
+    assert!(
+        mailspace
+            .list_kind_all(None, "sent", "need")
+            .unwrap()
+            .is_empty()
+    );
+
+    host.set_now(first.retry_at.unwrap() - 1);
+    prepare_due(&ctx, &mut st);
+    assert_eq!(
+        state(&st).checks["checker"]
+            .exception
+            .as_ref()
+            .unwrap()
+            .attempt,
+        1
+    );
+    assert!(st.jobs.is_empty());
+
+    host.set_now(first.retry_at.unwrap());
+    prepare_due(&ctx, &mut st);
+    let retried_state = state(&st);
+    let retried = retried_state.checks["checker"].exception.as_ref().unwrap();
+    assert_eq!(retried.kind, "cadence-command-target-unavailable");
+    assert_eq!(retried.attempt, 2);
+    assert_eq!(
+        retried.retry_at,
+        Some(first.retry_at.unwrap() + backoff_secs(2))
+    );
+    assert!(st.jobs.is_empty());
+    assert!(
+        mailspace
+            .list_kind_all(None, "sent", "need")
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
 fn model_cadence_without_command_is_unchanged() {
     let dir = tempfile::tempdir().unwrap();
     let (ctx, _host) = crate::pump::host::test_ctx(dir.path(), three_targets());
@@ -443,7 +596,7 @@ fn command_eligibility_ignores_caps_and_outbound_mail_but_not_status() {
 
     let mut unavailable = role.clone();
     unavailable.target_unavailable = true;
-    assert!(!command::ready(&st, &unavailable, None, 1_000));
+    assert!(command::ready(&st, &unavailable, None, 1_000));
 }
 
 #[test]
@@ -462,6 +615,10 @@ fn command_single_flight_blocks_across_configuration_changes() {
     assert!(!command::ready(&st, &changed, Some(&check), 100_000));
 
     let job_id = check.latest.as_ref().unwrap().job.clone();
+    assert_eq!(st.jobs[&job_id].status, JobStatus::Pending);
+    assert!(!command::ready(&st, &changed, Some(&check), 100_000));
+    st.jobs.get_mut(&job_id).unwrap().status = JobStatus::Dispatched;
+    assert!(!command::ready(&st, &changed, Some(&check), 100_000));
     st.jobs.get_mut(&job_id).unwrap().status = JobStatus::Finished;
     assert!(!command::ready(&st, &changed, Some(&check), 100_000));
     st.jobs.get_mut(&job_id).unwrap().applied_at = Some(2_000);
@@ -575,6 +732,26 @@ fn command_role(name: &str, command: &str, target: Option<&str>) -> RoleView {
     role.command = Some(String::from(command));
     role.target = target.map(String::from);
     role
+}
+
+fn bench_need(space: &Mailspace) -> String {
+    let front = NeedFront::new(vec![String::from("the check passes")]);
+    space
+        .send(SendRequest {
+            from: "checker".into(),
+            to: vec!["pump".into()],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: String::from("existing red result"),
+            body: need_body_with(&front, "failure report needed"),
+            role: String::from("needs"),
+            kind: Some(String::from("need")),
+            reply_to: None,
+        })
+        .unwrap()
+        .delivered
+        .remove(0)
+        .handle
 }
 
 fn bench_task(space: &Mailspace) -> String {
@@ -785,16 +962,73 @@ fn command_cadence_uses_actual_runner_start() {
 
 #[test]
 fn command_environment_failure_retries_without_a_need() {
-    for (label, status, receipt) in [
-        ("missing tool", JobStatus::Finished, "agent exit 127 in 1s"),
-        ("setup", JobStatus::Finished, "agent exit 126 in 1s"),
-        ("no exit", JobStatus::Finished, "the worker said nothing"),
-        ("lost", JobStatus::Lost, "agent exit 0 in 1s"),
+    let start = full_sha('c');
+    for (label, status, receipt, evidence, red_need) in [
+        (
+            "missing tool",
+            JobStatus::Finished,
+            "agent exit 127 in 1s",
+            Some(start.as_str()),
+            false,
+        ),
+        (
+            "timeout",
+            JobStatus::Timeout,
+            "agent exit 0 in 1s",
+            Some(start.as_str()),
+            false,
+        ),
+        (
+            "absent execution evidence",
+            JobStatus::Finished,
+            "agent exit 1 in 1s",
+            None,
+            false,
+        ),
+        (
+            "malformed execution evidence",
+            JobStatus::Finished,
+            "agent exit 1 in 1s",
+            Some("not-a-sha"),
+            false,
+        ),
+        (
+            "host setup with red need",
+            JobStatus::Finished,
+            "agent exit 1 in 1s",
+            Some(start.as_str()),
+            true,
+        ),
     ] {
         let mut bench = Bench::new();
-        let start = full_sha('c');
+        let existing_need = red_need.then(|| bench_need(&bench.space));
+        if let Some(existing_need) = existing_need.as_ref() {
+            let choice = TargetChoice::Named {
+                id: String::from("app"),
+                main: String::from("staging"),
+            };
+            bench.cadence.checks.insert(
+                String::from("checker"),
+                CommandCheck {
+                    fingerprint: command::fingerprint_of("checker", &choice, "make check"),
+                    red_need: Some(existing_need.clone()),
+                    ..CommandCheck::default()
+                },
+            );
+        }
         let job = bench.launch(Some("app"), "make check", 1_000);
-        bench.finish(&job, status, receipt, 2_000, Some(&start));
+        bench.finish(&job, status, receipt, 2_000, evidence);
+        if label == "host setup with red need" {
+            bench
+                .st
+                .jobs
+                .get_mut(&job)
+                .unwrap()
+                .outcome
+                .as_mut()
+                .unwrap()
+                .detail = String::from("target_prepare_failed unable to prepare checkout");
+        }
         bench.collect(2_100);
 
         let latest = bench.latest();
@@ -804,16 +1038,29 @@ fn command_environment_failure_retries_without_a_need() {
         let retry_at = latest.retry_at.expect("a retry is scheduled");
         assert_eq!(retry_at, 2_000 + backoff_secs(1), "{label}");
         assert!(bench.check().last_green_commit.is_none(), "{label}");
-        assert!(bench.check().red_need.is_none(), "{label}");
+        assert_eq!(
+            bench.check().red_need.as_deref(),
+            existing_need.as_deref(),
+            "{label}"
+        );
         let exception = bench.check().exception.expect("a cadence exception");
         assert_eq!(exception.kind, result::ENV_EXCEPTION, "{label}");
-        assert!(
+        assert_eq!(
             bench
                 .space
                 .list_kind_all(None, "sent", "need")
                 .unwrap()
-                .is_empty()
+                .len(),
+            if red_need { 1 } else { 0 },
+            "{label}"
         );
+        if let Some(need) = existing_need {
+            assert_eq!(
+                bench.space.thread_outline(&need).unwrap().len(),
+                1,
+                "{label}"
+            );
+        }
 
         let scan = bench.scan(Some("app"), "make check");
         let check = bench.check();
@@ -826,6 +1073,43 @@ fn command_environment_failure_retries_without_a_need() {
             "{label}"
         );
     }
+
+    let mut retry = Bench::new();
+    let first = retry.launch(Some("app"), "make check", 1_000);
+    retry.finish(
+        &first,
+        JobStatus::Lost,
+        "agent exit 0 in 1s",
+        2_000,
+        Some(&start),
+    );
+    retry.collect(2_100);
+    let retry_at = retry.latest().retry_at.unwrap();
+    let role = command_role("checker", "make check", Some("app"));
+    let scan = retry.scan(Some("app"), "make check");
+    assert!(command::ready(
+        &retry.st,
+        &scan,
+        Some(&retry.check()),
+        retry_at
+    ));
+    command::enqueue(
+        &retry.ctx,
+        &mut retry.st,
+        &mut retry.cadence,
+        &role,
+        &scan,
+        retry_at,
+    );
+    let latest = retry.latest();
+    assert_eq!(latest.attempt, 2);
+    assert_ne!(latest.job, first);
+    assert!(!command::ready(
+        &retry.st,
+        &scan,
+        Some(&retry.check()),
+        retry_at + 1
+    ));
 }
 
 #[test]
@@ -945,14 +1229,13 @@ fn command_green_over_an_open_red_need_awaits_a_recovery_report() {
 fn command_evidence_is_not_consumed_without_a_mailspace() {
     let tmp = tempfile::tempdir().unwrap();
     let (ctx, _host) = crate::pump::host::test_ctx(tmp.path(), three_targets());
-    let start = full_sha('f');
     let mut st = State::default();
     let mut cadence = CadenceState::default();
     let role = command_role("checker", "make check", Some("app"));
     let scan = target_scan("checker", Some("app"), Some("make check"));
     command::enqueue(&ctx, &mut st, &mut cadence, &role, &scan, 1_000);
-    let job = cadence.checks["checker"].latest.clone().unwrap().job;
-    let entry = st.jobs.get_mut(&job).unwrap();
+    let command_job = cadence.checks["checker"].latest.clone().unwrap().job;
+    let entry = st.jobs.get_mut(&command_job).unwrap();
     entry.status = JobStatus::Finished;
     entry.outcome = Some(crate::pump::jobs::JobOutcome {
         state: String::from("finished"),
@@ -960,14 +1243,41 @@ fn command_evidence_is_not_consumed_without_a_mailspace() {
         receipt: String::from("agent exit 0 in 5s"),
         at: 2_000,
     });
-    let entry = start.as_str();
-    assert_eq!(result::tested_commit(&[], Some(entry)), None);
+
+    let model_spec = JobSpec::new("cadence-legacy-model", "cadence", "mind", "s", "b");
+    let model_job = model_spec.id.clone();
+    jobs::enqueue(&mut st, model_spec).unwrap();
+    st.jobs.get_mut(&model_job).unwrap().status = JobStatus::Finished;
+    st.jobs.get_mut(&model_job).unwrap().outcome = Some(crate::pump::jobs::JobOutcome {
+        state: String::from("finished"),
+        detail: String::from("finished"),
+        receipt: String::from("agent exit 0 in 5s"),
+        at: 2_000,
+    });
+    cadence.runs.insert(
+        "mind".into(),
+        RoleRun {
+            job: model_job.clone(),
+            task: String::new(),
+            started_at: 1_000,
+            ended_at: None,
+            outcome: None,
+            attempt: 1,
+            retry_at: None,
+        },
+    );
+    set_state(&mut st, &cadence);
 
     prepare_due(&ctx, &mut st);
-    let check = cadence.checks["checker"].latest.clone().unwrap();
+    let persisted = state(&st);
+    let check = persisted.checks["checker"].latest.as_ref().unwrap();
     assert!(check.ended_at.is_none(), "nothing was consumed");
     assert!(check.outcome.is_none());
-    assert!(st.jobs[&job].applied_at.is_none());
+    assert!(st.jobs[&command_job].applied_at.is_none());
+    let run = &persisted.runs["mind"];
+    assert_eq!(run.outcome.as_deref(), Some("success"));
+    assert_eq!(run.ended_at, Some(2_000));
+    assert!(st.jobs[&model_job].applied_at.is_some());
 }
 
 #[test]
