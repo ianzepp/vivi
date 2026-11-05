@@ -3,6 +3,7 @@
 //! other open slices. No model is involved.
 
 use crate::pump::flow::fanout::{self, SliceEdges};
+use crate::pump::flow::scope_policy;
 use crate::pump::store::PumpStore;
 use vivi_error::VivariumError;
 
@@ -115,7 +116,8 @@ pub fn finish_grant(store: &PumpStore, task: &str) -> Result<(), VivariumError> 
 /// True when a scope entry holds `path`: the same path, or a directory entry
 /// (ending in `/`) that is a prefix of it.
 fn holds(entry: &str, path: &str) -> bool {
-    entry == path || (entry.ends_with('/') && path.starts_with(entry))
+    let entry = entry.trim_end_matches('/');
+    !entry.is_empty() && scope_policy::covers(entry, path)
 }
 
 /// A request split by who holds its paths.
@@ -164,6 +166,15 @@ pub fn resolve(
     task: &str,
     req: &BlockedScope,
 ) -> Result<Resolution, VivariumError> {
+    if req
+        .paths
+        .iter()
+        .any(|path| scope_policy::invalid_path(path).is_some())
+    {
+        return Ok(Resolution::Rework(
+            "blocked-scope request contains a non-repository path".into(),
+        ));
+    }
     let requests = store.bump_scope_requests(task)?;
     if requests >= 2 {
         return Ok(Resolution::Rework(format!(

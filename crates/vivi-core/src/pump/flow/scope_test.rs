@@ -111,12 +111,12 @@ fn a_directory_entry_holds_paths_under_it() {
 }
 
 #[test]
-fn a_directory_entry_needs_the_slash_to_hold() {
+fn a_slashless_directory_entry_holds_paths_under_it() {
     let mut f = fixture();
     let a = f.slice("n1", 1, &["src/a.rs"], StepState::Running);
-    f.slice("n1", 1, &["src/pump"], StepState::Running);
+    let b = f.slice("n1", 1, &["src/pump"], StepState::Running);
     let got = f.resolve(1, &a, &["src/pump/run.rs"], false);
-    assert_eq!(got, Resolution::Widen(strings(&["src/pump/run.rs"])));
+    assert_eq!(got, Resolution::WaitOn(vec![b]));
 }
 
 #[test]

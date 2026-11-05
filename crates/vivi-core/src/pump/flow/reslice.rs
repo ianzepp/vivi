@@ -13,8 +13,10 @@ use crate::pump::flow::handlers::{FlowMail, Registry, TickPhase};
 use crate::pump::flow::index::run_state;
 use crate::pump::flow::index::{JOB_STALE, PayloadIdentity, RunRow, StepRow, StepState};
 use crate::pump::flow::reslice_apply;
+use crate::pump::flow::scope_policy;
 use crate::pump::flow::step_error::{self, STEP_ERROR_HELD, STEP_ERROR_LIMIT};
 use crate::pump::flow::step_inputs::{read_only_job, targets};
+
 use crate::pump::flow::tick::{OPERATOR_HOLD, raise_once};
 use crate::pump::flow::verify_inputs::{self, SlicerBase, SlicerSource};
 use crate::pump::host::Ctx;
@@ -568,6 +570,12 @@ fn reply_of(
     };
     if slicer.mode != wanted {
         return fail(format!("reply mode {:?} is not {wanted:?}", slicer.mode));
+    }
+    let declared = scope_policy::declared_problems(&slicer.slice, &targets(ctx));
+    if !declared.is_empty() {
+        let text = format!("reslice job {}: {}", job.id, declared.join("; "));
+        raise_once(ctx, SLICES_INVALID, &job.id, &text);
+        return Ok(None);
     }
     if let Some(reason) = check_batch(store, run, &slicer.slice)? {
         let text = format!("reslice job {}: {reason}", job.id);

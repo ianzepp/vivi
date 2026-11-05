@@ -6,10 +6,12 @@
 
 use crate::pump::flow::def::{FlowKind, NodeClass};
 use crate::pump::flow::fanout::{SLICES_INVALID, check_batch, parse_reply};
+
 use crate::pump::flow::handlers::{FlowMail, Registry};
 use crate::pump::flow::index::StepRow;
 use crate::pump::flow::need_branch;
 use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
+use crate::pump::flow::scope_policy;
 use crate::pump::flow::step_inputs;
 use crate::pump::jobs::JobStore;
 use vivi_error::VivariumError;
@@ -81,18 +83,8 @@ fn latest_slices(
 /// not a problem.
 fn problems(cx: &StartCx<'_>, slices: &[Slice]) -> Result<Vec<String>, VivariumError> {
     let known = step_inputs::targets(cx.ctx);
-    let mut out = Vec::new();
-    for slice in slices {
-        if !known.contains(&slice.target) {
-            out.push(format!(
-                "slice {} names unknown target {}",
-                slice.id, slice.target
-            ));
-        }
-        if slice.write_scope.iter().all(|path| path.trim().is_empty()) {
-            out.push(format!("slice {} has an empty write_scope", slice.id));
-        }
-    }
+    let mut out = scope_policy::declared_problems(slices, &known);
+    // Graph dependencies are independent of repository path policy.
     if let Some(reason) = check_batch(cx.store, cx.run, slices)? {
         out.push(reason);
     }
