@@ -325,3 +325,47 @@ fn a_tip_the_checkout_lacks_runs_as_before() -> R {
     assert!(rig.schedule()?.is_some());
     Ok(())
 }
+
+/// The hub on vivi 23: three targets' long-lived rung tasks had been closed,
+/// their queued jobs were deferred every tick ("dispatch needs an open
+/// task"), and being in flight they kept the targets from ever being
+/// scheduled again. A stranded job is dropped and the next run takes a new,
+/// open task.
+#[test]
+fn a_closed_rung_task_is_replaced_and_its_stranded_job_dropped() -> R {
+    use crate::pump::flow::mail::MailWriter;
+    let mut rig = rig(true)?;
+    rig.main_at(TIP_A);
+    let stranded = rig.schedule()?.expect("a first job");
+    let old_task = rig.store.main_state(&key(TASK, TARGET))?.expect("a task");
+    rig.mail.close_task(&old_task, "done", None, None)?;
+    rig.host.advance(INTERVAL_SECS);
+
+    let next = rig.schedule()?.expect("the target is scheduled again");
+
+    assert!(!rig.jobs.jobs.contains_key(&stranded) || next == stranded);
+    let new_task = rig.store.main_state(&key(TASK, TARGET))?.expect("a task");
+    assert_ne!(new_task, old_task, "a closed task is not reused");
+    assert_eq!(
+        rig.jobs.jobs[&next].task.as_deref(),
+        Some(new_task.as_str())
+    );
+    assert_eq!(rig.sends(), 2);
+    Ok(())
+}
+
+#[test]
+fn an_open_rung_task_and_its_queued_job_are_left_alone() -> R {
+    let mut rig = rig(true)?;
+    rig.main_at(TIP_A);
+    let queued = rig.schedule()?.expect("a first job");
+    rig.host.advance(INTERVAL_SECS);
+    assert_eq!(
+        rig.schedule()?,
+        None,
+        "the queued job still blocks a second start"
+    );
+    assert!(rig.jobs.jobs.contains_key(&queued));
+    assert_eq!(rig.sends(), 1);
+    Ok(())
+}

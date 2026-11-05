@@ -7,6 +7,7 @@
 
 use super::{ENV_FAILED, NO_FILES, PAYLOAD_KEY, STARTED, TASK, TESTED, key};
 use crate::pump::flow::handlers::FlowMail;
+use crate::pump::flow::mail::TaskStatus;
 use crate::pump::flow::tick::raise_once;
 use crate::pump::flow::verify;
 use crate::pump::host::Ctx;
@@ -50,6 +51,7 @@ pub(crate) fn schedule<S: JobStore, M: FlowMail>(
     mail: &mut M,
     target: &str,
 ) -> Result<Option<String>, VivariumError> {
+    drop_stranded(ctx, st, mail, target);
     if ctx
         .cfg
         .effective_rungs(Some(target))
@@ -142,15 +144,56 @@ fn in_flight(st: &impl JobStore, target: &str) -> bool {
     })
 }
 
-/// The target's main rung task: the stored one, or a new one sent from and to
-/// the pump identity and stored.
+/// Whether `task` is an open task. A task that cannot be read counts as not
+/// open: a job on it could not be dispatched either.
+fn task_open<M: FlowMail>(mail: &M, task: &str) -> bool {
+    mail.task_state(task)
+        .is_ok_and(|state| state.status == TaskStatus::Open)
+}
+
+/// Drop the queued main rung jobs of `target` whose task is no longer open.
+/// Dispatch needs an open task, so such a job would be deferred every tick
+/// and, being in flight, would stop the target from ever being scheduled
+/// again (seen on the hub: three targets' rung tasks closed, their jobs
+/// deferred each tick, no main rung run since).
+fn drop_stranded<S: JobStore, M: FlowMail>(ctx: &Ctx, st: &mut S, mail: &M, target: &str) {
+    let stranded: Vec<String> = st
+        .jobs()
+        .values()
+        .filter(|job| {
+            job.kind == "rung"
+                && job.status == JobStatus::Pending
+                && job
+                    .payload
+                    .get(PAYLOAD_KEY)
+                    .and_then(|value| value.as_str())
+                    == Some(target)
+                && job
+                    .task
+                    .as_deref()
+                    .is_some_and(|task| !task_open(mail, task))
+        })
+        .map(|job| job.id.clone())
+        .collect();
+    for id in stranded {
+        st.jobs_mut().remove(&id);
+        ctx.log(&format!(
+            "main rung job {id} on {target} dropped: its task is closed; the next run takes a new one"
+        ));
+    }
+}
+
+/// The target's main rung task: the stored one while it is open, else a new
+/// one sent from and to the pump identity and stored.
 fn task_for<M: FlowMail>(
     ctx: &Ctx,
     store: &PumpStore,
     mail: &mut M,
     target: &str,
 ) -> Result<String, VivariumError> {
-    if let Some(task) = store.main_state(&key(TASK, target))? {
+    if let Some(task) = store.main_state(&key(TASK, target))?
+        && task_open(&*mail, &task)
+    {
         return Ok(task);
     }
     let pump = &ctx.cfg.reply_from;
