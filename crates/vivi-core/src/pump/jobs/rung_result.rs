@@ -36,6 +36,8 @@ pub struct RungResult {
     /// (`src/pool/collect.rs`). An empty set is never green and never "all
     /// fixed".
     pub failing: BTreeSet<String>,
+    /// Full, boundedness-aware evidence used by comparison consumers.
+    pub evidence: Option<Evidence>,
 }
 
 /// Read a rung job's result. A timed-out or lost job, or a receipt with no
@@ -49,12 +51,16 @@ pub fn parse(job: &PoolJob) -> RungResult {
         JobStatus::Finished => agent_exit(receipt),
         _ => None,
     };
-    RungResult {
+    let failing = failing_ids(&text);
+    let mut result = RungResult {
         pass: exit == Some(0),
         exit,
         tail,
-        failing: failing_ids(&text),
-    }
+        failing,
+        evidence: None,
+    };
+    result.evidence = Some(evidence::evidence(&result, receipt));
+    result
 }
 
 /// The exception kind the flow raises for an environment failure: the worker
@@ -324,6 +330,15 @@ fn tail_of(text: &str) -> String {
         start += 1;
     }
     kept[start..].to_owned()
+}
+
+pub mod evidence;
+pub use evidence::{Comparison, Evidence};
+
+/// Compare two rung outcomes without treating unavailable evidence as green.
+#[must_use]
+pub fn compare(baseline: &RungResult, candidate: &RungResult) -> Comparison {
+    evidence::compare(baseline, candidate)
 }
 
 #[cfg(test)]
