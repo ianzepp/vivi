@@ -295,12 +295,14 @@ fn a_local_only_send_is_unchanged_and_lists_no_remote() {
 }
 
 #[test]
-fn a_send_to_nobody_and_to_an_unknown_address_are_errors() {
+fn a_send_to_an_unknown_address_is_an_error() {
     let (_tmp, mailspace) = space(&["mind"]);
 
+    // A send to nobody is the author's own copy, not an error.
     let none = mailspace
         .send(send(&mailspace, &[], "inbox", None))
-        .unwrap_err();
+        .unwrap();
+    assert!(none.delivered.is_empty(), "{none:?}");
     let external = mailspace
         .send(send(&mailspace, &["x@example.com"], "inbox", None))
         .unwrap_err();
@@ -308,20 +310,14 @@ fn a_send_to_nobody_and_to_an_unknown_address_are_errors() {
         .send(send(&mailspace, &["ghost"], "inbox", None))
         .unwrap_err();
 
-    assert!(none.to_string().contains("at least one"), "{none}");
     assert!(external.to_string().contains("external"), "{external}");
     assert!(
         unknown.to_string().contains("unknown local role"),
         "{unknown}"
     );
-    assert!(
-        mailspace
-            .storage()
-            .unwrap()
-            .list_messages()
-            .unwrap()
-            .is_empty()
-    );
+    let rows = mailspace.storage().unwrap().list_messages().unwrap();
+    assert_eq!(rows.len(), 1, "only the author copy was stored: {rows:?}");
+    assert_eq!(rows[0].handle, none.sent);
 }
 
 fn pulled_need(mailspace: &Mailspace, to: &str) -> String {
