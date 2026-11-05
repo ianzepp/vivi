@@ -22,6 +22,7 @@ use crate::pump::brief::hand_rules;
 use crate::pump::envelope::EnvelopeError;
 use crate::pump::envelope::correct::correction_n;
 use crate::pump::envelope::refusal;
+use crate::pump::envelope::validation::failing_hand_checks;
 use crate::pump::flow::collect::{ENVELOPE_DISAGREES, ENVELOPE_FAILED, MAX_CORRECTIONS};
 use crate::pump::flow::fanout::{VERDICT_MERGED, is_slice_row, mark_exhausted, target_of};
 use crate::pump::flow::index::{StepRow, StepState};
@@ -36,7 +37,7 @@ use crate::pump::need::unit_branch;
 use crate::pump::store::PumpStore;
 use vivi_error::VivariumError;
 use vivi_mail::letter::records::NoteWord;
-use vivi_mail::letter::roles::{CheckResult, Hand, HandAnswer};
+use vivi_mail::letter::roles::{Hand, HandAnswer};
 
 /// Job kind of a slice hand job.
 pub const KIND: &str = "hand";
@@ -678,12 +679,7 @@ fn built(
         disagree(ctx, task, job, "built", "the agent did not exit 0");
         return AttemptResult::Failed;
     }
-    let failing: Vec<&str> = envelope
-        .check
-        .iter()
-        .filter(|check| check.result == CheckResult::Fail)
-        .map(|check| check.cmd.as_str())
-        .collect();
+    let failing = hand_check_failures(&envelope);
     if !failing.is_empty() {
         let reason = format!(
             "the envelope says built but reports failing checks: {}",
@@ -723,6 +719,18 @@ fn built(
             AttemptResult::Failed
         }
     }
+}
+
+fn hand_check_failures(envelope: &Hand) -> Vec<String> {
+    failing_hand_checks(
+        "built",
+        envelope.check.iter().map(|check| {
+            (
+                check.cmd.as_str(),
+                check.result == vivi_mail::letter::roles::CheckResult::Fail,
+            )
+        }),
+    )
 }
 
 fn blocked(

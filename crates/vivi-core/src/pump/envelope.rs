@@ -4,8 +4,10 @@
 //! typed `answer` and its fields; the prose report is the body.
 //! The parser lives in `vivi_mail::letter`.
 
+pub mod context;
 pub mod correct;
 pub(crate) mod refusal;
+pub mod validation;
 
 pub use vivi_mail::letter::{Envelope, LetterError as EnvelopeError, Validate, parse, split};
 

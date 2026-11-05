@@ -6,6 +6,7 @@
 //! evidence; this module never reads receipt text itself.
 
 use super::EnvelopeError;
+use super::validation::diagnostic;
 use crate::pump::jobs::PoolJob;
 
 /// Describe why `job`'s reply was refused, with any trustworthy discarded
@@ -14,7 +15,7 @@ use crate::pump::jobs::PoolJob;
 pub fn describe(job: &PoolJob, error: &EnvelopeError) -> String {
     let evidence = evidence(job);
     let mut text = match error {
-        EnvelopeError::NoOpening => missing_envelope(error, evidence.as_ref()),
+        EnvelopeError::NoOpening => missing_envelope(evidence.as_ref()),
         _ => default_explanation(error, evidence.as_ref()),
     };
     if text.is_empty() {
@@ -37,19 +38,19 @@ fn evidence(job: &PoolJob) -> Option<Evidence> {
     (total > 0).then_some(Evidence { total, first })
 }
 
-fn missing_envelope(error: &EnvelopeError, evidence: Option<&Evidence>) -> String {
+fn missing_envelope(evidence: Option<&Evidence>) -> String {
     let mut text = String::from("reply has no envelope");
     if let Some(evidence) = evidence {
         text.push_str("; ");
         text.push_str(&changed(evidence));
     }
     text.push_str("; ");
-    text.push_str(&error.to_string());
+    text.push_str(&diagnostic(&EnvelopeError::NoOpening));
     text
 }
 
 fn default_explanation(error: &EnvelopeError, evidence: Option<&Evidence>) -> String {
-    let mut text = error.to_string();
+    let mut text = diagnostic(error);
     if let Some(evidence) = evidence {
         text.push_str("; ");
         text.push_str(&changed(evidence));

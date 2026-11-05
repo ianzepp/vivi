@@ -8,6 +8,46 @@ fn hand(front: &str) -> String {
 }
 
 #[test]
+fn check_detail_round_trip_is_optional_and_strict() {
+    let text = hand(
+        "answer='built'\n[[check]]\ncmd='cargo test'\nresult='fail'\nseconds=1.25\ndetail='one assertion failed'\n",
+    );
+    let parsed = parse_for(RoleKind::Hand, &text).unwrap();
+    assert_eq!(parsed.front["check"][0]["detail"], "one assertion failed");
+    let typed = super::parse_role_reply::<super::Hand>(&text).unwrap().front;
+    let json = serde_json::to_value(&typed).unwrap();
+    let round_trip: super::Hand = serde_json::from_value(json).unwrap();
+    assert_eq!(
+        round_trip.check[0].detail.as_deref(),
+        Some("one assertion failed")
+    );
+
+    let absent = parse_for(
+        RoleKind::Hand,
+        &hand("answer='built'\n[[check]]\ncmd='cargo test'\nresult='pass'\nseconds=1\n"),
+    )
+    .unwrap();
+    assert!(absent.front["check"][0].get("detail").is_none());
+    assert!(round_trip.check[0].detail.is_some());
+
+    let unrelated =
+        hand("answer='built'\n[[check]]\ncmd='cargo test'\nresult='pass'\nseconds=1\nextra='no'\n");
+    assert!(matches!(
+        parse_for(RoleKind::Hand, &unrelated),
+        Err(EnvelopeError::Toml { .. })
+    ));
+    for seconds in ["-1", "\"1\""] {
+        let invalid = hand(&format!(
+            "answer='built'\n[[check]]\ncmd='cargo test'\nresult='pass'\nseconds={seconds}\n"
+        ));
+        assert!(matches!(
+            parse_for(RoleKind::Hand, &invalid),
+            Err(EnvelopeError::Toml { .. })
+        ));
+    }
+}
+
+#[test]
 fn a_valid_hand_envelope_parses() {
     let text = hand(
         "answer = \"built\"\nchange = [\"src/a.rs\"]\ndeviations = ['moved a call']\n\
