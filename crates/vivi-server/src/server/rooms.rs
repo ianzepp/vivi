@@ -18,9 +18,9 @@ use serde_json::json;
 use crate::server::AppState;
 use crate::server::identities::{IdentityRecord, RegisterError};
 use crate::server::mcp::letters::{
-    append_composed, compose_reply, compose_send, handle_of, parse_letter,
+    append_composed, compose_reply, compose_send, handle_of, parse_letter, reply_audience,
 };
-use crate::server::projects::{ListQuery, ProjectError, ProjectMeta, Viewer};
+use crate::server::projects::{ListQuery, ProjectError, ProjectMeta, ProjectStore, Viewer};
 use crate::server::projects_api::{authenticate, json_body, project_error};
 
 pub const DEFAULT_TTL_SECS: u64 = 24 * 60 * 60;
@@ -427,16 +427,7 @@ pub async fn send_handler(
             .mailspace_prefix()
             .ok_or_else(|| "guest is missing a mailspace prefix".to_owned())?;
         let composed = if let Some(handle) = in_reply_to.as_deref() {
-            let viewer = Viewer::of(&identity);
-            let found = projects
-                .lookup_handles(&id, &[handle.to_owned()], &viewer)
-                .map_err(|e| format!("{e:?}"))?;
-            let parent = found
-                .records
-                .into_iter()
-                .next()
-                .ok_or_else(|| "in_reply_to did not match a visible letter".to_owned())?;
-            compose_reply(&identity, &parent, &body)
+            compose_chat_reply(&projects, &identity, &id, handle, &body)
         } else {
             let to = format!("chat@{prefix}.local");
             compose_send(&identity, &[to], &subject, &body, "chat")
@@ -460,6 +451,25 @@ pub async fn send_handler(
         Ok(Err(message)) => error_response(StatusCode::BAD_REQUEST, "invalid_request", &message),
         Err(err) => project_error(ProjectError::Storage(format!("chat send failed: {err}"))),
     }
+}
+
+/// Resolve the room reply parent and preserve its existing audience.
+fn compose_chat_reply(
+    projects: &ProjectStore,
+    identity: &IdentityRecord,
+    id: &str,
+    handle: &str,
+    body: &str,
+) -> Result<crate::server::mcp::letters::ComposedLetter, String> {
+    let found = projects
+        .lookup_handles(id, &[handle.to_owned()], &Viewer::of(identity))
+        .map_err(|error| format!("{error:?}"))?;
+    let parent = found
+        .records
+        .into_iter()
+        .next()
+        .ok_or_else(|| "in_reply_to did not match a visible letter".to_owned())?;
+    compose_reply(identity, &parent, &reply_audience(identity, &parent), body)
 }
 
 /// `GET /v1/rooms/:id/messages` — poll / long-poll member-visible chat.
