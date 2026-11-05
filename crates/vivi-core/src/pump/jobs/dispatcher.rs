@@ -523,6 +523,9 @@ fn append_runner_arguments(args: &mut Vec<String>, job: &PoolJob) {
             args.push(format!("{flag} {}", shell_quote(value)));
         }
     }
+    for assertion in &job.publish_if {
+        args.push(format!("--publish-if {}", shell_quote(assertion)));
+    }
 }
 
 /// Expand the assigned role pool first, then explicit candidates, including

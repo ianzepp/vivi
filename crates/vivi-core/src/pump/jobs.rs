@@ -81,6 +81,8 @@ pub struct JobSpec {
     pub delete_ref: Option<String>,
     /// Exact expected tip of `delete_ref`.
     pub delete_expect: Option<String>,
+    /// Expected current tips for refs eligible for publication.
+    pub publish_if: Vec<String>,
     /// Pool execution budget in seconds.
     pub budget: u64,
     /// Explicit read-only request; the role can also require this mode.
@@ -131,6 +133,7 @@ impl JobSpec {
             publish_contains: None,
             delete_ref: None,
             delete_expect: None,
+            publish_if: Vec::new(),
             budget: 0,
             read_only: false,
             units: Vec::new(),
@@ -217,6 +220,8 @@ pub struct PoolJob {
     pub delete_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delete_expect: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub publish_if: Vec<String>,
     pub budget: u64,
     pub read_only: bool,
     pub units: Vec<String>,
@@ -270,6 +275,7 @@ impl From<JobSpec> for PoolJob {
             publish_contains: spec.publish_contains,
             delete_ref: spec.delete_ref,
             delete_expect: spec.delete_expect,
+            publish_if: spec.publish_if,
             budget: spec.budget,
             read_only: spec.read_only,
             units: spec.units,
@@ -411,6 +417,7 @@ fn same_spec(job: &PoolJob, spec: &JobSpec) -> bool {
         && job.publish_contains == spec.publish_contains
         && job.delete_ref == spec.delete_ref
         && job.delete_expect == spec.delete_expect
+        && job.publish_if == spec.publish_if
         && job.budget == spec.budget
         && job.read_only == spec.read_only
         && job.units == spec.units

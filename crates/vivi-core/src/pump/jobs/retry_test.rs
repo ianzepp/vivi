@@ -40,6 +40,7 @@ fn dispatched_job(id: &str) -> PoolJob {
     spec.publish_contains = Some("contain-sha".into());
     spec.delete_ref = Some("refs/heads/delete".into());
     spec.delete_expect = Some("delete-sha".into());
+    spec.publish_if = vec!["refs/heads/main=guard-sha".into()];
     spec.budget = 900;
     spec.read_only = true;
     spec.units = vec!["unit-1".into()];
@@ -91,6 +92,7 @@ fn rerun_spec_copies_every_execution_input() {
         publish_contains: Some("contain-sha".into()),
         delete_ref: Some("refs/heads/delete".into()),
         delete_expect: Some("delete-sha".into()),
+        publish_if: vec!["refs/heads/main=guard-sha".into()],
         budget: 900,
         read_only: true,
         units: vec!["unit-1".into()],
