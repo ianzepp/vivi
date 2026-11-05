@@ -1,4 +1,5 @@
-use super::*;
+use super::context::*;
+use crate::letter::roles::{RoleKind, SlicerMode};
 
 #[test]
 fn contract_round_trips_role_and_supplied_context() {

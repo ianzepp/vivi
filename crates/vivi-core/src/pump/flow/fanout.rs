@@ -291,50 +291,17 @@ pub fn check_batch(
 /// keeping the slicer's order otherwise. Refuses duplicate ids, unknown
 /// dependencies and cycles, naming each.
 fn topological_order<'a>(slices: &'a [Slice], rows: &[StepRow]) -> Result<Vec<&'a Slice>, String> {
-    for (index, slice) in slices.iter().enumerate() {
-        if slices[..index].iter().any(|other| other.id == slice.id) {
-            return Err(format!("slice id `{}` appears twice", slice.id));
-        }
-    }
-    for slice in slices {
-        for dep in &slice.deps {
-            if dep == &slice.id {
-                return Err(format!("slice `{}` depends on itself", slice.id));
-            }
-            let in_batch = slices.iter().any(|other| other.id == *dep);
-            if !in_batch && earlier_task(rows, dep).is_err() {
-                return Err(format!(
-                    "slice `{}` depends on unknown slice `{dep}`",
-                    slice.id
-                ));
-            }
-        }
-    }
-    let mut placed: Vec<&Slice> = Vec::with_capacity(slices.len());
-    while placed.len() < slices.len() {
-        let next = slices.iter().find(|slice| {
-            !placed.iter().any(|done| done.id == slice.id)
-                && slice.deps.iter().all(|dep| {
-                    placed.iter().any(|done| done.id == *dep)
-                        || !slices.iter().any(|other| other.id == *dep)
-                })
-        });
-        match next {
-            Some(slice) => placed.push(slice),
-            None => {
-                let members: Vec<String> = slices
-                    .iter()
-                    .filter(|slice| !placed.iter().any(|done| done.id == slice.id))
-                    .map(|slice| format!("`{}`", slice.id))
-                    .collect();
-                return Err(format!(
-                    "slice dependencies form a cycle among {}",
-                    members.join(", ")
-                ));
-            }
-        }
-    }
-    Ok(placed)
+    let earlier = rows
+        .iter()
+        .filter(|row| is_slice_row(row))
+        .map(|row| row.node.trim_start_matches("slice:").to_owned())
+        .collect::<Vec<_>>();
+    let graph = slices
+        .iter()
+        .map(|slice| (slice.id.clone(), slice.deps.clone()))
+        .collect::<Vec<_>>();
+    vivi_mail::letter::submission::context::slice_order(&graph, &earlier)
+        .map(|order| order.into_iter().map(|index| &slices[index]).collect())
 }
 
 /// Close a slice task with `verdict` and mark its step row done.

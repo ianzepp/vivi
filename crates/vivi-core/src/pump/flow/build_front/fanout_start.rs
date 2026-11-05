@@ -83,13 +83,13 @@ fn problems(cx: &StartCx<'_>, slices: &[Slice]) -> Result<Vec<String>, VivariumE
     let known = step_inputs::targets(cx.ctx);
     let mut out = Vec::new();
     for slice in slices {
-        if !known.contains(&slice.target) {
+        if !vivi_mail::letter::submission::context::target_known(&slice.target, &known) {
             out.push(format!(
                 "slice {} names unknown target {}",
                 slice.id, slice.target
             ));
         }
-        if slice.write_scope.iter().all(|path| path.trim().is_empty()) {
+        if !vivi_mail::letter::submission::context::scope_nonempty(&slice.write_scope) {
             out.push(format!("slice {} has an empty write_scope", slice.id));
         }
     }

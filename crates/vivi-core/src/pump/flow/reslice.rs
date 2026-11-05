@@ -566,7 +566,7 @@ fn reply_of(
     } else {
         SlicerMode::Rework
     };
-    if slicer.mode != wanted {
+    if !vivi_mail::letter::submission::context::slicer_mode_matches(&slicer, wanted) {
         return fail(format!("reply mode {:?} is not {wanted:?}", slicer.mode));
     }
     if let Some(reason) = check_batch(store, run, &slicer.slice)? {

@@ -36,7 +36,7 @@ use crate::pump::need::unit_branch;
 use crate::pump::store::PumpStore;
 use vivi_error::VivariumError;
 use vivi_mail::letter::records::NoteWord;
-use vivi_mail::letter::roles::{CheckResult, Hand, HandAnswer};
+use vivi_mail::letter::roles::{Hand, HandAnswer};
 
 /// Job kind of a slice hand job.
 pub const KIND: &str = "hand";
@@ -678,16 +678,10 @@ fn built(
         disagree(ctx, task, job, "built", "the agent did not exit 0");
         return AttemptResult::Failed;
     }
-    let failing: Vec<&str> = envelope
-        .check
-        .iter()
-        .filter(|check| check.result == CheckResult::Fail)
-        .map(|check| check.cmd.as_str())
-        .collect();
-    if !failing.is_empty() {
+    if vivi_mail::letter::submission::context::built_reports_failed_check(&envelope) {
         let reason = format!(
             "the envelope says built but reports failing checks: {}",
-            failing.join("; ")
+            vivi_mail::letter::submission::context::failed_check_commands(&envelope).join("; ")
         );
         ctx.exception(
             HAND_REPORTED_FAILURE,
