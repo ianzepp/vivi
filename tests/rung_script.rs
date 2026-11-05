@@ -3,8 +3,8 @@
 //! A temporary executable `cargo` shim is placed first on the spawned
 //! child's `PATH` (never the test process's own environment). The shim
 //! records each invocation's argument list and fails selected invocation
-//! indices so the `twice` retry helper and failure propagation can be
-//! observed without running any real Cargo build.
+//! indices so failure propagation can be observed without running any real
+//! Cargo build.
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -78,46 +78,28 @@ fn need_rung_selects_workspace_libraries() {
 }
 
 #[test]
-fn need_rung_retries_a_library_failure_once() {
-    // Invocation 2 is the first workspace library test; it fails once.
+fn need_rung_propagates_a_library_failure_without_retrying() {
+    // Invocation 2 is the workspace library test; it fails once.
     let (code, invocations) = run_rung("need", Some("2"));
-    assert_eq!(
-        code,
-        Some(0),
-        "one library failure must be retried, got {code:?}"
-    );
-    let library_invocations = invocations
-        .iter()
-        .filter(|line| *line == "test --workspace --lib --quiet")
-        .count();
-    assert_eq!(
-        library_invocations, 2,
-        "exactly two identical workspace library invocations expected, got {invocations:?}"
-    );
-    assert_eq!(
-        invocations.last(),
-        Some(&"test --test hygiene --quiet".to_string()),
-        "hygiene must follow the retried library test"
-    );
-}
-
-#[test]
-fn need_rung_propagates_repeated_library_failure() {
-    // Invocations 2 and 3 are the workspace library test and its retry.
-    let (code, invocations) = run_rung("need", Some("2,3"));
-    assert_ne!(code, Some(0), "repeated library failure must exit nonzero");
+    assert_ne!(code, Some(0), "a library failure must exit nonzero");
     assert_eq!(
         invocations,
         vec![
             "fmt --check".to_string(),
             "test --workspace --lib --quiet".to_string(),
-            "test --workspace --lib --quiet".to_string(),
         ],
-        "the failed library test must be retried once and then stop"
+        "the failed library test must run once and then stop"
     );
-    assert!(
-        !invocations.iter().any(|line| line.contains("hygiene")),
-        "hygiene must not run after a repeated library failure"
+}
+
+#[test]
+fn main_rung_propagates_a_test_failure_without_retrying() {
+    let (code, invocations) = run_rung("main", Some("1"));
+    assert_ne!(code, Some(0), "a main test failure must exit nonzero");
+    assert_eq!(
+        invocations,
+        vec!["test --quiet".to_string()],
+        "the failed main test must run once and then stop"
     );
 }
 
