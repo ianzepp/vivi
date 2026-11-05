@@ -124,6 +124,26 @@ impl Rig {
         });
     }
 
+    /// Queue another job of `node` at `attempt`, without touching the step's
+    /// state (the caller ends it).
+    fn add_job(&mut self, node: &str, id: &str, attempt: u32, kind: &str) -> R {
+        let step = self.step(node)?;
+        let mut spec = JobSpec::new(id, kind, "repairer", "s", "b");
+        spec.task = Some(step.task.clone());
+        spec.from_ref = Some(BASE.into());
+        jobs::enqueue(&mut self.jobs, spec)?;
+        self.store.insert_step_job(
+            NEED,
+            &StepJobRow {
+                job: id.into(),
+                run: 1,
+                node: node.into(),
+                task: step.task.clone(),
+                attempt,
+            },
+        )
+    }
+
     fn host_lines(&self) -> Vec<String> {
         std::fs::read_to_string(self.ctx.home.join("exceptions.txt"))
             .unwrap_or_default()
@@ -256,8 +276,140 @@ fn a_failed_envelope_routes_to_the_second_attempt() -> R {
     Ok(())
 }
 
+#[test]
+fn a_normal_failed_envelope_keeps_its_own_account() -> R {
+    let mut rig = rig()?;
+    rig.end(JobStatus::Finished, Some(receipt("", FAILED)));
+    rig.tick()?;
+    let fix = rig.step("fix1")?;
+    assert_eq!(fix.verdict.as_deref(), Some("failed"));
+    assert_eq!(rig.step("fix2")?.state, StepState::Pending);
+    let payload = rig.store.step_payload(&fix.task)?.unwrap().payload;
+    assert_eq!(payload["front"]["answer"], "failed", "{payload}");
+    assert_eq!(payload["body"], "gave up", "{payload}");
+    let prior = &payload["prior_context"];
+    assert_eq!(prior["source_job"], "fix-j1", "{payload}");
+    assert_eq!(prior["summary"]["text"], "gave up", "{payload}");
+    assert!(prior["failure"].is_object(), "{payload}");
+    Ok(())
+}
+
+const ORIGINAL: &str = "+++\nanswer = \"failed\"\n+++\nthe original repairer's account";
+const CORRECTED: &str = "+++\nanswer = \"failed\"\n+++\nthe correction agent's rewrite";
+
+#[test]
+fn correction_keeps_original_account() -> R {
+    let mut rig = rig()?;
+    let task = rig.step("fix1")?.task;
+    let base = rig.jobs.jobs.get_mut("fix-j1").unwrap();
+    base.outcome = Some(JobOutcome {
+        state: "finished".into(),
+        detail: String::new(),
+        receipt: receipt("", ORIGINAL),
+        at: 0,
+    });
+    rig.add_job("fix1", "fix-j1-c1", 1, KIND)?;
+    rig.end_job(
+        "fix-j1-c1",
+        JobStatus::Finished,
+        Some(receipt("", CORRECTED)),
+    );
+    rig.tick()?;
+    let fix = rig.step("fix1")?;
+    assert_eq!(fix.verdict.as_deref(), Some("failed"));
+    assert_eq!(rig.step("fix2")?.state, StepState::Pending);
+    let payload = rig.store.step_payload(&task)?.unwrap().payload;
+    // The correction's own parsed reply is the terminal payload.
+    assert_eq!(payload["front"]["answer"], "failed", "{payload}");
+    assert_eq!(payload["body"], "the correction agent's rewrite");
+    // The account is the original repairer's, never the correction's prose.
+    let prior = &payload["prior_context"];
+    assert_eq!(prior["source_job"], "fix-j1", "{payload}");
+    assert_eq!(
+        prior["summary"]["text"], "the original repairer's account",
+        "{payload}"
+    );
+    assert!(
+        !prior["summary"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("correction agent"),
+        "{payload}"
+    );
+    Ok(())
+}
+
+#[test]
+fn overtime_context_unavailable() -> R {
+    let mut rig = rig()?;
+    let task = rig.step("fix1")?.task;
+    rig.end(JobStatus::Timeout, None);
+    rig.tick()?;
+    let fix = rig.step("fix1")?;
+    assert_eq!(fix.verdict.as_deref(), Some("overtime"));
+    assert_eq!(rig.step("fix2")?.state, StepState::Pending);
+    assert_eq!(rig.jobs.jobs.len(), 1, "no rerun job");
+    let payload = rig.store.step_payload(&task)?.unwrap().payload;
+    assert_eq!(payload["job"], "fix-j1");
+    let prior = &payload["prior_context"];
+    assert_eq!(prior["source_job"], "fix-j1", "{payload}");
+    assert_eq!(prior["task"], task.as_str(), "{payload}");
+    assert!(prior["summary"].is_null(), "{payload}");
+    assert!(prior["failure"].is_null(), "{payload}");
+    Ok(())
+}
+
+#[test]
+fn an_exhausted_lost_attempt_fails_with_unavailable_context() -> R {
+    let mut rig = rig()?;
+    rig.add_job("fix1", "fix-j1-a2", 2, "repairer")?;
+    rig.end_job("fix-j1-a2", JobStatus::Lost, None);
+    rig.tick()?;
+    let fix = rig.step("fix1")?;
+    assert_eq!(fix.verdict.as_deref(), Some("failed"));
+    assert_eq!(rig.step("fix2")?.state, StepState::Pending);
+    assert_eq!(rig.jobs.jobs.len(), 2, "no third attempt");
+    let payload = rig.store.step_payload(&fix.task)?.unwrap().payload;
+    assert_eq!(payload["job"], "fix-j1-a2");
+    let prior = &payload["prior_context"];
+    assert_eq!(prior["source_job"], "fix-j1-a2", "{payload}");
+    assert!(prior["summary"].is_null(), "{payload}");
+    assert!(prior["failure"].is_null(), "{payload}");
+    Ok(())
+}
+
 fn no_changes() -> String {
     "push: no_changes".into()
+}
+
+#[test]
+fn prior_summary_survives_publication_refusal() -> R {
+    let refused =
+        format!("push: push_refused\nrunner publish: failed refs/heads/{BRANCH} {CAND} {CAND}");
+    for (publish, word, token) in [
+        (no_changes(), "unchanged", "no_changes"),
+        (refused, "failed", "push_refused"),
+    ] {
+        let mut rig = rig()?;
+        rig.end(JobStatus::Finished, Some(receipt(&publish, BUILT)));
+        rig.tick()?;
+        let fix = rig.step("fix1")?;
+        assert_eq!(fix.verdict.as_deref(), Some(word));
+        assert_eq!(rig.step("fix2")?.state, StepState::Pending);
+        let payload = rig.store.step_payload(&fix.task)?.unwrap().payload;
+        // The parsed front/body survives; the refusal adds to it.
+        assert_eq!(payload["front"]["answer"], "built", "{payload}");
+        assert_eq!(payload["body"], "fixed", "{payload}");
+        assert_eq!(payload["job"], "fix-j1", "{payload}");
+        let reason = payload["reason"].as_str().expect("reason");
+        assert!(reason.contains(token), "{reason}");
+        assert!(reason.contains(BRANCH), "{reason}");
+        let prior = &payload["prior_context"];
+        assert_eq!(prior["source_job"], "fix-j1", "{payload}");
+        assert_eq!(prior["summary"]["text"], "fixed", "{payload}");
+        assert!(prior["failure"].is_object(), "{payload}");
+    }
+    Ok(())
 }
 
 #[test]
