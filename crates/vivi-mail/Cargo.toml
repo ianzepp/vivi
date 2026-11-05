@@ -1,6 +1,6 @@
 [package]
 name = "vivi-mail"
-version = "23.0.0"
+version = "23.0.1"
 edition = "2024"
 description = "The vivi letter format and EML composition"
 license = "MIT"

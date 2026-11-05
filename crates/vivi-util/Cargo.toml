@@ -1,6 +1,6 @@
 [package]
 name = "vivi-util"
-version = "23.0.0"
+version = "23.0.1"
 edition = "2024"
 description = "Small shared helpers: base64, durations, extraction, home paths, stdout budget"
 license = "MIT"
