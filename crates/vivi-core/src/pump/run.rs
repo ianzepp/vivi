@@ -145,6 +145,10 @@ fn periodic(ctx: &Ctx, st: &mut State, boardpass: &mut BoardPass) -> Result<(), 
 pub fn write_status(ctx: &Ctx, st: &State) {
     let mut lines = vec![utc_stamp(ctx.now())];
     lines.extend(crate::pump::cadence::status_lines(ctx, st));
+    if let Ok(crate::pump::report::PumpRead::Ready(snapshot)) = crate::pump::report::read(&ctx.home)
+    {
+        lines.extend(crate::pump::report::wait_lines(snapshot.flow_waits()));
+    }
     let path = ctx.home.join("status.txt");
     if let Err(err) = fs::write(&path, lines.join("\n") + "\n") {
         ctx.log(&format!("status write failed at {}: {err}", path.display()));

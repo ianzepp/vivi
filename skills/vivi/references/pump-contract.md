@@ -16,7 +16,7 @@ The controller reloads mailspace configuration between ticks. Valid pool, routin
 
 ## Records, kinds and runs
 
-A run starts from a **pump record**, never from a need alone. **vivi pump send --need &lt;need&gt;** files one record of kind `pump` for one need; each tick, intake starts one flow run for every need with an open record and no run in flight. The record's letter shape and the refusals at send are in [envelope](envelope.md#pump-record).
+A run starts from a **pump record**, never from a need alone. An open record is queued eligibility. Prospective builds wait for effective dependencies, including dependency-letter additions and removals; every prerequisite must land. Held, closed-but-unlanded and unreadable blockers are identifiable in the persisted status/health projection. Once blockers land or are removed, no extra operator reply is needed. Active work is grandfathered; replacements also compete through admission. Parked, locked and prerequisite-waiting runs consume no ordinary live-run slot; repair exceptions remain. Cap-only queuing is separate from dependency waiting. Status and health show last-evaluated projection data, not a fresh admission decision. **vivi pump send --need &lt;need&gt;** files one record of kind `pump` for one need. The record's letter shape and the refusals at send are in [envelope](envelope.md#pump-record).
 
 The run kind is the record's `kind` (`build`, `research`, `release` or `repair`). A record with no kind falls to the need's marks (`research`, then `release`, then `repair`), else `build`. The kind is fixed when the run starts; a later mark never changes a started run.
 
@@ -26,7 +26,7 @@ A run has a number (`r1`, `r2`, ...) and a state: `starting`, `live`, `restartin
 
 A run ends one of three ways. The need lands: the pump closes the need, closes the sentinel, and closes the record **landed**. The need is withdrawn: the record closes **withdrawn** and every open task of the run closes `withdrawn`. The need is replanned: the record closes **superseded** and a fresh record starts a new run. A run that is locked (below) keeps its record open until **vivi pump unlock**.
 
-A reply from anyone but the pump on a need's thread, newer than the run's start post, restarts a live or parked build run at **plan**. Once a merge to main has started, or when the run is locked, the pump raises **flow-thread-changed** once and restarts nothing.
+A reply from anyone but the pump on a need's thread, newer than the run's start post, restarts a live or parked build run at **plan** when it is not yet past the restart boundary. The replacement does not bypass admission. Once a merge to main has started, or when the run is locked, the pump raises **flow-thread-changed** once and restarts nothing.
 
 ## Roles and pools
 

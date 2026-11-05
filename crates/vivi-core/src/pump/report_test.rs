@@ -20,6 +20,50 @@ fn ready(st: State) -> crate::pump::report::Snapshot {
 }
 
 #[test]
+fn wait_lines_sort_needs_and_handles_and_identify_blockers_and_evaluation_time() {
+    let lines = crate::pump::report::wait_lines(&[
+        FlowWaitRow {
+            need: "z".into(),
+            record: "rz".into(),
+            evaluated_at: 20,
+            handles: vec![
+                WaitingHandle {
+                    handle: "b".into(),
+                    state: "held".into(),
+                    detail: "dispatch refused".into(),
+                },
+                WaitingHandle {
+                    handle: "a".into(),
+                    state: "open".into(),
+                    detail: "needs work".into(),
+                },
+            ],
+        },
+        FlowWaitRow {
+            need: "a".into(),
+            record: "ra".into(),
+            evaluated_at: 10,
+            handles: vec![WaitingHandle {
+                handle: "c".into(),
+                state: "closed".into(),
+                detail: "unlanded".into(),
+            }],
+        },
+    ]);
+    assert_eq!(
+        lines,
+        [
+            "waiting need a record ra: waiting on c (evaluated_at 10)",
+            "  c: closed (unlanded)",
+            "waiting need z record rz: waiting on a, b (evaluated_at 20)",
+            "  a: open (needs work)",
+            "  b: held (dispatch refused)",
+        ]
+    );
+    assert!(crate::pump::report::wait_lines(&[]).is_empty());
+}
+
+#[test]
 fn cadence_run_receipts_are_available_to_the_board() {
     let mut st = State::default();
     let mut cadence = CadenceState::default();
