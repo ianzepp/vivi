@@ -2,6 +2,8 @@
 
 use std::collections::BTreeSet;
 
+use serde::{Deserialize, Serialize};
+
 use crate::pool::record::{SECTION_RECEIPT, SECTION_STDERR, split_sections};
 use crate::pump::attempt_record::agent_exit;
 use crate::pump::jobs::{JobStatus, PoolJob};
@@ -324,6 +326,257 @@ fn tail_of(text: &str) -> String {
         start += 1;
     }
     kept[start..].to_owned()
+}
+
+/// Source lines of context kept around each failure-marker line.
+const EXCERPT_CONTEXT: usize = 3;
+/// Most source lines a failure excerpt keeps.
+const EXCERPT_LINES: usize = 120;
+/// Most bytes a failure excerpt keeps.
+const EXCERPT_BYTES: usize = 12 * 1024;
+/// Most source lines the markerless fallback excerpt keeps.
+const EXCERPT_TAIL_LINES: usize = 40;
+
+/// A bounded excerpt of the failure evidence in a rung receipt: either the
+/// source lines around failure markers or, when no marker matches, the final
+/// lines of the receipt and stderr sections. Evidence for a reader; never a
+/// parse input.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FailureExcerpt {
+    /// How the content was chosen.
+    pub mode: ExcerptMode,
+    /// The selected source lines in source order, each omitted stretch named
+    /// between the lines around it; empty when there is no content.
+    pub text: String,
+    /// Source lines the selection searched.
+    pub source_lines: usize,
+    /// Source lines the excerpt keeps, earliest evidence first.
+    pub kept_lines: usize,
+    /// Source lines left out, by the marker windows or by a cap.
+    pub omitted_lines: usize,
+    /// True when the line or byte cap cut content the selection would
+    /// otherwise have kept.
+    pub truncated: bool,
+}
+
+/// How a failure excerpt chose its content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExcerptMode {
+    /// Windows of context around failure-marker lines.
+    Markers,
+    /// The final lines, when no marker matched.
+    Tail,
+    /// No content: the receipt and stderr sections were empty.
+    Empty,
+}
+
+/// Select a bounded excerpt of a receipt's failure evidence. The receipt and
+/// stderr sections ([`failure_text`]) are searched whole for failure markers
+/// before any limit applies; each marker keeps [`EXCERPT_CONTEXT`] source
+/// lines on both sides, overlapping or touching windows merge, and the kept
+/// lines stay in source order deduplicated by position. Markers are
+/// case-insensitive error, FAILED (covering the `test result: FAILED`
+/// footer), panicked, `failures:`, offender, and recognized nonzero exit
+/// status lines; a zero exit alone is never a marker. When no marker
+/// matches, the final [`EXCERPT_TAIL_LINES`] lines stand in. Either
+/// selection is capped at [`EXCERPT_LINES`] source lines and
+/// [`EXCERPT_BYTES`], keeping the earliest evidence and cutting at UTF-8
+/// boundaries. Selection shares nothing with [`failing_ids`] or
+/// [`tail_of`].
+#[must_use]
+pub fn failure_excerpt(receipt: &str) -> FailureExcerpt {
+    let text = failure_text(receipt);
+    let lines: Vec<&str> = text.lines().collect();
+    let source_lines = lines.len();
+    let windows = marker_windows(&lines);
+    let (text, kept_lines, truncated) = if source_lines == 0 {
+        (String::new(), 0, false)
+    } else if windows.is_empty() {
+        tail_excerpt(&lines)
+    } else {
+        window_excerpt(&lines, &windows)
+    };
+    let mode = if source_lines == 0 {
+        ExcerptMode::Empty
+    } else if windows.is_empty() {
+        ExcerptMode::Tail
+    } else {
+        ExcerptMode::Markers
+    };
+    FailureExcerpt {
+        mode,
+        text,
+        source_lines,
+        kept_lines,
+        omitted_lines: source_lines - kept_lines,
+        truncated,
+    }
+}
+
+/// Inclusive source-line ranges around each failure-marker line, merged when
+/// they overlap or touch, in source order.
+fn marker_windows(lines: &[&str]) -> Vec<(usize, usize)> {
+    let mut windows: Vec<(usize, usize)> = Vec::new();
+    for (at, line) in lines.iter().enumerate() {
+        if !is_marker(line) {
+            continue;
+        }
+        let window = (
+            at.saturating_sub(EXCERPT_CONTEXT),
+            (at + EXCERPT_CONTEXT).min(lines.len() - 1),
+        );
+        match windows.last_mut() {
+            Some(last) if window.0 <= last.1 + 1 => last.1 = last.1.max(window.1),
+            _ => windows.push(window),
+        }
+    }
+    windows
+}
+
+/// True when a source line carries failure evidence: a case-insensitive
+/// error, FAILED, panicked, `failures:` or offender marker, or a recognized
+/// nonzero exit status line.
+fn is_marker(line: &str) -> bool {
+    let lower = line.to_lowercase();
+    ["error", "failed", "panicked", "failures:", "offender"]
+        .iter()
+        .any(|marker| lower.contains(marker))
+        || reported_exit(&lower).is_some()
+}
+
+/// A nonzero exit code the line reports after a recognized keyword:
+/// `exit code`, `exit status`, `agent exit`, `exited with` or `exited`.
+fn reported_exit(lower: &str) -> Option<u32> {
+    for keyword in [
+        "exit code",
+        "exit status",
+        "agent exit",
+        "exited with",
+        "exited",
+    ] {
+        let mut rest = lower;
+        while let Some(at) = rest.find(keyword) {
+            let after = &rest[at + keyword.len()..];
+            if let Some(code) = leading_code(after)
+                && code != 0
+            {
+                return Some(code);
+            }
+            rest = after;
+        }
+    }
+    None
+}
+
+/// The integer a recognized exit keyword is directly followed by, skipping
+/// spaces, tabs and a colon.
+fn leading_code(after: &str) -> Option<u32> {
+    let digits: String = after
+        .trim_start_matches([' ', '\t', ':'])
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    let Ok(code) = digits.parse() else {
+        return None;
+    };
+    Some(code)
+}
+
+/// The longest prefix of `line` within `max` bytes that ends at a UTF-8
+/// boundary.
+fn byte_prefix(line: &str, max: usize) -> &str {
+    let mut end = max.min(line.len());
+    while !line.is_char_boundary(end) {
+        end -= 1;
+    }
+    &line[..end]
+}
+
+/// Append `content` as a line of `text` when it fits the excerpt byte cap
+/// whole; false when it does not, leaving `text` untouched.
+fn push_line(text: &mut String, content: &str) -> bool {
+    if text.len() + content.len() + usize::from(!text.is_empty()) > EXCERPT_BYTES {
+        return false;
+    }
+    if !text.is_empty() {
+        text.push('\n');
+    }
+    text.push_str(content);
+    true
+}
+
+/// The line naming a stretch of omitted source lines.
+fn gap_marker(gap: usize) -> String {
+    format!("... {gap} source lines omitted ...")
+}
+
+/// Join the windowed source lines in source order under the excerpt caps:
+/// the earliest evidence survives, every omitted stretch is named between
+/// its neighbors, and the line where the bytes run out is cut at a UTF-8
+/// boundary. Returns the text, the source lines it keeps, and whether a cap
+/// cut content the windows would have kept.
+fn window_excerpt(lines: &[&str], windows: &[(usize, usize)]) -> (String, usize, bool) {
+    let mut text = String::new();
+    let mut kept = 0usize;
+    let mut next = 0usize;
+    let mut truncated = false;
+    for &(start, end) in windows {
+        let gap = start - next;
+        if gap > 0 && !push_line(&mut text, &gap_marker(gap)) {
+            truncated = true;
+            break;
+        }
+        for line in &lines[start..=end] {
+            if kept == EXCERPT_LINES {
+                truncated = true;
+                break;
+            }
+            if push_line(&mut text, line) {
+                kept += 1;
+                continue;
+            }
+            let spare = EXCERPT_BYTES.saturating_sub(text.len() + usize::from(!text.is_empty()));
+            let cut = byte_prefix(line, spare);
+            if !cut.is_empty() {
+                if !text.is_empty() {
+                    text.push('\n');
+                }
+                text.push_str(cut);
+                kept += 1;
+            }
+            truncated = true;
+            break;
+        }
+        if truncated {
+            break;
+        }
+        next = end + 1;
+    }
+    (text, kept, truncated)
+}
+
+/// The markerless fallback: the final [`EXCERPT_TAIL_LINES`] source lines,
+/// byte-capped with the earliest bytes cut at a UTF-8 boundary. Returns the
+/// text, the source lines it keeps, and whether a cap cut content.
+fn tail_excerpt(lines: &[&str]) -> (String, usize, bool) {
+    let whole = lines.len().min(EXCERPT_TAIL_LINES);
+    let mut text = lines[lines.len() - whole..].join("\n");
+    let mut truncated = whole < lines.len();
+    if text.len() > EXCERPT_BYTES {
+        let mut start = text.len() - EXCERPT_BYTES;
+        while !text.is_char_boundary(start) {
+            start += 1;
+        }
+        text = text[start..].to_owned();
+        truncated = true;
+    }
+    let kept = if text.is_empty() {
+        0
+    } else {
+        text.split('\n').count()
+    };
+    (text, kept, truncated)
 }
 
 #[cfg(test)]
