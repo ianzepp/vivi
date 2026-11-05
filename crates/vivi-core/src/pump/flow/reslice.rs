@@ -1,6 +1,7 @@
 //! Reslice: split, rework and follow-up slicer jobs on an existing slice.
 
 use crate::mailspace::shipped::SLICER_ROLE;
+use crate::pump::envelope::refusal;
 use crate::pump::flow::advance::start::SENTINEL_NODE;
 use crate::pump::flow::budget_retry;
 use crate::pump::flow::collect_slice::runner_env_failure;
@@ -530,7 +531,10 @@ fn reply_of(
     let message = crate::pump::attempt_record::hand_message(&outcome.receipt);
     let slicer = match parse_reply(&message) {
         Ok(slicer) => slicer,
-        Err(error) => return fail(format!("unusable reply: {error}")),
+        Err(error) => {
+            let why = refusal::describe(job, &error);
+            return fail(format!("unusable reply: {why}"));
+        }
     };
     let wanted = if mode == Mode::Split {
         SlicerMode::Split
