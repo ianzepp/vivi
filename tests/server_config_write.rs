@@ -595,3 +595,63 @@ async fn a_key_that_is_not_the_operators_is_refused() {
     assert_eq!(lines[0]["tool"], "config_set");
     assert_eq!(lines[0]["outcome"], "refused");
 }
+
+#[tokio::test]
+async fn config_set_exercises_intake_arrays_and_rolls_back_bad_selectors() {
+    let fx = fixture("intake");
+    let key = fx.key_by(&fx.member, None);
+    let got = fx
+        .call(
+            &key,
+            "config_set",
+            json!({
+                "key": "pump.targets.web.intake",
+                "value": "[\"next\", \"release/2\"]"
+            }),
+        )
+        .await;
+    assert_eq!(got["kind"], "array");
+    let got = fx
+        .call(
+            &key,
+            "config_set",
+            json!({"key": "pump.targets.web.intake_rung", "value": "task"}),
+        )
+        .await;
+    assert_eq!(got["kind"], "string");
+    let text = fx.config_text();
+    assert!(
+        text.contains("intake = [\"next\", \"release/2\"]"),
+        "{text}"
+    );
+    assert!(text.contains("intake_rung = \"task\""), "{text}");
+
+    let before = fx.config_text();
+    for (config_key, value, expected) in [
+        ("pump.targets.web.intake_rung", "release", "rolled back"),
+        ("pump.targets.web.intake", "[\"main\"]", "target main"),
+        (
+            "pump.targets.web.intake",
+            "[\"origin/next:next\"]",
+            "branch name",
+        ),
+        ("pump.targets.web.intake", "[\"vivi/need/x\"]", "pump-owned"),
+    ] {
+        let message = fx
+            .refused(
+                &key,
+                "config_set",
+                json!({"key": config_key, "value": value}),
+            )
+            .await;
+        assert!(
+            message.contains(expected),
+            "{config_key}={value}: {message}"
+        );
+        assert_eq!(
+            fx.config_text(),
+            before,
+            "{config_key}={value} changed the config"
+        );
+    }
+}

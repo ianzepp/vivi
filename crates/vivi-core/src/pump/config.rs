@@ -357,6 +357,47 @@ impl PumpConfig {
     }
 }
 
+/// The rung an intake branch dispatches as. Serialized as `task`, `need` or
+/// `main`; `release` is never an intake rung.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum IntakeRung {
+    /// Intake opens a task.
+    Task,
+    /// Intake opens a need. This is the default.
+    #[default]
+    Need,
+    /// Intake lands work on the target main.
+    Main,
+}
+
+impl IntakeRung {
+    /// Whether this is the default rung, so a target does not write it back.
+    #[must_use]
+    pub fn is_default(&self) -> bool {
+        *self == Self::Need
+    }
+}
+
+/// One validated intake source: a branch on the target's configured remote.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IntakeSource {
+    /// The target's git remote name.
+    pub remote: String,
+    /// The branch on that remote. Never a URL, refspec or alternate remote.
+    pub branch: String,
+    /// The rung the branch's delivered work dispatches as.
+    pub rung: IntakeRung,
+}
+
+impl IntakeSource {
+    /// The canonical remote-tracking ref of this source.
+    #[must_use]
+    pub fn refname(&self) -> String {
+        format!("refs/heads/{}", self.branch)
+    }
+}
+
 /// Repository-specific integration settings. Pool capacity and provider
 /// configuration remain shared by every target in the mailspace.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -381,6 +422,13 @@ pub struct PumpTarget {
     /// workspace-level `[pump.rungs]` one.
     #[serde(skip_serializing_if = "RungsConfig::is_empty")]
     pub rungs: RungsConfig,
+    /// Branch names on this target's remote whose intake is enabled. Empty
+    /// disables intake. Target-only: there is no workspace-level key.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub intake: Vec<String>,
+    /// The rung an intake branch dispatches as. Defaults to `need`.
+    #[serde(default, skip_serializing_if = "IntakeRung::is_default")]
+    pub intake_rung: IntakeRung,
 }
 
 impl Default for PumpTarget {
@@ -394,7 +442,27 @@ impl Default for PumpTarget {
             integration_repo: None,
             merge: None,
             rungs: RungsConfig::default(),
+            intake: Vec::new(),
+            intake_rung: IntakeRung::default(),
         }
+    }
+}
+
+impl PumpTarget {
+    /// The canonical intake sources for this target: each configured branch
+    /// on this target's remote, with the target's intake rung. Validation
+    /// rejects an invalid, duplicate, main or pump-owned branch before intake
+    /// reads these.
+    #[must_use]
+    pub fn intake_sources(&self) -> Vec<IntakeSource> {
+        self.intake
+            .iter()
+            .map(|branch| IntakeSource {
+                remote: self.remote.clone(),
+                branch: branch.clone(),
+                rung: self.intake_rung,
+            })
+            .collect()
     }
 }
 

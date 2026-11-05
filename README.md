@@ -537,6 +537,20 @@ nothing and exit cleanly; the log lists the items. A fresh `pump.db` starts
 *stopped*: once the project is ready, run `vivi pump start` (the service starts
 it when the pump is registered there).
 
+A target may declare branches whose delivered work intake reads. `intake` is
+target-only; an empty list disables intake. Each entry is a branch name on that
+target's remote, never a URL, refspec or alternate remote. `intake_rung` is
+`task`, `need` (the default) or `main`; the target main and the pump-owned
+`vivi/` and `intake/` namespaces are refused.
+
+```toml
+[pump.targets.app]
+path = "app"
+main = "main"
+intake = ["next", "release/2"]
+intake_rung = "need"
+```
+
 `vivi config show`, `validate` and `migrate` inspect, validate and migrate
 routing. `vivi role pool` and `vivi role set` assign role settings.
 `vivi pool list`, `show`, `add`, `set`, `unset` and `remove` manage pools;

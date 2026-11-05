@@ -2,7 +2,7 @@
 
 use crate::mailspace::MailspaceConfig;
 use crate::pool::dispatch::BUDGET_RANGE;
-use crate::pump::config::{DispatchConfig, Kind, PumpConfig, PumpTarget, StepBudgets};
+use crate::pump::config::{DispatchConfig, IntakeRung, Kind, PumpConfig, PumpTarget, StepBudgets};
 use std::collections::BTreeMap;
 use std::path::Path;
 use vivi_error::VivariumError;
@@ -914,4 +914,120 @@ fn reply_to_prefers_the_board_setting_then_the_first_sender_then_the_operator() 
     assert_eq!(cfg.reply_to(), "ian");
     cfg.board.reply_to = Some("team".into());
     assert_eq!(cfg.reply_to(), "team");
+}
+
+#[test]
+fn intake_defaults_disabled() {
+    let cfg = pump(concat!(
+        "name = \"t\"\n",
+        "[pump]\n",
+        "[pump.targets.app]\n",
+        "path = \"app\"\n",
+    ));
+    let target = &cfg.targets["app"];
+    assert!(target.intake.is_empty());
+    assert!(target.intake_sources().is_empty());
+    assert!(cfg.target_configs()["app"].intake.is_empty());
+    let legacy = PumpConfig::default();
+    assert!(
+        legacy.target_configs()["default"].intake.is_empty(),
+        "the legacy default target must not implicitly enable intake"
+    );
+    let text = toml::to_string(&cfg.targets["app"]).expect("target serializes");
+    assert!(!text.contains("intake"), "{text}");
+}
+
+#[test]
+fn intake_rung_defaults_need() {
+    let cfg = pump(concat!(
+        "name = \"t\"\n",
+        "[pump]\n",
+        "[pump.targets.app]\n",
+        "path = \"app\"\n",
+    ));
+    assert_eq!(cfg.targets["app"].intake_rung, IntakeRung::Need);
+    assert!(cfg.targets["app"].intake_rung.is_default());
+    let text = toml::to_string(&cfg.targets["app"]).expect("target serializes");
+    assert!(!text.contains("intake_rung"), "{text}");
+}
+
+#[test]
+fn intake_rung_rejects_release() {
+    let err = toml::from_str::<PumpConfig>(concat!(
+        "[targets.app]\n",
+        "path = \"app\"\n",
+        "intake_rung = \"release\"\n",
+    ))
+    .expect_err("release is not an intake rung")
+    .to_string();
+    assert!(err.contains("release"), "{err}");
+    for (name, rung) in [
+        ("task", IntakeRung::Task),
+        ("need", IntakeRung::Need),
+        ("main", IntakeRung::Main),
+    ] {
+        let cfg: PumpConfig = toml::from_str(&format!(
+            "[targets.app]\npath = \"app\"\nintake_rung = \"{name}\"\n"
+        ))
+        .expect("the three intake rungs parse");
+        assert_eq!(cfg.targets["app"].intake_rung, rung);
+    }
+}
+
+#[test]
+fn intake_config_round_trips_array() {
+    let cfg: PumpConfig = toml::from_str(concat!(
+        "[targets.app]\n",
+        "path = \"app\"\n",
+        "intake = [\"next\", \"release/2\"]\n",
+        "intake_rung = \"task\"\n",
+    ))
+    .expect("pump config parses");
+    let target = &cfg.targets["app"];
+    assert_eq!(target.intake, ["next", "release/2"]);
+    let sources = target.intake_sources();
+    assert_eq!(sources.len(), 2);
+    assert_eq!(sources[0].remote, "origin");
+    assert_eq!(sources[0].branch, "next");
+    assert_eq!(sources[0].rung, IntakeRung::Task);
+    assert_eq!(sources[0].refname(), "refs/heads/next");
+    let text = toml::to_string(&cfg).expect("pump config serializes");
+    assert!(
+        text.contains("intake = [\"next\", \"release/2\"]"),
+        "{text}"
+    );
+    assert!(text.contains("intake_rung = \"task\""), "{text}");
+    let again: PumpConfig = toml::from_str(&text).expect("serialized config parses");
+    assert_eq!(again.targets["app"].intake, target.intake);
+    assert_eq!(again.targets["app"].intake_rung, IntakeRung::Task);
+}
+
+#[test]
+fn intake_config_inherits_and_overrides() {
+    let cfg: PumpConfig = toml::from_str(concat!(
+        "[rungs]\n",
+        "task = \"workspace task\"\n",
+        "need = \"workspace need\"\n",
+        "pools = [\"p\"]\n",
+        "[targets.app]\n",
+        "path = \"app\"\n",
+        "intake = [\"next\"]\n",
+        "[targets.app.rungs]\n",
+        "need = \"target need\"\n",
+        "timeout = 90\n",
+        "pools = [\"p\"]\n",
+    ))
+    .expect("pump config parses");
+    let effective = cfg.effective_rungs(Some("app"));
+    assert_eq!(effective.task.as_deref(), Some("workspace task"));
+    assert_eq!(effective.need.as_deref(), Some("target need"));
+    assert_eq!(effective.timeout, Some(90));
+    assert_eq!(effective.pools, ["p"]);
+    let targets = cfg.target_configs();
+    assert_eq!(targets.keys().collect::<Vec<_>>(), ["app"]);
+    assert_eq!(targets["app"].intake, ["next"]);
+    assert!(
+        targets["app"].rungs.task.is_none(),
+        "the target keeps its own override while inheriting the rest"
+    );
 }

@@ -304,8 +304,94 @@ fn validate_target(id: &str, target: &PumpTarget, found: &mut Findings) {
     if target.github_repo.as_deref().is_some_and(str::is_empty) {
         found.invalid(format!("{prefix} github_repo must not be empty when set"));
     }
+    validate_target_intake(id, target, found);
     let merge = target.merge.as_ref();
     validate_target_merge(id, merge, found);
+}
+
+/// Intake entries are branch names on the target's configured remote. They
+/// must be valid branch names, unique, distinct from the target main, and
+/// outside the pump-owned `vivi/` and `intake/` scratch namespaces. Validation
+/// is pure: it runs before any intake code builds a shell command.
+fn validate_target_intake(id: &str, target: &PumpTarget, found: &mut Findings) {
+    let prefix = format!("[pump.targets.{id}] intake");
+    let mut seen = BTreeSet::new();
+    for branch in &target.intake {
+        if !valid_intake_branch(branch) {
+            found.invalid(format!(
+                "{prefix} `{branch}` must be a branch name on the target remote, \
+                 not a URL, refspec or alternate remote"
+            ));
+            continue;
+        }
+        if branch == &target.main {
+            found.invalid(format!(
+                "{prefix} must not name the target main `{}`",
+                target.main
+            ));
+            continue;
+        }
+        if pump_owned_branch(branch) {
+            found.invalid(format!(
+                "{prefix} must not name the pump-owned branch `{branch}`"
+            ));
+            continue;
+        }
+        if !seen.insert(branch) {
+            found.invalid(format!("{prefix} lists `{branch}` more than once"));
+        }
+    }
+}
+
+/// Whether `branch` is a syntactically valid git branch name, without invoking
+/// git: no URL scheme, refspec separator, whitespace, control character or
+/// other character git refuses in a ref.
+fn valid_intake_branch(branch: &str) -> bool {
+    if branch.is_empty() || branch == "HEAD" || branch == "@" {
+        return false;
+    }
+    if branch.starts_with('-') || branch.starts_with("refs/") {
+        return false;
+    }
+    if branch.starts_with('/')
+        || branch.ends_with('/')
+        || branch.starts_with('.')
+        || branch.ends_with('.')
+        || branch.ends_with(".lock")
+    {
+        return false;
+    }
+    if branch.contains("..")
+        || branch.contains("//")
+        || branch.contains("@{")
+        || branch.contains(':')
+    {
+        return false;
+    }
+    if branch.bytes().any(|byte| {
+        byte < 0x20
+            || byte == 0x7f
+            || byte == b' '
+            || matches!(byte, b'~' | b'^' | b'?' | b'*' | b'[' | b'\\')
+    }) {
+        return false;
+    }
+    branch.split('/').all(|part| {
+        !part.is_empty()
+            && !part.starts_with('.')
+            && !part.ends_with(".lock")
+            && !part.ends_with('.')
+    })
+}
+
+/// The branch namespaces the pump creates and deletes itself.
+fn pump_owned_branch(branch: &str) -> bool {
+    ["vivi", "intake"].iter().any(|prefix| {
+        branch == *prefix
+            || branch
+                .strip_prefix(prefix)
+                .is_some_and(|rest| rest.starts_with('/'))
+    })
 }
 
 fn validate_target_merge(id: &str, merge: Option<&MergeConfig>, found: &mut Findings) {

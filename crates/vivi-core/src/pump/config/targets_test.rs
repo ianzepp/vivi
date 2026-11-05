@@ -7,6 +7,7 @@ use tempfile::{TempDir, tempdir};
 
 use super::{TargetSpec, add, list, remove, split_pair};
 use crate::mailspace::Mailspace;
+use crate::pump::config::{PumpConfig, PumpTarget};
 
 fn project() -> (TempDir, PathBuf) {
     let tmp = tempdir().unwrap();
@@ -141,4 +142,67 @@ fn split_pair_splits_on_the_first_equals() {
     let err = split_pair("task", "rung").unwrap_err().to_string();
     assert!(err.contains("--rung wants NAME=VALUE"), "{err}");
     assert!(split_pair("=x", "rung").is_err());
+}
+
+fn intake_config(intake: &[&str]) -> PumpConfig {
+    let mut cfg = PumpConfig {
+        committer_name: String::from("Test"),
+        committer_email: String::from("test@example.com"),
+        ..PumpConfig::default()
+    };
+    cfg.targets.insert(
+        String::from("app"),
+        PumpTarget {
+            path: String::from("app"),
+            intake: intake.iter().map(|branch| (*branch).to_owned()).collect(),
+            ..PumpTarget::default()
+        },
+    );
+    cfg
+}
+
+fn intake_errors(cfg: &PumpConfig) -> Vec<String> {
+    cfg.findings_for(Path::new("."), &[])
+        .errors
+        .into_iter()
+        .filter(|message| message.contains("[pump.targets.app] intake"))
+        .collect()
+}
+
+#[test]
+fn intake_rejects_self_and_invalid_refs() {
+    let errors = intake_errors(&intake_config(&["main"]));
+    assert!(
+        errors
+            .iter()
+            .any(|message| message.contains("target main `main`")),
+        "{errors:?}"
+    );
+    for bad in [
+        "https://example.test/app.git",
+        "origin/next:next",
+        "refs/heads/next",
+        "-next",
+        "@",
+        "../next",
+        "bad..name",
+        "next.lock",
+        "vivi/need/x",
+        "intake/scratch",
+        "HEAD",
+    ] {
+        let errors = intake_errors(&intake_config(&[bad]));
+        assert!(!errors.is_empty(), "`{bad}` must be refused");
+    }
+    let errors = intake_errors(&intake_config(&["next", "next"]));
+    assert!(
+        errors
+            .iter()
+            .any(|message| message.contains("more than once")),
+        "{errors:?}"
+    );
+    assert!(
+        intake_errors(&intake_config(&["next", "release/2"])).is_empty(),
+        "valid branch names on the target remote are accepted"
+    );
 }

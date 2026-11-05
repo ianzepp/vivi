@@ -985,3 +985,82 @@ fn config_set_is_refused_only_while_the_pump_is_running() {
     assert_eq!(fs::read(config_file(&dir)).unwrap(), before);
     drop(lock);
 }
+
+#[test]
+fn config_set_writes_an_intake_array_and_selector() {
+    let dir = init_project();
+    let root = dir.path().to_str().unwrap();
+    assert_success(&vivi(&[
+        "config",
+        "set",
+        "pump.targets.app.path",
+        "app",
+        "--project",
+        root,
+    ]));
+    let array = vivi(&[
+        "config",
+        "set",
+        "pump.targets.app.intake",
+        "[\"next\", \"release/2\"]",
+        "--project",
+        root,
+    ]);
+    assert_success(&array);
+    assert!(stdout(&array).contains("(array)"), "{}", stdout(&array));
+    let selector = vivi(&[
+        "config",
+        "set",
+        "pump.targets.app.intake_rung",
+        "task",
+        "--project",
+        root,
+    ]);
+    assert_success(&selector);
+    assert!(
+        stdout(&selector).contains("(string)"),
+        "{}",
+        stdout(&selector)
+    );
+    let text = fs::read_to_string(config_file(&dir)).unwrap();
+    assert!(
+        text.contains("intake = [\"next\", \"release/2\"]"),
+        "{text}"
+    );
+    assert!(text.contains("intake_rung = \"task\""), "{text}");
+}
+
+#[test]
+fn config_set_rolls_back_invalid_intake_selectors_and_branches() {
+    let dir = init_project();
+    let root = dir.path().to_str().unwrap();
+    assert_success(&vivi(&[
+        "config",
+        "set",
+        "pump.targets.app.intake",
+        "[\"next\"]",
+        "--project",
+        root,
+    ]));
+    let before = fs::read(config_file(&dir)).unwrap();
+    for (key, value, expected) in [
+        ("pump.targets.app.intake_rung", "release", "rolled back"),
+        ("pump.targets.app.intake", "[\"main\"]", "target main"),
+        (
+            "pump.targets.app.intake",
+            "[\"origin/next:next\"]",
+            "branch name",
+        ),
+        ("pump.targets.app.intake", "[\"vivi/need/x\"]", "pump-owned"),
+    ] {
+        let out = vivi(&["config", "set", key, value, "--project", root]);
+        assert!(!out.status.success(), "{key}={value}: {}", stdout(&out));
+        let err = stderr(&out);
+        assert!(err.contains(expected), "{key}={value}: {err}");
+        assert_eq!(
+            fs::read(config_file(&dir)).unwrap(),
+            before,
+            "{key}={value} changed the file"
+        );
+    }
+}

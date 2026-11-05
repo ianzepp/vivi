@@ -113,3 +113,47 @@ fn set_key_writes_typed_value() {
     assert!(out.write.backup.is_some());
     assert!(out.write.still.is_empty(), "{:?}", out.write.still);
 }
+
+#[test]
+fn intake_array_and_selector_are_typed_and_bad_branches_roll_back() {
+    let tmp = tempdir().unwrap();
+    Mailspace::init_with_defaults(Some(tmp.path())).unwrap();
+    let config = tmp.path().join(".vivi/mailspace.toml");
+    set_key(tmp.path(), "pump.targets.app.path", "app").unwrap();
+    let array = set_key(
+        tmp.path(),
+        "pump.targets.app.intake",
+        "[\"next\", \"release/2\"]",
+    )
+    .unwrap();
+    assert_eq!(array.kind, "array");
+    let selector = set_key(tmp.path(), "pump.targets.app.intake_rung", "task").unwrap();
+    assert_eq!(selector.kind, "string");
+    let text = fs::read_to_string(&config).unwrap();
+    assert!(
+        text.contains("intake = [\"next\", \"release/2\"]"),
+        "{text}"
+    );
+    assert!(text.contains("intake_rung = \"task\""), "{text}");
+
+    let before = fs::read(&config).unwrap();
+    let err = set_key(tmp.path(), "pump.targets.app.intake_rung", "release")
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("rolled back"), "{err}");
+    assert_eq!(fs::read(&config).unwrap(), before);
+    let err = set_key(tmp.path(), "pump.targets.app.intake", "[\"main\"]")
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("target main"), "{err}");
+    assert_eq!(fs::read(&config).unwrap(), before);
+    let err = set_key(
+        tmp.path(),
+        "pump.targets.app.intake",
+        "[\"origin/next:next\"]",
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("branch name"), "{err}");
+    assert_eq!(fs::read(&config).unwrap(), before);
+}
