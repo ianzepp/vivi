@@ -305,6 +305,107 @@ async fn the_tools_are_listed_with_their_arguments() {
 }
 
 #[tokio::test]
+async fn intake_config_round_trip() {
+    let fx = fixture("intake-round-trip");
+    let key = fx.key_by(&fx.member, None);
+    let original = fx.config_text();
+
+    let branches = fx
+        .call(
+            &key,
+            "config_set",
+            json!({"key": "pump.targets.web.intake", "value": r#"["peer/main", "release"]"#}),
+        )
+        .await;
+    assert_eq!(branches["key"], "pump.targets.web.intake");
+    let rung = fx
+        .call(
+            &key,
+            "config_set",
+            json!({"key": "pump.targets.web.intake_rung", "value": "task"}),
+        )
+        .await;
+    assert_eq!(rung["key"], "pump.targets.web.intake_rung");
+
+    let isolated = fx
+        .call(
+            &key,
+            "config_set",
+            json!({"key": "pump.targets.api.intake", "value": r#"["api-only"]"#}),
+        )
+        .await;
+    assert_eq!(isolated["key"], "pump.targets.api.intake");
+
+    let ms = Mailspace::open_root(fx.root.clone()).unwrap();
+    let pump = ms.config.pump.unwrap();
+    let targets = pump.target_configs();
+    assert_eq!(targets["web"].intake, ["peer/main", "release"]);
+    assert_eq!(targets["web"].intake_rung, "task");
+    assert_eq!(targets["api"].intake, ["api-only"]);
+    assert_eq!(targets["api"].intake_rung, "need");
+    assert!(!fx.config_text().is_empty());
+    assert_ne!(fx.config_text(), original);
+    assert!(
+        !backup_names(&fx.root).is_empty(),
+        "config edits keep backups"
+    );
+}
+
+#[tokio::test]
+async fn intake_invalid_branch() {
+    let fx = fixture("intake-invalid-branch");
+    let key = fx.key_by(&fx.member, None);
+    let before = fx.config_text();
+    let error = fx
+        .refused(
+            &key,
+            "config_set",
+            json!({"key": "pump.targets.web.intake", "value": r#"["release", "release"]"#}),
+        )
+        .await;
+    assert!(!error.is_empty());
+    assert_eq!(fx.config_text(), before);
+}
+
+#[tokio::test]
+async fn intake_invalid_rung() {
+    let fx = fixture("intake-invalid-rung");
+    let key = fx.key_by(&fx.member, None);
+    let before = fx.config_text();
+    let error = fx
+        .refused(
+            &key,
+            "config_set",
+            json!({"key": "pump.targets.web.intake_rung", "value": "release"}),
+        )
+        .await;
+    assert!(!error.is_empty());
+    assert_eq!(fx.config_text(), before);
+}
+
+#[tokio::test]
+async fn intake_config_set_is_refused_while_pump_runs() {
+    let fx = fixture("intake-running");
+    let key = fx.key_by(&fx.member, None);
+    let before = fx.config_text();
+    vivi_core::pump::control::set_project_mode(
+        &fx.root,
+        vivi_core::pump::control::PumpMode::Running,
+    )
+    .unwrap();
+    let _lock = hold_pump_lock(&fx.root);
+    let error = fx
+        .refused(
+            &key,
+            "config_set",
+            json!({"key": "pump.targets.web.intake", "value": r#"["release"]"#}),
+        )
+        .await;
+    assert!(error.contains("the pump is running"), "{error}");
+    assert_eq!(fx.config_text(), before);
+}
+
+#[tokio::test]
 async fn config_set_and_unset_match_the_library() {
     let fx = fixture("set");
     let key = fx.key_by(&fx.member, None);
