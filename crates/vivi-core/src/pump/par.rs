@@ -19,7 +19,10 @@ where
     T: Sync,
     R: Send,
 {
-    let run = |item: &T| catch_unwind(AssertUnwindSafe(|| work(item))).ok();
+    let run = |item: &T| match catch_unwind(AssertUnwindSafe(|| work(item))) {
+        Ok(value) => Some(value),
+        Err(_) => None,
+    };
     let workers = limit.max(1).min(items.len());
     if workers <= 1 {
         return items.iter().map(run).collect();

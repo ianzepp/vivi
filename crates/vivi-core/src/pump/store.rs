@@ -25,6 +25,7 @@ mod main_state;
 mod need_branch;
 mod priority;
 mod schema;
+mod slice_provenance;
 mod snapshot;
 mod state_rows;
 pub mod step_payload;
@@ -561,6 +562,7 @@ fn ensure_schema(conn: &Connection) -> Result<(), VivariumError> {
     flow_links::ensure_tables(conn)?;
     step_payload::ensure_table(conn)?;
     job_release::ensure_table(conn)?;
+    slice_provenance::ensure_table(conn)?;
     if version > 0 && version < SCHEMA_VERSION {
         migrate_older_schema(conn)?;
     }
