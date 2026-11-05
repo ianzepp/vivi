@@ -8,10 +8,13 @@
 //! `Mailspace::add_role` in `config_edit::guard_file`, and then adopts
 //! the letters held under the new name, as the CLI does.
 //! `role_set` mirrors `vivi role set`'s configuration fields — the set
-//! and clear forms of kind, harness, provider, model, thinking, cadence,
-//! pool, read-only and models, plus status, labels and clear_labels — and
-//! needs at least one of them, as the CLI does. The CLI's `--pid` and
-//! `--host` are a live seat's runtime binding, the one `role set` write
+//! and clear forms of kind, harness, provider, model, command, target,
+//! thinking, cadence, pool, read-only and models, plus status, labels and
+//! clear_labels — and needs at least one of them, as the CLI does.
+//! `command` is the one field whose text is not trimmed: the supplied shell
+//! text is kept verbatim and the library's own blank/NUL validation refuses
+//! it, rather than a blank command being silently read as absent. The CLI's
+//! `--pid` and `--host` are a live seat's runtime binding, the one `role set` write
 //! that is not a guarded config write, and are not exposed here: every
 //! server role write is a config write, refused while the pump runs.
 //! `charter_set` replaces one role's charter body through
@@ -118,6 +121,8 @@ fn add_update(ms: &Mailspace, name: &str, arguments: &Value) -> Result<RoleUpdat
         harness: set("harness")?,
         provider: set("provider")?,
         model: set("model")?,
+        command: opt_command(arguments, "command")?.map(|text| Some(text.to_owned())),
+        target: set("target")?,
         thinking: set("thinking")?,
         cadence: set("cadence")?,
         add_labels: string_list(arguments, "labels")?,
@@ -156,12 +161,14 @@ fn set_update(arguments: &Value) -> Result<RoleUpdate, ToolError> {
         (&mut update.harness, "harness"),
         (&mut update.provider, "provider"),
         (&mut update.model, "model"),
+        (&mut update.target, "target"),
         (&mut update.thinking, "thinking"),
         (&mut update.cadence, "cadence"),
         (&mut update.pool, "pool"),
     ] {
         optional_field(slot, arguments, field)?;
     }
+    command_field(&mut update.command, arguments)?;
     if flag(arguments, "clear_read_only")? {
         update.read_only = Some(None);
     } else if let Some(value) = opt_bool(arguments, "read_only")? {
@@ -205,6 +212,8 @@ fn update_has_fields(update: &RoleUpdate) -> bool {
         || update.harness.is_some()
         || update.provider.is_some()
         || update.model.is_some()
+        || update.command.is_some()
+        || update.target.is_some()
         || update.thinking.is_some()
         || update.cadence.is_some()
         || update.pool.is_some()
@@ -212,6 +221,30 @@ fn update_has_fields(update: &RoleUpdate) -> bool {
         || update.models.is_some()
         || !update.add_labels.is_empty()
         || !update.clear_labels.is_empty()
+}
+
+/// The command as supplied, exactly: unlike [`opt_str`], the shell text is
+/// not trimmed and a blank value is not dropped, so the library's own
+/// validation refuses an empty or NUL-bearing command instead of this reader
+/// silently reading it as absent. A non-string is still refused here.
+fn opt_command<'a>(arguments: &'a Value, name: &str) -> Result<Option<&'a str>, ToolError> {
+    match arguments.get(name) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(text)) => Ok(Some(text.as_str())),
+        Some(_) => Err(ToolError::new(format!("{name} must be a string"))),
+    }
+}
+
+/// The command's set/clear pair: `clear_command` empties the field, else
+/// `command` sets it. Clear wins over set.
+#[allow(clippy::option_option)]
+fn command_field(slot: &mut Option<Option<String>>, arguments: &Value) -> Result<(), ToolError> {
+    if flag(arguments, "clear_command")? {
+        *slot = Some(None);
+    } else if let Some(text) = opt_command(arguments, "command")? {
+        *slot = Some(Some(text.to_owned()));
+    }
+    Ok(())
 }
 
 fn opt_bool(arguments: &Value, name: &str) -> Result<Option<bool>, ToolError> {
