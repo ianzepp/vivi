@@ -620,6 +620,30 @@ async fn a_requested_priority_lands_at_the_configured_home_and_zero_clears() {
 /// the lowest message id, which is the key the priority row is written
 /// under — not necessarily the first delivered copy handle in the response.
 #[tokio::test]
+async fn unaddressed_dispatch_files_record_and_priority() {
+    let fx = fixture("unaddressed-dispatch", true);
+    let operator = fx.key_by(&fx.member, Some("operator"));
+    let sent = fx
+        .call(
+            &operator,
+            "send",
+            Fx::need_arguments(json!({"dispatch": true, "priority": 9, "to": []})),
+        )
+        .await;
+    assert_eq!(sent["priority"], 9, "{sent}");
+    assert_eq!(sent["delivered"], json!([]), "{sent}");
+    let need = sent["handle"].as_str().unwrap();
+    let pump_need = sent["pump"]["need"].as_str().unwrap();
+    assert_eq!(pump_need, need);
+    let open = fx.records(Some(PumpState::Open));
+    assert_eq!(open.len(), 1, "{open:?}");
+    assert_eq!(open[0].need, need);
+    assert!(open[0].to.starts_with("mind@"));
+    let home = fx.root.join(PUMP_HOME);
+    assert_eq!(priority::list(&home).unwrap()[0].0, need);
+}
+
+#[tokio::test]
 async fn dispatch_priority_uses_the_canonical_need_and_configured_home() {
     let fx = fixture("canonical-home", true);
     let operator = fx.key_by(&fx.member, Some("operator"));

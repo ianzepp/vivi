@@ -478,13 +478,13 @@ fn write_send_marks(
 /// Chain a just-filed need into a pump record (`need send --dispatch`).
 ///
 /// This post-filing shortcut requires the pump configuration: the configured
-/// `reply_from` must resolve to a role of this mailspace, and that role must
-/// have received a delivered copy of the need — by name, alias, local
-/// address or Cc. The pump sender and body keep their `vivi pump send`
-/// defaults, and the duplicate and actionable checks stay with `pump_send`.
-/// After the minted record prints its receipt, `priority` is written to the
-/// configured pump home under the record's own need; a failed priority write
-/// leaves the filed need and the open record untouched.
+/// `reply_from` must resolve to a role of this mailspace. The pump need not
+/// have received the filed need; `pump_send` files the record against the
+/// sender's canonical sent handle. The pump sender and body keep their
+/// `vivi pump send` defaults, and the duplicate and actionable checks stay
+/// with `pump_send`. After the minted record prints its receipt, `priority`
+/// is written to the configured pump home under the record's own need; a
+/// failed priority write leaves the filed need and the open record untouched.
 fn dispatch_filed_need(
     mailspace: &Mailspace,
     result: &DeliveryResult,
@@ -504,16 +504,7 @@ fn dispatch_filed_need_checked(
             "no [pump] table in .vivi/mailspace.toml; --dispatch needs a configured pump",
         ))
     })?;
-    let reply_from = mailspace.resolve_identity(&pump.reply_from)?;
-    if !result
-        .delivered
-        .iter()
-        .any(|copy| copy.identity == reply_from)
-    {
-        return Err(VivariumError::Message(format!(
-            "no delivered copy of the filed need for {reply_from}; the dispatch pump must be a recipient"
-        )));
-    }
+    let _reply_from = mailspace.resolve_identity(&pump.reply_from)?;
     let record = mailspace.pump_send(None, &result.sent, None)?;
     println!("pump record {} for need {}", record.handle, record.need);
     apply_dispatch_priority(&pump.home_dir(&mailspace.root), &record, priority)?;
