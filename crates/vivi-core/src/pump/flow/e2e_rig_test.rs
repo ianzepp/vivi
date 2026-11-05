@@ -17,12 +17,17 @@ use crate::pump::flow::advance::start::start;
 use crate::pump::flow::handlers::{Registry, shipped};
 use crate::pump::flow::index::{RunRow, StepRow};
 use crate::pump::flow::mail::{MailReader, MailWriter, MailspacePort, NeedStatus};
+use crate::pump::flow::main_rung::{PAYLOAD_KEY, STARTED, TASK, TESTED, key};
 use crate::pump::flow::tick::tick_with;
 use crate::pump::host::Ctx;
-use crate::pump::jobs::{JobOutcome, JobStatus, JobStore, PoolJob};
+use crate::pump::jobs::{JobOutcome, JobStatus, JobStore, PoolJob, rung};
 use crate::pump::store::{DB_FILENAME, PumpStore};
 use crate::routing::RoutedRole;
 use vivi_error::VivariumError;
+use vivi_mail::letter::read::record_of;
+use vivi_mail::letter::records::RecordKind;
+use vivi_mail::letter::work::TaskFront;
+use vivi_mail::letter::{fixture, render};
 
 type R = Result<(), VivariumError>;
 
@@ -61,6 +66,9 @@ pub(crate) struct Rig {
     pub need: String,
 }
 
+/// The main rung target both rigs report on.
+const TARGET: &str = "default";
+
 fn routed(name: &str, kind: &str) -> RoutedRole {
     RoutedRole {
         name: name.into(),
@@ -73,6 +81,27 @@ fn routed(name: &str, kind: &str) -> RoutedRole {
     }
 }
 
+/// The shared machinery of both rigs: a real mailspace project under `cfg`,
+/// its routed context (`researcher` and `repairer` besides the fixture's
+/// planner), an open store and a port onto the project's mailspace. No record
+/// is opened and no run is started here.
+fn assembly(cfg: PumpConfig) -> Result<(Project, Ctx, PumpStore, MailspacePort), VivariumError> {
+    let project = project();
+    let mut ctx = project.pump_ctx();
+    ctx.cfg = Arc::new(cfg);
+    assert_eq!(ctx.cfg.reply_from, PUMP, "the rig speaks as the pump");
+    let mut routing = (*ctx.routing).clone();
+    routing.roles.push(routed("researcher", "researcher"));
+    routing.roles.push(routed("repairer", "repairer"));
+    ctx = ctx.with_routing(routing);
+    let store = PumpStore::open(&ctx.home.join(DB_FILENAME))?;
+    let port = MailspacePort {
+        mailspace: crate::pump::record::PumpMailspace::new(project.mailspace.clone()),
+        pump_identity: PUMP.into(),
+    };
+    Ok((project, ctx, store, port))
+}
+
 /// A rig under `cfg`: a need sent to the pump identity, its pump record
 /// opened with `record_body` (a record letter without `need`, for example
 /// front matter with `kind = "repair"`, `target` and `tested`), and a run
@@ -82,24 +111,12 @@ fn routed(name: &str, kind: &str) -> RoutedRole {
 /// # Errors
 /// Returns a [`VivariumError`] when the record or the run cannot be opened.
 pub(crate) fn rig(cfg: PumpConfig, record_body: &str, entry: &str) -> Result<Rig, VivariumError> {
-    let project = project();
+    let (project, ctx, store, mut port) = assembly(cfg)?;
     let need = project.need("a need for the end to end rig");
-    let mut ctx = project.pump_ctx();
-    ctx.cfg = Arc::new(cfg);
-    assert_eq!(ctx.cfg.reply_from, PUMP, "the rig speaks as the pump");
-    let mut routing = (*ctx.routing).clone();
-    routing.roles.push(routed("researcher", "researcher"));
-    routing.roles.push(routed("repairer", "repairer"));
-    ctx = ctx.with_routing(routing);
-    let store = PumpStore::open(&ctx.home.join(DB_FILENAME))?;
-    let mut port = MailspacePort {
-        mailspace: crate::pump::record::PumpMailspace::new(project.mailspace.clone()),
-        pump_identity: PUMP.into(),
-    };
     MailWriter::open_record(
         &mut port,
         &need,
-        &vivi_mail::letter::fixture::record_with_need(record_body, &need),
+        &fixture::record_with_need(record_body, &need),
     )?;
     start(&ctx, &store, &mut port, &need, Some(entry))?;
     let registry = shipped::<Jobs, MailspacePort>(&ctx);
@@ -112,6 +129,98 @@ pub(crate) fn rig(cfg: PumpConfig, record_body: &str, entry: &str) -> Result<Rig
         registry,
         need,
     })
+}
+
+/// A rig whose main rung went red and filed its repair need: the same real
+/// mailspace, routed context, store and shipped registry as [`rig`], with one
+/// saved main rung job carrying `receipt` already in the job table. The job
+/// remembers the original command and target, the tested `tested` tip, its
+/// own durable id and the target's long-lived task. One tick applies it
+/// through the normal main rung phase, so the repair need is sent, its record
+/// is opened and its prose is the red filing's own report. The rig returns
+/// before `fix1` is queued: its `need` is the filed repair need, and the
+/// started and tested state keeps an unrelated main rung from being
+/// scheduled. The main source job stays in [`Rig::jobs`].
+///
+/// The fixture host answers the `need send` transport with a real need it
+/// created up front; everything the record says about the failure comes from
+/// the filing code.
+///
+/// # Errors
+/// Returns a [`VivariumError`] when the mailspace, the saved job or the tick
+/// fails, or when `cfg` configures no main rung for the target.
+pub(crate) fn filed_repair_rig(
+    cfg: PumpConfig,
+    tested: &str,
+    receipt: &str,
+) -> Result<Rig, VivariumError> {
+    let (project, ctx, store, mut port) = assembly(cfg)?;
+    let filed = project.need(&format!("pump: main rung red on {TARGET} at {tested}"));
+    project
+        .host
+        .reply("need send", 0, &format!("created need {filed}\n"));
+    let task = main_task(&port)?;
+    let job = red_job(&ctx, &task, tested, receipt)?;
+    store.set_main_state(&key(TASK, TARGET), &task)?;
+    store.set_main_state(&key(STARTED, TARGET), &ctx.now().to_string())?;
+    store.set_main_state(&key(TESTED, TARGET), tested)?;
+    let registry = shipped::<Jobs, MailspacePort>(&ctx);
+    let mut jobs = Jobs::default();
+    jobs.jobs.insert(job.id.clone(), job);
+    let mut rig = Rig {
+        project,
+        ctx,
+        store,
+        port,
+        jobs,
+        registry,
+        need: filed,
+    };
+    rig.tick()?;
+    Ok(rig)
+}
+
+/// The target's main rung task, sent the way the schedule sends it: pump to
+/// pump, a task letter with its own work front.
+fn main_task(port: &MailspacePort) -> Result<String, VivariumError> {
+    let body = render(
+        &TaskFront::default(),
+        &format!("pump main rung on {TARGET}"),
+    )
+    .map_err(|e| VivariumError::Message(e.to_string()))?;
+    port.send_step(
+        PUMP,
+        PUMP,
+        &format!("pump: main rung on {TARGET}"),
+        &body,
+        &[],
+    )
+}
+
+/// The saved main rung job of a red run: the rung job of a `main` rung at
+/// `tested` (durable id, exact command, target and start ref, dispatch task),
+/// finished with `receipt` and not yet applied.
+fn red_job(ctx: &Ctx, task: &str, tested: &str, receipt: &str) -> Result<PoolJob, VivariumError> {
+    let short: String = tested.chars().take(12).collect();
+    let step_task = format!("main-{TARGET}-{short}");
+    let mut spec = rung::spec(ctx, TARGET, "main", tested, &step_task, 1).ok_or_else(|| {
+        VivariumError::Config(format!(
+            "filed repair rig: expected a main rung command for target {TARGET}; actual: not configured"
+        ))
+    })?;
+    spec.task = Some(task.to_owned());
+    if let Some(payload) = spec.payload.as_object_mut() {
+        payload.insert(PAYLOAD_KEY.to_owned(), serde_json::json!(TARGET));
+    }
+    let mut job = PoolJob::from(spec);
+    job.status = JobStatus::Finished;
+    job.outcome = Some(JobOutcome {
+        state: String::from("finished"),
+        detail: String::new(),
+        receipt: receipt.to_owned(),
+        at: ctx.now(),
+    });
+    Ok(job)
 }
 
 impl Rig {
@@ -296,6 +405,97 @@ pub(crate) fn env_receipt(tool: &str) -> String {
          --- receipt\n\n\n--- stderr tail\nbash: {tool}: command not found\n\n\
          --- runner log tail\nlog line"
     )
+}
+
+/// A main rung receipt: an early size-check error above passing noise and one
+/// failing test, so a tail-only report would lose the error.
+const RED_RECEIPT: &str = "error: src/pump/flow/main_rung/red.rs has 1004 lines, over the 1000-line ceiling\n\
+    Running unittests src/lib.rs (target/debug/deps/vivi_core-1a2b3c4d5e)\n\
+test pump::flow::passes ... ok\n\
+test pump::flow::breaks ... FAILED\n\
+agent exit 101 in 9s\n";
+
+/// The tip the saved main rung job ran at.
+const TESTED_TIP: &str = "abcdef0123456789";
+/// A newer main tip a caller sets once the record is filed.
+const NEWER_TIP: &str = "fedcba9876543210";
+/// The canonical failing id the receipt's failing line names.
+const FAILING_ID: &str = "vivi_core::pump::flow::breaks";
+
+/// The ids of the jobs the rig holds, oldest first.
+fn seeded_job(rig: &Rig) -> Result<PoolJob, VivariumError> {
+    rig.jobs
+        .jobs
+        .values()
+        .find(|job| job.kind == "rung")
+        .cloned()
+        .ok_or_else(|| VivariumError::Message("the rig kept no main rung job".into()))
+}
+
+/// The texts a filed record and its fix1 brief must both carry: the saved
+/// job's provenance and the early evidence a tail-only report would lose.
+fn filed_texts(source: &str) -> Vec<String> {
+    vec![
+        String::from("command: cargo test --quiet"),
+        String::from("target: default"),
+        format!("tested: {TESTED_TIP}"),
+        format!("source job: {source}"),
+        String::from("has 1004 lines"),
+        String::from(FAILING_ID),
+    ]
+}
+
+#[test]
+fn a_filed_repair_record_carries_saved_provenance_into_the_fix1_brief() -> R {
+    let cfg = PumpConfig {
+        rungs: crate::pump::config::RungsConfig {
+            main: Some(String::from("cargo test --quiet")),
+            ..crate::pump::config::RungsConfig::default()
+        },
+        ..PumpConfig::default()
+    };
+    let mut rig = filed_repair_rig(cfg, TESTED_TIP, RED_RECEIPT)?;
+    let source = seeded_job(&rig)?.id;
+    let record = rig
+        .port
+        .open_record(&rig.need)?
+        .map(|(_handle, body)| body)
+        .ok_or_else(|| VivariumError::Message("the rig filed no record".into()))?;
+    let front = record_of("", &record)
+        .map_err(|e| VivariumError::Message(format!("bad filed record: {e}")))?
+        .front;
+    assert_eq!(front.kind, Some(RecordKind::Repair));
+    assert_eq!(front.target.as_deref(), Some("default"));
+    assert_eq!(front.tested.as_deref(), Some(TESTED_TIP));
+    for text in filed_texts(&source) {
+        assert!(record.contains(&text), "record missing {text:?}: {record}");
+    }
+    assert!(
+        rig.open_job("fix1").is_none(),
+        "the fixture returns before fix1 is queued"
+    );
+    rig.git("main", NEWER_TIP);
+    rig.tick_until("fix1 job", |rig| rig.open_job("fix1").is_some())?;
+    let job = rig
+        .open_job("fix1")
+        .ok_or_else(|| VivariumError::Message("no open fix1 job".into()))?;
+    for text in filed_texts(&source) {
+        assert!(
+            job.body.contains(&text),
+            "brief missing {text:?}: {}",
+            job.body
+        );
+    }
+    assert!(job.body.contains(&format!("Current main tip: {NEWER_TIP}")));
+    let (_, record) = rig
+        .port
+        .open_record(&rig.need)?
+        .ok_or_else(|| VivariumError::Message("the record closed early".into()))?;
+    let front = record_of("", &record)
+        .map_err(|e| VivariumError::Message(format!("bad filed record: {e}")))?
+        .front;
+    assert_eq!(front.tested.as_deref(), Some(TESTED_TIP));
+    Ok(())
 }
 
 #[test]
