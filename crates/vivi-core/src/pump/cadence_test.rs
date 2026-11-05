@@ -158,6 +158,8 @@ fn head_role(name: &str) -> RoleView {
         harness: None,
         provider: None,
         model: None,
+        command: None,
+        target: None,
         thinking: None,
         pid: None,
         host: None,

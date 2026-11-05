@@ -316,6 +316,8 @@ fn role_view(project: &Project, identity: &LocalIdentity) -> RoleView {
         harness: identity.harness.clone(),
         provider: identity.provider.clone(),
         model: identity.model.clone(),
+        command: identity.command.clone(),
+        target: identity.target.clone(),
         thinking: identity.thinking.clone(),
         pid: identity.pid,
         host: identity.host.clone(),

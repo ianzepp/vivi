@@ -206,3 +206,193 @@ fn role_named_matches_name_and_alias_ignoring_case() {
     }
     assert!(config.role_named("unknown").is_none());
 }
+
+#[test]
+fn role_command_and_target_default_to_none_on_old_toml() {
+    let config: crate::mailspace::MailspaceConfig =
+        toml::from_str("name = 'test'\n[[identities]]\nname = 'hand'\nkind = 'hand'\n").unwrap();
+    let role = &config.identities[0];
+    assert!(role.command.is_none());
+    assert!(role.target.is_none());
+}
+
+#[test]
+fn role_command_and_target_round_trip_through_the_config_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut mailspace = Mailspace::init(Some(tmp.path())).unwrap();
+    let command = concat!(
+        "  printf '%s\\n' \"$1\" \\\n",
+        "    --flag 'two words'  \n",
+        "echo done\n"
+    );
+    mailspace
+        .add_role(
+            "hand",
+            RoleUpdate {
+                command: Some(Some(command.into())),
+                target: Some(Some(String::from("want-42"))),
+                ..RoleUpdate::default()
+            },
+        )
+        .unwrap();
+    let reopened = Mailspace::open_root(tmp.path().to_path_buf()).unwrap();
+    let view = reopened.role_view("hand").unwrap();
+    assert_eq!(view.command.as_deref(), Some(command));
+    assert_eq!(view.target.as_deref(), Some("want-42"));
+}
+
+#[test]
+fn role_command_and_target_set_and_clear_individually() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut mailspace = Mailspace::init(Some(tmp.path())).unwrap();
+    mailspace.add_identity("hand").unwrap();
+
+    mailspace
+        .set_role(
+            "hand",
+            RoleUpdate {
+                command: Some(Some(String::from("echo command"))),
+                ..RoleUpdate::default()
+            },
+        )
+        .unwrap();
+    let view = mailspace.role_view("hand").unwrap();
+    assert_eq!(view.command.as_deref(), Some("echo command"));
+    assert!(view.target.is_none());
+
+    mailspace
+        .set_role(
+            "hand",
+            RoleUpdate {
+                target: Some(Some(String::from("task-9"))),
+                ..RoleUpdate::default()
+            },
+        )
+        .unwrap();
+    let view = mailspace.role_view("hand").unwrap();
+    assert_eq!(view.command.as_deref(), Some("echo command"));
+    assert_eq!(view.target.as_deref(), Some("task-9"));
+
+    mailspace
+        .set_role(
+            "hand",
+            RoleUpdate {
+                command: Some(None),
+                ..RoleUpdate::default()
+            },
+        )
+        .unwrap();
+    let view = mailspace.role_view("hand").unwrap();
+    assert!(view.command.is_none());
+    assert_eq!(view.target.as_deref(), Some("task-9"));
+
+    mailspace
+        .set_role(
+            "hand",
+            RoleUpdate {
+                target: Some(None),
+                ..RoleUpdate::default()
+            },
+        )
+        .unwrap();
+    let view = mailspace.role_view("hand").unwrap();
+    assert!(view.command.is_none());
+    assert!(view.target.is_none());
+
+    let reopened = Mailspace::open_root(tmp.path().to_path_buf()).unwrap();
+    let view = reopened.role_view("hand").unwrap();
+    assert!(view.command.is_none());
+    assert!(view.target.is_none());
+}
+
+#[test]
+fn blank_or_nul_command_is_refused_without_mutation() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut mailspace = Mailspace::init(Some(tmp.path())).unwrap();
+    mailspace
+        .add_role(
+            "hand",
+            RoleUpdate {
+                command: Some(Some(String::from("echo keep"))),
+                target: Some(Some(String::from("task-1"))),
+                ..RoleUpdate::default()
+            },
+        )
+        .unwrap();
+
+    for bad in ["   \n\t ", "echo ok\0bad"] {
+        let error = mailspace
+            .set_role(
+                "hand",
+                RoleUpdate {
+                    command: Some(Some(String::from(bad))),
+                    target: Some(Some(String::from("task-2"))),
+                    ..RoleUpdate::default()
+                },
+            )
+            .unwrap_err();
+        assert!(matches!(error, vivi_error::VivariumError::Message(_)));
+        let view = mailspace.role_view("hand").unwrap();
+        assert_eq!(view.command.as_deref(), Some("echo keep"));
+        assert_eq!(view.target.as_deref(), Some("task-1"));
+    }
+
+    let reopened = Mailspace::open_root(tmp.path().to_path_buf()).unwrap();
+    let view = reopened.role_view("hand").unwrap();
+    assert_eq!(view.command.as_deref(), Some("echo keep"));
+    assert_eq!(view.target.as_deref(), Some("task-1"));
+}
+
+#[test]
+fn inherited_command_and_target_override_and_an_inherited_clear_is_refused() {
+    let tmp = tempfile::tempdir().unwrap();
+    let base = tmp.path().join(".vivi");
+    std::fs::create_dir_all(&base).unwrap();
+    std::fs::write(
+        base.join("mailspace.toml"),
+        "base = true\nname = 'base'\n[[identities]]\nname = 'hand'\nkind = 'hand'\n\
+         command = 'echo base'\ntarget = 'task-1'\n",
+    )
+    .unwrap();
+    let root = tmp.path().join("work/proj");
+    let dir = root.join(".vivi");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("mailspace.toml"), "name = 'proj'\n").unwrap();
+
+    let mut mailspace = Mailspace::open_root(root.clone()).unwrap();
+    let view = mailspace.role_view("hand").unwrap();
+    assert_eq!(view.command.as_deref(), Some("echo base"));
+    assert_eq!(view.target.as_deref(), Some("task-1"));
+
+    for update in [
+        RoleUpdate {
+            command: Some(None),
+            ..RoleUpdate::default()
+        },
+        RoleUpdate {
+            target: Some(None),
+            ..RoleUpdate::default()
+        },
+    ] {
+        let error = mailspace.set_role("hand", update).unwrap_err();
+        assert!(matches!(error, vivi_error::VivariumError::Message(_)));
+        let view = mailspace.role_view("hand").unwrap();
+        assert_eq!(view.command.as_deref(), Some("echo base"));
+        assert_eq!(view.target.as_deref(), Some("task-1"));
+    }
+
+    mailspace
+        .set_role(
+            "hand",
+            RoleUpdate {
+                command: Some(Some(String::from("echo project"))),
+                target: Some(Some(String::from("task-2"))),
+                ..RoleUpdate::default()
+            },
+        )
+        .unwrap();
+    let reopened = Mailspace::open_root(root.clone()).unwrap();
+    let view = reopened.role_view("hand").unwrap();
+    assert_eq!(view.command.as_deref(), Some("echo project"));
+    assert_eq!(view.target.as_deref(), Some("task-2"));
+}

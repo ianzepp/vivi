@@ -313,6 +313,8 @@ fn runtime_only(update: &RoleUpdate) -> bool {
         harness,
         provider,
         model,
+        command,
+        target,
         thinking,
         pid,
         host,
@@ -328,6 +330,8 @@ fn runtime_only(update: &RoleUpdate) -> bool {
         || harness.is_some()
         || provider.is_some()
         || model.is_some()
+        || command.is_some()
+        || target.is_some()
         || thinking.is_some()
         || cadence.is_some()
         || !add_labels.is_empty()
