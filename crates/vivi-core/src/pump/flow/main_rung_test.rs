@@ -11,9 +11,9 @@ use super::{
     key, last_green,
 };
 use crate::pump::config::{PumpConfig, PumpTarget, RungsConfig};
-use crate::pump::flow::fake_mail::FakeMail;
+use crate::pump::flow::fake_mail::{Call, FakeMail};
 use crate::pump::flow::handlers::TickPhase;
-use crate::pump::flow::mail::MailWriter;
+use crate::pump::flow::mail::{MailReader, MailWriter};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::jobs::rung_result::ENV_FAILURE;
 use crate::pump::jobs::{JobOutcome, JobStatus, JobStore, PoolJob, rung};
@@ -105,6 +105,43 @@ impl Rig {
         Ok(id)
     }
 
+    /// Add a terminal main rung job at `tip` whose saved command is
+    /// `command`, whatever the current configuration names.
+    fn job_saved(
+        &mut self,
+        status: JobStatus,
+        receipt: &str,
+        tip: &str,
+        command: &str,
+    ) -> Result<String, VivariumError> {
+        let mut spec = rung::spec(&self.ctx, TARGET, "main", tip, "main-step", 1)
+            .ok_or_else(|| VivariumError::Message("no main rung".into()))?;
+        spec.command = Some(command.to_owned());
+        spec.payload[PAYLOAD_KEY] = serde_json::json!(TARGET);
+        let id = spec.id.clone();
+        let mut job = PoolJob::from(spec);
+        job.status = status;
+        job.outcome = Some(JobOutcome {
+            state: "finished".into(),
+            detail: String::new(),
+            receipt: receipt.to_owned(),
+            at: 1,
+        });
+        self.jobs.jobs.insert(id.clone(), job);
+        Ok(id)
+    }
+
+    fn replies(&self) -> Vec<(String, String)> {
+        self.mail
+            .calls
+            .iter()
+            .filter_map(|call| match call {
+                Call::Reply { handle, body } => Some((handle.clone(), body.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
     fn run(&mut self) -> R {
         TickPhase::run(
             &MainRung,
@@ -173,6 +210,77 @@ fn a_failing_job_files_a_repair_need_and_records_the_failing_set() -> R {
         Some(TIP)
     );
     assert_eq!(last_green(&rig.store, TARGET)?, None);
+    Ok(())
+}
+
+/// An early size-check error above passing noise and one failing test.
+const EARLY_ONE: &str = "error: src/pump/flow/main_rung/red.rs has 1004 lines, over the 1000-line ceiling\n\
+    Running unittests src/lib.rs (target/debug/deps/vivi_core-1a2b3c4d5e)\n\
+test pump::flow::passes ... ok\n\
+test pump::flow::breaks ... FAILED\n\
+agent exit 101 in 9s\n";
+
+/// The same shape as [`EARLY_ONE`] with a second failing test and another
+/// early error, so the failing set changes.
+const EARLY_TWO: &str = "error: src/pump/flow/main_rung/other.rs has 2001 lines, over the 1000-line ceiling\n\
+    Running unittests src/lib.rs (target/debug/deps/vivi_core-1a2b3c4d5e)\n\
+test pump::flow::passes ... ok\n\
+test pump::flow::breaks ... FAILED\n\
+test pump::flow::also_breaks ... FAILED\n\
+agent exit 101 in 9s\n";
+
+#[test]
+fn changed_failure_context() -> R {
+    let mut rig = rig(true)?;
+    let need = rig.mail.send_step("pump", "pump", "repair", "need", &[])?;
+    rig.host
+        .reply("need send", 0, &format!("created need {need}\n"));
+    rig.job_saved(JobStatus::Finished, EARLY_ONE, TIP, "cargo test --quiet")?;
+    rig.run()?;
+    assert_eq!(rig.sends().len(), 1);
+    // The current configuration names `cargo test`; the record names the
+    // command the filing job actually ran.
+    assert_eq!(
+        rig.ctx.cfg.effective_rungs(Some(TARGET)).command("main"),
+        Some("cargo test")
+    );
+    let (_, record) = MailReader::open_record(&rig.mail, &need)?
+        .ok_or_else(|| VivariumError::Message("no record".into()))?;
+    for text in [
+        String::from("command: cargo test --quiet"),
+        format!("tested: {TIP}"),
+        String::from("source job: rung-main-main-step-a1"),
+        String::from("has 1004 lines"),
+        String::from("pump::flow::breaks"),
+    ] {
+        assert!(record.contains(&text), "record missing {text:?}: {record}");
+    }
+    rig.job_saved(JobStatus::Finished, EARLY_TWO, TIP2, "cargo test --quiet")?;
+    rig.run()?;
+    assert_eq!(
+        rig.sends().len(),
+        1,
+        "a changed failing set replies, it does not file"
+    );
+    let replies = rig.replies();
+    assert_eq!(replies.len(), 1);
+    assert_eq!(replies[0].0, need);
+    let note = &replies[0].1;
+    for text in [
+        String::from("command: cargo test --quiet"),
+        format!("tested: {TIP2}"),
+        String::from("source job: rung-main-main-step-a1"),
+        String::from("has 2001 lines"),
+        String::from("pump::flow::also_breaks"),
+    ] {
+        assert!(note.contains(&text), "reply missing {text:?}: {note}");
+    }
+    assert!(!note.contains("--all"), "{note}");
+    // The open record keeps the filing report and its tested commit.
+    let (_, kept) = MailReader::open_record(&rig.mail, &need)?
+        .ok_or_else(|| VivariumError::Message("no record".into()))?;
+    assert!(kept.contains(&format!("tested: {TIP}")), "{kept}");
+    assert!(!kept.contains("has 2001 lines"), "{kept}");
     Ok(())
 }
 

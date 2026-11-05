@@ -1,6 +1,5 @@
 //! Tests for filing or replying on the repair need when the main rung is red.
 
-use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use tempfile::{TempDir, tempdir};
@@ -11,7 +10,9 @@ use crate::pump::config::PumpConfig;
 use crate::pump::flow::fake_mail::{Call, FakeMail};
 use crate::pump::flow::mail::{MailReader, MailWriter};
 use crate::pump::flow::main_rung::{FAILING, REPAIRED, key};
+use crate::pump::flow::rung_step;
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
+use crate::pump::jobs::{JobOutcome, JobSpec, JobStatus, PoolJob};
 use crate::pump::store::{DB_FILENAME, PumpStore};
 use vivi_error::VivariumError;
 use vivi_mail::letter::fixture::repair_record_body;
@@ -47,20 +48,83 @@ fn rig() -> Result<Rig, VivariumError> {
     })
 }
 
-fn ids(items: &[&str]) -> BTreeSet<String> {
-    items.iter().map(|s| (*s).to_string()).collect()
+/// The enriched rung answer of a finished main rung job: the saved command,
+/// target, tested commit, source job and dispatch task, plus a receipt whose
+/// early error sits above passing noise.
+fn answer_of(
+    target: &str,
+    tip: &str,
+    command: &str,
+    task: &str,
+    receipt: &str,
+) -> serde_json::Value {
+    let mut spec = JobSpec::new(
+        format!("rung-main-{task}-a1"),
+        "rung",
+        "pump-rung",
+        format!("main rung on {target} at {tip}"),
+        String::from("run the main rung"),
+    );
+    spec.command = Some(command.to_owned());
+    spec.target = Some(target.to_owned());
+    spec.from_ref = Some(tip.to_owned());
+    spec.task = Some(task.to_owned());
+    spec.payload = serde_json::json!({"rung": "main", "tip": tip, "target": target});
+    let mut job = PoolJob::from(spec);
+    job.status = JobStatus::Finished;
+    job.outcome = Some(JobOutcome {
+        state: String::from("finished"),
+        detail: String::new(),
+        receipt: receipt.to_owned(),
+        at: 1,
+    });
+    rung_step::answer(&job).1
+}
+
+/// An enriched receipt: an early size-check error above passing noise and one
+/// failing test, so a tail-only report would lose the error.
+const ENRICHED: &str = "error: src/pump/flow/main_rung/red.rs has 1004 lines, over the 1000-line ceiling\n\
+    Running unittests src/lib.rs (target/debug/deps/vivi_core-1a2b3c4d5e)\n\
+test pump::flow::passes ... ok\n\
+test pump::flow::breaks ... FAILED\n\
+agent exit 101 in 9s\n";
+
+const TIP: &str = "abcdef0123456789";
+
+/// The receipt of a red main rung: `tail text` above the failing tests.
+fn receipt(failing: &[&str]) -> String {
+    let mut text = String::from("tail text\n");
+    for id in failing {
+        text.push_str(&format!("test {id} ... FAILED\n"));
+    }
+    text.push_str("agent exit 101 in 9s\n");
+    text
+}
+
+/// The `--body-file` path a `need send` command names.
+fn body_file(command: &str) -> Result<std::path::PathBuf, VivariumError> {
+    let rest = command
+        .split("--body-file ")
+        .nth(1)
+        .ok_or_else(|| VivariumError::Message(format!("no --body-file in {command}")))?;
+    let path = rest
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .trim_matches('\'');
+    Ok(std::path::PathBuf::from(path))
 }
 
 impl Rig {
     fn red(&mut self, target: &str, failing: &[&str]) -> R {
+        let outcome = answer_of(target, TIP, "cargo test", "main-step", &receipt(failing));
         report_red(
             &self.ctx,
             &self.store,
             &mut self.mail,
             target,
-            "abcdef0123456789",
-            &ids(failing),
-            "tail text",
+            TIP,
+            &outcome,
         )
     }
 
@@ -183,6 +247,99 @@ fn find_repair_need_ignores_a_build_need_with_a_target_line() -> R {
 }
 
 #[test]
+fn filed_failure_context() -> R {
+    let mut rig = rig()?;
+    let outcome = answer_of("default", TIP, "cargo test --quiet", "main-step", ENRICHED);
+    report_red(
+        &rig.ctx,
+        &rig.store,
+        &mut rig.mail,
+        "default",
+        TIP,
+        &outcome,
+    )?;
+    let sends = rig.sends();
+    assert_eq!(sends.len(), 1, "{sends:?}");
+    assert!(sends[0].contains("--mark repair"), "{}", sends[0]);
+    assert!(sends[0].contains(" --target default"), "{}", sends[0]);
+    let file = body_file(&sends[0])?;
+    let body = std::fs::read_to_string(&file)
+        .map_err(|e| VivariumError::Message(format!("cannot read {}: {e}", file.display())))?;
+    let (_, record) = MailReader::open_record(&rig.mail, &rig.need)?
+        .ok_or_else(|| VivariumError::Message("no record".into()))?;
+    for text in [
+        String::from("command: cargo test --quiet"),
+        String::from("target: default"),
+        format!("tested: {TIP}"),
+        String::from("source job: rung-main-main-step-a1"),
+        String::from("task: main-step"),
+        String::from("has 1004 lines"),
+        String::from("pump::flow::breaks"),
+    ] {
+        assert!(body.contains(&text), "need body missing {text:?}: {body}");
+        assert!(record.contains(&text), "record missing {text:?}: {record}");
+    }
+    assert_eq!(
+        rig.store.main_state(&key(FAILING, "default"))?,
+        Some("[\"vivi_core::pump::flow::breaks\"]".to_string())
+    );
+    assert_eq!(rig.store.main_state("main-repair-sending:default")?, None);
+    Ok(())
+}
+
+#[test]
+fn record_open_resume_keeps_context() -> R {
+    let mut rig = rig()?;
+    rig.mail.fail_at = Some(rig.mail.calls.len());
+    let outcome = answer_of("default", TIP, "cargo test --quiet", "main-step", ENRICHED);
+    assert!(
+        report_red(
+            &rig.ctx,
+            &rig.store,
+            &mut rig.mail,
+            "default",
+            TIP,
+            &outcome,
+        )
+        .is_err()
+    );
+    assert_eq!(rig.sends().len(), 1);
+    assert!(MailReader::open_record(&rig.mail, &rig.need)?.is_none());
+    // The current configuration names no main rung: the resumed record still
+    // carries the saved job's report rather than re-resolving a command.
+    assert_eq!(
+        rig.ctx.cfg.effective_rungs(Some("default")).command("main"),
+        None
+    );
+    report_red(
+        &rig.ctx,
+        &rig.store,
+        &mut rig.mail,
+        "default",
+        TIP,
+        &outcome,
+    )?;
+    assert_eq!(rig.sends().len(), 1, "the resume must not send again");
+    let (_, record) = MailReader::open_record(&rig.mail, &rig.need)?
+        .ok_or_else(|| VivariumError::Message("no record".into()))?;
+    for text in [
+        String::from("command: cargo test --quiet"),
+        format!("tested: {TIP}"),
+        String::from("source job: rung-main-main-step-a1"),
+        String::from("has 1004 lines"),
+        String::from("pump::flow::breaks"),
+    ] {
+        assert!(record.contains(&text), "record missing {text:?}: {record}");
+    }
+    assert_eq!(rig.store.main_state("main-repair-sending:default")?, None);
+    assert_eq!(
+        rig.store.main_state(&key(FAILING, "default"))?,
+        Some("[\"vivi_core::pump::flow::breaks\"]".to_string())
+    );
+    Ok(())
+}
+
+#[test]
 fn a_failed_need_send_is_an_error_and_stores_nothing() -> R {
     let mut rig = rig()?;
     rig.host.reply("need send", 1, "boom\n");
@@ -294,14 +451,14 @@ const OLD_TIP: &str = "2222222222222222222222222222222222222222";
 
 impl Rig {
     fn red_at(&mut self, tip: &str, failing: &[&str]) -> R {
+        let outcome = answer_of("default", tip, "cargo test", "main-step", &receipt(failing));
         report_red(
             &self.ctx,
             &self.store,
             &mut self.mail,
             "default",
             tip,
-            &ids(failing),
-            "tail text",
+            &outcome,
         )
     }
 
