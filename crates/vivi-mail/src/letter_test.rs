@@ -107,6 +107,16 @@ fn an_empty_unknown_kind_names_the_missing_header() {
 }
 
 #[test]
+fn parse_moves_complete_tables_below_the_fence_into_the_front_matter() {
+    let text = "+++\nanswer = \"built\"\nchange = [\"src/a.rs\"]\n+++\n\nThe report.\n\n\
+                [[check]]\ncmd = \"cargo test\"\nresult = \"pass\"\nseconds = 12\n";
+    let reply = parse::<roles::Hand>(text).unwrap();
+    assert_eq!(reply.front.check.len(), 1);
+    assert_eq!(reply.front.check[0].cmd, "cargo test");
+    assert_eq!(reply.body, "The report.");
+}
+
+#[test]
 fn parse_letter_keeps_table_lines_in_prose_and_parse_refuses_them() {
     let text = "+++\nanswer = \"ok\"\n+++\n\n[[check]]\nx";
     assert!(matches!(
