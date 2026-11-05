@@ -1,25 +1,27 @@
 //! Tests for reslice requests.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use tempfile::{TempDir, tempdir};
 
-use super::{KIND, Mode, RESLICE_FAILED, Reslices, request, settle_error};
+use super::{KIND, Mode, RESLICE_FAILED, RESLICE_NODE_PREFIX, Reslices, request, settle_error};
 use crate::mailspace::shipped::SLICER_ROLE;
-use crate::pump::config::PumpConfig;
+use crate::pump::config::{PumpConfig, PumpTarget};
 use crate::pump::flow::fake_mail::{Call, FakeMail};
 use crate::pump::flow::fanout;
 use crate::pump::flow::handlers::TickPhase;
 use crate::pump::flow::index::{JOB_STALE, RunRow, StepRow, StepState};
 use crate::pump::flow::mail::MailReader;
 use crate::pump::flow::mail::MailWriter;
+use crate::pump::flow::need_branch::{self, LIVE};
 use crate::pump::flow::step_error::STEP_ERROR_HELD;
 use crate::pump::flow::tick::OPERATOR_HOLD;
-use crate::pump::host::{Ctx, test_ctx};
+use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::jobs::rung_result::ENV_FAILURE;
 use crate::pump::jobs::{JobOutcome, JobStatus, JobStore, PoolJob};
 use crate::pump::store::flow_links::SliceLink;
-use crate::pump::store::{DB_FILENAME, PumpStore};
+use crate::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
 use crate::routing::RoutedRole;
 use vivi_error::VivariumError;
 use vivi_mail::letter::roles::Slice;
@@ -27,6 +29,13 @@ use vivi_mail::letter::roles::Slice;
 type R = Result<(), VivariumError>;
 
 const NEED: &str = "n1";
+
+/// The target's main ref: a reslice job must never start here.
+const MAIN: &str = "1111111111111111111111111111111111111111";
+/// The published tip of the need branch.
+const NEED_TIP: &str = "2222222222222222222222222222222222222222";
+/// The base recorded for the need branch.
+const BASE: &str = "3333333333333333333333333333333333333333";
 
 #[derive(Default)]
 struct Jobs {
@@ -46,6 +55,7 @@ impl JobStore for Jobs {
 struct Rig {
     _dir: TempDir,
     ctx: Ctx,
+    host: Arc<FakeHost>,
     store: PumpStore,
     mail: FakeMail,
     jobs: Jobs,
@@ -68,8 +78,60 @@ fn rig() -> Result<Rig, VivariumError> {
 }
 
 fn rig_with(cfg: PumpConfig) -> Result<Rig, VivariumError> {
+    let rig = rig_bare(cfg)?;
+    seed_live_branch(&rig, "default")?;
+    Ok(rig)
+}
+
+/// The fake remote's command line answering the need branch of `target`.
+fn branch_rule(rig: &Rig, target: &str) -> String {
+    let remote = rig
+        .ctx
+        .cfg
+        .for_target(target)
+        .map_or_else(|| rig.ctx.cfg.remote.clone(), |cfg| cfg.remote);
+    format!(
+        "ls-remote {remote} refs/heads/{}",
+        need_branch::branch(NEED)
+    )
+}
+
+/// A live need branch on `target` whose published tip is [`NEED_TIP`] and
+/// whose recorded base is [`BASE`].
+fn seed_live_branch(rig: &Rig, target: &str) -> Result<(), VivariumError> {
+    rig.store.upsert_need_branch(&NeedBranchRow::for_run(
+        &rig.run,
+        need_branch::branch(NEED),
+        Some(BASE.into()),
+        LIVE,
+        target,
+        Vec::new(),
+    ))?;
+    rig.host.reply(
+        &branch_rule(rig, target),
+        0,
+        &format!("{NEED_TIP}\trefs/heads/{}\n", need_branch::branch(NEED)),
+    );
+    Ok(())
+}
+
+/// The remember base with the branch unpublished: the branch ref is gone.
+fn unpublish_branch(rig: &Rig, target: &str, base: Option<&str>) -> Result<(), VivariumError> {
+    rig.host.reply(&branch_rule(rig, target), 0, "");
+    rig.store.upsert_need_branch(&NeedBranchRow::for_run(
+        &rig.run,
+        need_branch::branch(NEED),
+        base.map(str::to_owned),
+        LIVE,
+        target,
+        Vec::new(),
+    ))
+}
+
+fn rig_bare(mut cfg: PumpConfig) -> Result<Rig, VivariumError> {
+    cfg.main = String::from(MAIN);
     let dir = tempdir().map_err(|e| VivariumError::Other(e.to_string()))?;
-    let (ctx, _host) = test_ctx(dir.path(), cfg);
+    let (ctx, host) = test_ctx(dir.path(), cfg);
     let mut routing = (*ctx.routing).clone();
     routing.roles.retain(|role| role.name != SLICER_ROLE);
     routing.roles.push(RoutedRole {
@@ -109,6 +171,7 @@ fn rig_with(cfg: PumpConfig) -> Result<Rig, VivariumError> {
     Ok(Rig {
         _dir: dir,
         ctx,
+        host,
         store,
         mail,
         jobs: Jobs::default(),
@@ -226,11 +289,12 @@ fn reslice_jobs_budget_as_slicers_for_every_initial_mode() -> R {
         assert_eq!(job.payload["slice"], rig.slice.task, "{mode}");
         assert_eq!(job.task.as_deref(), Some(task.as_str()), "{mode}");
         assert!(job.read_only, "{mode}");
-        assert_eq!(
-            job.from_ref.as_deref(),
-            Some(rig.ctx.cfg.main.as_str()),
-            "{mode}"
-        );
+        // Pinned to the stored target and the published branch tip, never to
+        // the target's main or the recorded base.
+        assert_eq!(job.target.as_deref(), Some("default"), "{mode}");
+        assert_eq!(job.from_ref.as_deref(), Some(NEED_TIP), "{mode}");
+        assert_ne!(job.from_ref.as_deref(), Some(MAIN), "{mode}");
+        assert_ne!(job.from_ref.as_deref(), Some(BASE), "{mode}");
         assert_eq!(
             job.extra_targets,
             crate::pump::flow::step_inputs::targets(&rig.ctx),
@@ -270,6 +334,193 @@ fn reslice_jobs_without_a_slicer_override_take_the_changed_fallback() -> R {
     assert_eq!(sends(&rig), before);
     assert_eq!(rig.jobs.jobs.len(), 1);
     assert_eq!(rig.store.last_attempt(&task)?, 0);
+    Ok(())
+}
+
+// ---- the need branch a reslice job starts from ----
+
+/// Ask, and prove a refusal changed nothing: no send, no indexed reslice row,
+/// no slice link, no job.
+fn refused(rig: &mut Rig, mode: Mode, input: &str) -> VivariumError {
+    let rows_before = rig.store.steps_of(NEED, 1).expect("rows").len();
+    let links_before = rig.store.slice_links_of_run(NEED, 1).expect("links").len();
+    let sends_before = sends(rig);
+    let tasks_before = rig.mail.tasks.len();
+
+    let err = ask(rig, mode, input).expect_err("the request must be refused");
+
+    assert_eq!(sends(rig), sends_before, "no reslice task is sent");
+    assert_eq!(rig.mail.tasks.len(), tasks_before, "no task body is stored");
+    let rows = rig.store.steps_of(NEED, 1).expect("rows");
+    assert_eq!(rows.len(), rows_before, "no step row is indexed");
+    assert!(
+        rows.iter()
+            .all(|row| !row.node.starts_with(RESLICE_NODE_PREFIX)),
+        "{rows:?}"
+    );
+    assert_eq!(
+        rig.store.slice_links_of_run(NEED, 1).expect("links").len(),
+        links_before,
+        "no link is written"
+    );
+    assert!(rig.jobs.jobs.is_empty(), "{:?}", rig.jobs.jobs);
+    err
+}
+
+#[test]
+fn a_need_with_no_branch_row_is_refused_and_changes_nothing() -> R {
+    let mut rig = rig_bare(PumpConfig::default())?;
+
+    let err = refused(&mut rig, Mode::Split, "too big");
+
+    assert!(err.to_string().contains("no need branch row"), "{err}");
+    Ok(())
+}
+
+#[test]
+fn a_non_live_branch_is_refused_and_changes_nothing() -> R {
+    for status in [
+        need_branch::FRESH,
+        need_branch::RENAMING,
+        need_branch::DELETING,
+        need_branch::PRUNED,
+    ] {
+        let mut rig = rig()?;
+        rig.store.upsert_need_branch(&NeedBranchRow::for_run(
+            &rig.run,
+            need_branch::branch(NEED),
+            None,
+            status,
+            "default",
+            Vec::new(),
+        ))?;
+
+        let err = refused(&mut rig, Mode::Rework, "redo it");
+
+        assert!(
+            err.to_string().contains("no published tip"),
+            "{status}: {err}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn an_unpublished_live_branch_starts_at_its_recorded_base() -> R {
+    let mut rig = rig()?;
+    unpublish_branch(&rig, "default", Some(BASE))?;
+
+    let task = ask(&mut rig, Mode::Split, "too big")?;
+
+    let job = &rig.jobs.jobs[&format!("reslice-{task}-a1")];
+    assert_eq!(job.target.as_deref(), Some("default"));
+    assert_eq!(job.from_ref.as_deref(), Some(BASE));
+    assert_ne!(job.from_ref.as_deref(), Some(MAIN));
+    Ok(())
+}
+
+#[test]
+fn an_unpublished_live_branch_without_a_base_is_refused_and_changes_nothing() -> R {
+    let mut rig = rig()?;
+    unpublish_branch(&rig, "default", None)?;
+
+    let err = refused(&mut rig, Mode::FollowUp, "then this");
+
+    assert!(err.to_string().contains("no recorded base"), "{err}");
+    assert!(
+        err.to_string().contains(&need_branch::branch(NEED)),
+        "{err}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_branch_row_on_an_unknown_target_is_refused_and_changes_nothing() -> R {
+    let mut rig = rig()?;
+    rig.store.upsert_need_branch(&NeedBranchRow::for_run(
+        &rig.run,
+        need_branch::branch(NEED),
+        Some(BASE.into()),
+        LIVE,
+        "ghost",
+        Vec::new(),
+    ))?;
+
+    let err = refused(&mut rig, Mode::Split, "too big");
+
+    assert!(err.to_string().contains("unknown target ghost"), "{err}");
+    Ok(())
+}
+
+#[test]
+fn a_failing_tip_lookup_is_refused_and_changes_nothing() -> R {
+    let mut rig = rig()?;
+    let rule = branch_rule(&rig, "default");
+    rig.host
+        .reply(&rule, 1, "fatal: could not read from remote");
+
+    let err = refused(&mut rig, Mode::Rework, "redo it");
+
+    assert!(err.to_string().contains("ls-remote exit 1"), "{err}");
+    Ok(())
+}
+
+#[test]
+fn a_repeated_request_returns_its_task_before_branch_resolution() -> R {
+    let mut rig = rig()?;
+    let first = ask(&mut rig, Mode::Split, "too big")?;
+    // The branch goes away after the first request was queued: the repeat still
+    // answers with the existing task.
+    unpublish_branch(&rig, "default", None)?;
+    let before = sends(&rig);
+
+    let again = ask(&mut rig, Mode::Split, "too big")?;
+
+    assert_eq!(again, first);
+    assert_eq!(sends(&rig), before);
+    assert_eq!(rig.jobs.jobs.len(), 1);
+    Ok(())
+}
+
+#[test]
+fn a_job_pins_the_stored_target_and_its_tip_when_it_is_not_the_primary_one() -> R {
+    let mut cfg = PumpConfig::default();
+    for id in ["alpha", "beta"] {
+        cfg.targets.insert(
+            String::from(id),
+            PumpTarget {
+                path: String::from(id),
+                remote: format!("{id}-origin"),
+                main: String::from(MAIN),
+                ..PumpTarget::default()
+            },
+        );
+    }
+    let rig = rig_bare(cfg)?;
+    seed_live_branch(&rig, "beta")?;
+    // The other target's need branch would answer nothing: it must not be read.
+    rig.host.reply(&branch_rule(&rig, "alpha"), 0, "");
+    let mut rig = rig;
+
+    let task = ask(&mut rig, Mode::Rework, "redo it")?;
+
+    let job = &rig.jobs.jobs[&format!("reslice-{task}-a1")];
+    assert!(job.read_only);
+    assert_eq!(job.target.as_deref(), Some("beta"));
+    assert_eq!(job.from_ref.as_deref(), Some(NEED_TIP));
+    assert_ne!(job.from_ref.as_deref(), Some(MAIN));
+    assert_eq!(
+        job.extra_targets,
+        crate::pump::flow::step_inputs::targets(&rig.ctx)
+    );
+    let reads: Vec<String> = rig
+        .host
+        .commands()
+        .into_iter()
+        .filter(|line| line.contains("ls-remote"))
+        .collect();
+    assert_eq!(reads.len(), 1, "{reads:?}");
+    assert!(reads[0].ends_with(&branch_rule(&rig, "beta")), "{reads:?}");
     Ok(())
 }
 
@@ -450,6 +701,9 @@ fn raised_kill_retries_same_request(mode: Mode, kill: Kill) -> R {
     let original = rig.jobs.jobs[&first].clone();
     let before = sends(&rig);
     kill.plant(&mut rig, &first);
+    // The branch moves after the original job was queued: the raised copy is
+    // the saved inputs, not a fresh resolution.
+    unpublish_branch(&rig, "default", None)?;
 
     run_phase(&mut rig)?;
     run_phase(&mut rig)?; // a repeated phase queues no second copy
@@ -515,6 +769,15 @@ fn assert_retry_raised(
     assert_eq!(copy.payload["slice"], rig.slice.task);
     assert_eq!(copy.payload["task"], task);
     assert_eq!(copy.payload["mode"], mode.name());
+    // The saved execution inputs travel with the copy even though the branch
+    // state moved after the original job was queued.
+    assert!(copy.read_only);
+    assert_eq!(copy.target.as_deref(), Some("default"));
+    assert_eq!(copy.from_ref.as_deref(), Some(NEED_TIP));
+    assert_eq!(
+        copy.extra_targets,
+        crate::pump::flow::step_inputs::targets(&rig.ctx)
+    );
     Ok(())
 }
 
