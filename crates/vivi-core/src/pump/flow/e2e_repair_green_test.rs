@@ -183,6 +183,15 @@ fn a_green_main_rung_answers_unrepaired_green_and_lands_the_need() -> R {
 fn a_green_main_rung_closes_a_run_still_at_fix1_and_a_late_repairer_changes_nothing() -> R {
     let mut rig = at_fix1()?;
     let repairer = open(&rig, "fix1")?;
+    let dispatched_at = rig.ctx.now();
+    let owned = rig
+        .jobs
+        .jobs
+        .get_mut(&repairer.id)
+        .ok_or_else(|| VivariumError::Message("no stored fix1 repairer".into()))?;
+    owned.status = JobStatus::Dispatched;
+    owned.pool = Some(POOL.to_owned());
+    owned.dispatched_at = Some(dispatched_at);
     enable_main_rung(&mut rig);
     rig.git(MAIN_REF, MAIN_B);
     let job = main_job_at(&mut rig, MAIN_B)?;
@@ -195,9 +204,37 @@ fn a_green_main_rung_closes_a_run_still_at_fix1_and_a_late_repairer_changes_noth
         "the close note names the green tip"
     );
     assert_eq!(run_state(&rig)?, "withdrawn");
+    let retained =
+        rig.jobs.jobs.get(&repairer.id).ok_or_else(|| {
+            VivariumError::Message("withdrawal removed dispatched repairer".into())
+        })?;
+    assert_eq!(retained.status, JobStatus::Dispatched);
+    assert_eq!(retained.task, repairer.task, "the task remains owned");
+    assert_eq!(retained.pool.as_deref(), Some(POOL));
+    assert_eq!(retained.dispatched_at, Some(dispatched_at));
+    assert!(retained.applied_at.is_none(), "no receipt was applied yet");
+    assert!(retained.outcome.is_none(), "the repairer is still working");
     // The repairer that was still working finishes afterwards: nothing moves.
     rig.finish(&repairer.id, JobStatus::Finished, &agent_receipt(0, FAILED))?;
     rig.tick()?;
+    let late = rig
+        .jobs
+        .jobs
+        .get(&repairer.id)
+        .ok_or_else(|| VivariumError::Message("late repairer job disappeared".into()))?;
+    assert!(
+        late.applied_at.is_some(),
+        "the late result is marked applied"
+    );
+    assert_eq!(
+        late.outcome.as_ref().map(|outcome| outcome.state.as_str()),
+        Some("finished")
+    );
+    assert!(
+        late.outcome
+            .as_ref()
+            .is_some_and(|outcome| outcome.receipt.contains(FAILED))
+    );
     rig.tick()?;
     assert_eq!(run_state(&rig)?, "withdrawn");
     assert_eq!(rig.port.need_state(&rig.need)?, NeedStatus::Done);
