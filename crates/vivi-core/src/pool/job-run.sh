@@ -298,6 +298,21 @@ finish() { # finish <push-outcome> [sha]
     AGENT_RC=${AGENT_RC:-1}
     RESULT_EXTRA="ramdisk_size_gib=$RAMDISK_SIZE_GIB"
   fi
+  local output_file output_bytes output_name
+  for output_file in agent.out agent.err; do
+    output_name=${output_file#agent.}
+    if [ -f "$J/$output_file" ] && [ -r "$J/$output_file" ] && output_bytes=$(wc -c < "$J/$output_file"); then
+      output_bytes=${output_bytes//[[:space:]]/}
+      if [[ "$output_bytes" =~ ^[0-9]+$ ]]; then
+        printf -v "AGENT_${output_name^^}_BYTES" '%s' "$output_bytes"
+        printf -v "AGENT_${output_name^^}_STATE" '%s' complete
+      else
+        printf -v "AGENT_${output_name^^}_STATE" '%s' unavailable
+      fi
+    else
+      printf -v "AGENT_${output_name^^}_STATE" '%s' unavailable
+    fi
+  done
   record_source_ancestry
   detach_local
   {
@@ -311,6 +326,10 @@ finish() { # finish <push-outcome> [sha]
     echo "start=$START"
     echo "agent_rc=$AGENT_RC"
     echo "agent_s=$AGENT_S"
+    echo "agent_out_state=$AGENT_OUT_STATE"
+    [ -z "${AGENT_OUT_BYTES:-}" ] || echo "agent_out_bytes=$AGENT_OUT_BYTES"
+    echo "agent_err_state=$AGENT_ERR_STATE"
+    [ -z "${AGENT_ERR_BYTES:-}" ] || echo "agent_err_bytes=$AGENT_ERR_BYTES"
     echo "job_s=$(( $(now) - T0 ))"
     echo "model=$MODEL"
     echo "slot=$SLOT"
