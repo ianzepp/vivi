@@ -15,8 +15,9 @@ use vivi_util::duration::parse_duration_secs;
 
 mod check;
 mod command;
+mod result;
 
-pub use check::{CommandCheck, CommandExecution, fingerprint};
+pub use check::{CommandCheck, CommandException, CommandExecution, fingerprint};
 pub use command::TargetChoice;
 
 /// The `state.extra` key holding the cadence state.
@@ -190,17 +191,20 @@ pub fn prepare_due(ctx: &Ctx, st: &mut State) {
     let now = ctx.now();
     let mut cadence = state(st);
     complete_runs(st, &mut cadence, now);
-    command::absorb(st, &mut cadence, now);
     let Some(open) = crate::pump::record::open_mailspace(ctx) else {
         ctx.log("cadence scan skipped: no mailspace");
         set_state(st, &cadence);
         return;
     };
     let mailspace = open.lock();
+    result::collect(ctx, st, &mut cadence, &mailspace, now);
     let scans = scan_roles(ctx, &mailspace, now);
     for scan in scans.values() {
         if scan.command.is_some() {
             if !command::ready(st, scan, cadence.checks.get(&scan.name), now) {
+                continue;
+            }
+            if !result::gate_due(ctx, &mut cadence, scan, now) {
                 continue;
             }
             let Ok(role) = mailspace.role_view(&scan.name) else {
@@ -244,11 +248,7 @@ pub fn status_lines(ctx: &Ctx, st: &State) -> Vec<String> {
             let status = if scan.target_unavailable {
                 "skipped-target-unavailable"
             } else if scan.command.is_some() {
-                if command::ready(st, scan, cadence.checks.get(name), now) {
-                    "command-ready"
-                } else {
-                    "command-wait"
-                }
+                command_status(st, scan, cadence.checks.get(name), now)
             } else if !scan.has_charter {
                 "skipped-no-charter"
             } else if scan.open_wants >= MAX_OPEN_WANTS {
@@ -264,6 +264,36 @@ pub fn status_lines(ctx: &Ctx, st: &State) -> Vec<String> {
             )
         })
         .collect()
+}
+
+/// Where one command role stands: waiting on the main tip it last passed on,
+/// backing off from a cadence exception, staged on a result it still owes a
+/// report for, or simply ready or waiting.
+fn command_status(
+    st: &State,
+    scan: &RoleScan,
+    check: Option<&CommandCheck>,
+    now: u64,
+) -> &'static str {
+    if check.is_some_and(|check| check.pending_exception(now).is_some()) {
+        return "command-retry-after-exception";
+    }
+    if check.is_some_and(|check| check.waiting_main.is_some()) {
+        return "command-waiting-main-change";
+    }
+    if check.is_some_and(|check| {
+        check
+            .latest
+            .as_ref()
+            .is_some_and(|latest| latest.awaiting.is_some())
+    }) {
+        return "command-staged-report";
+    }
+    if command::ready(st, scan, check, now) {
+        "command-ready"
+    } else {
+        "command-wait"
+    }
 }
 
 fn scan_roles(ctx: &Ctx, mailspace: &Mailspace, now: u64) -> BTreeMap<String, RoleScan> {
@@ -502,17 +532,19 @@ fn cadence_run_text(role: &RoleView, now: u64) -> String {
 
 fn complete_runs(st: &mut State, cadence: &mut CadenceState, now: u64) {
     let mut apply = Vec::new();
-    for (name, run) in &mut cadence.runs {
+    for run in cadence.runs.values_mut() {
         if run.job.is_empty() {
             continue;
         }
         // A command job is reported and settled by its own check state; the
-        // legacy run path must never consume it as a model result.
-        if cadence
-            .scans
-            .get(name)
-            .is_some_and(|scan| scan.command.is_some())
-        {
+        // legacy run path must never consume it as a model result. The saved
+        // execution context decides, not the role's current configuration.
+        if cadence.checks.values().any(|check| {
+            check
+                .latest
+                .as_ref()
+                .is_some_and(|latest| latest.job == run.job)
+        }) {
             continue;
         }
         if let Some(task) = st.jobs.get(&run.job).and_then(|job| job.task.clone()) {

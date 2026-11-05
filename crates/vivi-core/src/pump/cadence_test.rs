@@ -477,6 +477,7 @@ fn command_intervals_use_completion_time_and_environment_backoff() {
         last_green_commit: Some(String::from("abc")),
         red_need: Some(String::from("need-1")),
         latest: None,
+        ..CommandCheck::default()
     };
     // First run is immediately due.
     assert!(command::ready(&st, &scan, Some(&check), 0));
@@ -548,4 +549,486 @@ fn command_check_fingerprint_is_stable_and_configuration_sensitive() {
     set_state(&mut st, &cadence);
     assert_eq!(state(&st), cadence);
     assert_eq!(state(&st).checks.get("checker"), Some(&check));
+}
+
+fn full_sha(fill: char) -> String {
+    fill.to_string().repeat(40)
+}
+
+/// One command-check bench: a pump context with three targets and a fake
+/// host, a temporary mailspace the pool notes land in, and the state a tick
+/// would carry.
+struct Bench {
+    _tmp: tempfile::TempDir,
+    ctx: Ctx,
+    host: std::sync::Arc<crate::pump::host::FakeHost>,
+    space: Mailspace,
+    task: String,
+    st: State,
+    cadence: CadenceState,
+}
+
+fn command_role(name: &str, command: &str, target: Option<&str>) -> RoleView {
+    let mut role = head_role(name);
+    role.kind = Some(String::from("mind"));
+    role.cadence = Some(String::from("15m"));
+    role.command = Some(String::from(command));
+    role.target = target.map(String::from);
+    role
+}
+
+fn bench_task(space: &Mailspace) -> String {
+    space
+        .send(SendRequest {
+            from: "checker".into(),
+            to: vec!["pump".into()],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: String::from("command check"),
+            body: vivi_mail::letter::fixture::task_body_with(
+                &vivi_mail::letter::work::TaskFront::default(),
+                "run the check",
+            ),
+            role: String::from("tasks"),
+            kind: Some(String::from("task")),
+            reply_to: None,
+        })
+        .unwrap()
+        .delivered
+        .remove(0)
+        .handle
+}
+
+impl Bench {
+    fn new() -> Self {
+        let tmp = tempfile::tempdir().unwrap();
+        let (ctx, host) = crate::pump::host::test_ctx(tmp.path(), three_targets());
+        let mut space = Mailspace::init(Some(&tmp.path().join("project"))).unwrap();
+        space.add_identity("checker").unwrap();
+        space.add_identity("pump").unwrap();
+        let task = bench_task(&space);
+        Self {
+            _tmp: tmp,
+            ctx,
+            host,
+            space,
+            task,
+            st: State::default(),
+            cadence: CadenceState::default(),
+        }
+    }
+
+    fn scan(&self, target: Option<&str>, command: &str) -> RoleScan {
+        let mut scan = target_scan("checker", target, Some(command));
+        scan.effective_target = target.map(String::from);
+        scan
+    }
+
+    /// Enqueue the command job and give it the mailspace task a dispatch
+    /// would have created.
+    fn launch(&mut self, target: Option<&str>, command: &str, now: u64) -> String {
+        let role = command_role("checker", command, target);
+        let scan = self.scan(target, command);
+        command::enqueue(
+            &self.ctx,
+            &mut self.st,
+            &mut self.cadence,
+            &role,
+            &scan,
+            now,
+        );
+        let job = self.cadence.checks["checker"].latest.clone().unwrap().job;
+        self.st.jobs.get_mut(&job).unwrap().task = Some(self.task.clone());
+        job
+    }
+
+    /// Mark the job terminal with its pool receipt and, when the runner wrote
+    /// one, the collected record carrying the start commit.
+    fn finish(
+        &mut self,
+        job: &str,
+        status: JobStatus,
+        receipt: &str,
+        at: u64,
+        start: Option<&str>,
+    ) {
+        if let Some(start) = start {
+            let note =
+                serde_json::json!({ "job": "runner-7", "outcome": "finished", "start": start });
+            self.space
+                .record_pool_note(&self.task, "pool_collected", &note.to_string(), "result")
+                .unwrap();
+        }
+        let job = self.st.jobs.get_mut(job).unwrap();
+        job.status = status;
+        job.outcome = Some(crate::pump::jobs::JobOutcome {
+            state: String::from(if status == JobStatus::Finished {
+                "finished"
+            } else {
+                "lost"
+            }),
+            detail: String::from("finished"),
+            receipt: String::from(receipt),
+            at,
+        });
+    }
+
+    fn collect(&mut self, now: u64) {
+        result::collect(&self.ctx, &mut self.st, &mut self.cadence, &self.space, now);
+    }
+
+    fn latest(&self) -> CommandExecution {
+        self.cadence.checks["checker"].latest.clone().unwrap()
+    }
+
+    fn check(&self) -> CommandCheck {
+        self.cadence.checks["checker"].clone()
+    }
+
+    fn applied(&self, job: &str) -> bool {
+        self.st.jobs[job].applied_at.is_some()
+    }
+}
+
+#[test]
+fn command_cadence_skips_last_green_tip() {
+    let mut bench = Bench::new();
+    let green = full_sha('a');
+    let job = bench.launch(Some("app"), "make check", 1_000);
+    bench.finish(
+        &job,
+        JobStatus::Finished,
+        "agent exit 0 in 5s",
+        2_000,
+        Some(&green),
+    );
+    bench.collect(2_100);
+
+    assert_eq!(bench.latest().outcome.as_deref(), Some("green"));
+    assert!(bench.applied(&job), "a green with no report owed applies");
+    assert_eq!(
+        bench.check().last_green_commit.as_deref(),
+        Some(green.as_str())
+    );
+
+    // The tip is still the commit this check last passed on: no launch.
+    bench
+        .host
+        .reply("ls-remote", 0, &format!("{green}\trefs/heads/staging\n"));
+    let scan = bench.scan(Some("app"), "make check");
+    assert!(!result::gate_due(
+        &bench.ctx,
+        &mut bench.cadence,
+        &scan,
+        100_000
+    ));
+    assert_eq!(bench.check().waiting_main.as_deref(), Some(green.as_str()));
+
+    // A moved tip runs.
+    bench.host.reply(
+        "ls-remote",
+        0,
+        &format!("{}\trefs/heads/staging\n", full_sha('b')),
+    );
+    assert!(result::gate_due(
+        &bench.ctx,
+        &mut bench.cadence,
+        &scan,
+        100_000
+    ));
+    assert!(bench.check().waiting_main.is_none());
+}
+
+#[test]
+fn command_cadence_uses_actual_runner_start() {
+    let mut bench = Bench::new();
+    let scanned = full_sha('a');
+    let tested = full_sha('b');
+    bench
+        .host
+        .reply("ls-remote", 0, &format!("{scanned}\trefs/heads/staging\n"));
+    let job = bench.launch(Some("app"), "make check", 1_000);
+    assert_eq!(bench.latest().main, "staging");
+    bench.finish(
+        &job,
+        JobStatus::Finished,
+        "agent exit 0 in 5s",
+        2_000,
+        Some(&tested),
+    );
+    bench.collect(2_100);
+
+    let latest = bench.latest();
+    assert_eq!(latest.outcome.as_deref(), Some("green"));
+    assert_eq!(latest.exit, Some(0));
+    assert_eq!(latest.tested_commit.as_deref(), Some(tested.as_str()));
+    assert_eq!(
+        bench.check().last_green_commit.as_deref(),
+        Some(tested.as_str())
+    );
+
+    // A shortened human receipt hash is not execution provenance.
+    let mut other = Bench::new();
+    let job = other.launch(None, "make check", 1_000);
+    other.finish(
+        &job,
+        JobStatus::Finished,
+        "agent exit 0 in 5s",
+        2_000,
+        Some("fedcba9876"),
+    );
+    other.collect(2_100);
+    assert_eq!(other.latest().outcome.as_deref(), Some("environment"));
+    assert!(other.check().last_green_commit.is_none());
+    assert!(other.applied(&job));
+}
+
+#[test]
+fn command_environment_failure_retries_without_a_need() {
+    for (label, status, receipt) in [
+        ("missing tool", JobStatus::Finished, "agent exit 127 in 1s"),
+        ("setup", JobStatus::Finished, "agent exit 126 in 1s"),
+        ("no exit", JobStatus::Finished, "the worker said nothing"),
+        ("lost", JobStatus::Lost, "agent exit 0 in 1s"),
+    ] {
+        let mut bench = Bench::new();
+        let start = full_sha('c');
+        let job = bench.launch(Some("app"), "make check", 1_000);
+        bench.finish(&job, status, receipt, 2_000, Some(&start));
+        bench.collect(2_100);
+
+        let latest = bench.latest();
+        assert_eq!(latest.outcome.as_deref(), Some("environment"), "{label}");
+        assert!(latest.awaiting.is_none(), "{label}");
+        assert!(bench.applied(&job), "{label}");
+        let retry_at = latest.retry_at.expect("a retry is scheduled");
+        assert_eq!(retry_at, 2_000 + backoff_secs(1), "{label}");
+        assert!(bench.check().last_green_commit.is_none(), "{label}");
+        assert!(bench.check().red_need.is_none(), "{label}");
+        let exception = bench.check().exception.expect("a cadence exception");
+        assert_eq!(exception.kind, result::ENV_EXCEPTION, "{label}");
+        assert!(
+            bench
+                .space
+                .list_kind_all(None, "sent", "need")
+                .unwrap()
+                .is_empty()
+        );
+
+        let scan = bench.scan(Some("app"), "make check");
+        let check = bench.check();
+        assert!(
+            !command::ready(&bench.st, &scan, Some(&check), retry_at - 1),
+            "{label}"
+        );
+        assert!(
+            command::ready(&bench.st, &scan, Some(&check), retry_at),
+            "{label}"
+        );
+    }
+}
+
+#[test]
+fn command_check_configuration_change_invalidates_green_skip() {
+    let mut bench = Bench::new();
+    let green = full_sha('a');
+    bench
+        .host
+        .reply("ls-remote", 0, &format!("{green}\trefs/heads/staging\n"));
+    let job = bench.launch(Some("app"), "make check", 1_000);
+    bench.finish(
+        &job,
+        JobStatus::Finished,
+        "agent exit 0 in 5s",
+        2_000,
+        Some(&green),
+    );
+    bench.collect(2_100);
+    assert_eq!(
+        bench.check().last_green_commit.as_deref(),
+        Some(green.as_str())
+    );
+
+    // Same tip, new command: a different check, so it runs.
+    let changed = bench.scan(Some("app"), "make lint");
+    assert!(result::gate_due(
+        &bench.ctx,
+        &mut bench.cadence,
+        &changed,
+        100_000
+    ));
+
+    // Same tip, another target main: again a different check.
+    bench
+        .host
+        .reply("ls-remote", 0, &format!("{green}\trefs/heads/trunk\n"));
+    let retargeted = bench.scan(Some("radix"), "make check");
+    assert!(result::gate_due(
+        &bench.ctx,
+        &mut bench.cadence,
+        &retargeted,
+        100_000
+    ));
+
+    // Recording the changed execution drops the old green and red need.
+    let mut check = bench.check();
+    check.red_need = Some(String::from("need-1"));
+    check.record(CommandExecution {
+        fingerprint: String::from("other"),
+        ..CommandExecution::default()
+    });
+    assert!(check.last_green_commit.is_none());
+    assert!(check.red_need.is_none());
+}
+
+#[test]
+fn command_red_stages_its_report_and_never_becomes_green() {
+    let mut bench = Bench::new();
+    let start = full_sha('d');
+    let job = bench.launch(Some("app"), "make check", 1_000);
+    bench.finish(
+        &job,
+        JobStatus::Finished,
+        "agent exit 1 in 5s",
+        2_000,
+        Some(&start),
+    );
+    bench.collect(2_100);
+
+    let latest = bench.latest();
+    assert_eq!(latest.outcome.as_deref(), Some("red"));
+    assert_eq!(latest.exit, Some(1));
+    assert_eq!(latest.awaiting.as_deref(), Some(result::AWAITING_RED));
+    assert!(!bench.applied(&job), "the red need is still owed");
+    assert!(bench.check().last_green_commit.is_none());
+
+    // The staged result keeps the single-flight slot closed.
+    let scan = bench.scan(Some("app"), "make check");
+    let check = bench.check();
+    assert!(!command::ready(&bench.st, &scan, Some(&check), 100_000));
+}
+
+#[test]
+fn command_green_over_an_open_red_need_awaits_a_recovery_report() {
+    let mut bench = Bench::new();
+    let start = full_sha('e');
+    let choice = TargetChoice::Named {
+        id: String::from("app"),
+        main: String::from("staging"),
+    };
+    bench.cadence.checks.insert(
+        String::from("checker"),
+        CommandCheck {
+            fingerprint: command::fingerprint_of("checker", &choice, "make check"),
+            red_need: Some(String::from("need-1")),
+            ..CommandCheck::default()
+        },
+    );
+    let job = bench.launch(Some("app"), "make check", 1_000);
+    bench.finish(
+        &job,
+        JobStatus::Finished,
+        "agent exit 0 in 5s",
+        2_000,
+        Some(&start),
+    );
+    bench.collect(2_100);
+
+    let latest = bench.latest();
+    assert_eq!(latest.outcome.as_deref(), Some("green"));
+    assert_eq!(latest.awaiting.as_deref(), Some(result::AWAITING_RECOVERY));
+    assert!(!bench.applied(&job));
+    assert!(bench.check().last_green_commit.is_none());
+}
+
+#[test]
+fn command_evidence_is_not_consumed_without_a_mailspace() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (ctx, _host) = crate::pump::host::test_ctx(tmp.path(), three_targets());
+    let start = full_sha('f');
+    let mut st = State::default();
+    let mut cadence = CadenceState::default();
+    let role = command_role("checker", "make check", Some("app"));
+    let scan = target_scan("checker", Some("app"), Some("make check"));
+    command::enqueue(&ctx, &mut st, &mut cadence, &role, &scan, 1_000);
+    let job = cadence.checks["checker"].latest.clone().unwrap().job;
+    let entry = st.jobs.get_mut(&job).unwrap();
+    entry.status = JobStatus::Finished;
+    entry.outcome = Some(crate::pump::jobs::JobOutcome {
+        state: String::from("finished"),
+        detail: String::from("finished"),
+        receipt: String::from("agent exit 0 in 5s"),
+        at: 2_000,
+    });
+    let entry = start.as_str();
+    assert_eq!(result::tested_commit(&[], Some(entry)), None);
+
+    prepare_due(&ctx, &mut st);
+    let check = cadence.checks["checker"].latest.clone().unwrap();
+    assert!(check.ended_at.is_none(), "nothing was consumed");
+    assert!(check.outcome.is_none());
+    assert!(st.jobs[&job].applied_at.is_none());
+}
+
+#[test]
+fn command_target_tip_exception_backs_off_without_a_need() {
+    let mut bench = Bench::new();
+    bench.host.reply("ls-remote", 128, "fatal: unreachable");
+    let scan = bench.scan(Some("app"), "make check");
+    assert!(!result::gate_due(
+        &bench.ctx,
+        &mut bench.cadence,
+        &scan,
+        1_000
+    ));
+    let check = bench.check();
+    let exception = check.exception.clone().expect("a cadence exception");
+    assert_eq!(exception.kind, result::TIP_EXCEPTION);
+    assert_eq!(exception.retry_at, Some(1_000 + backoff_secs(1)));
+    assert!(bench.st.jobs.is_empty(), "no shell job was launched");
+    assert!(
+        bench
+            .space
+            .list_kind_all(None, "sent", "need")
+            .unwrap()
+            .is_empty()
+    );
+
+    // The backoff holds the next attempt back, then allows it once the tip
+    // can be read again.
+    assert!(!result::gate_due(
+        &bench.ctx,
+        &mut bench.cadence,
+        &scan,
+        1_059
+    ));
+    assert_eq!(bench.check().exception.unwrap().attempt, 1);
+    bench.host.reply(
+        "ls-remote",
+        0,
+        &format!("{}\trefs/heads/staging\n", full_sha('b')),
+    );
+    assert!(result::gate_due(
+        &bench.ctx,
+        &mut bench.cadence,
+        &scan,
+        1_060
+    ));
+    assert!(bench.check().exception.is_none());
+}
+
+#[test]
+fn command_target_main_absent_is_an_exception_not_a_skip() {
+    let mut bench = Bench::new();
+    bench.host.reply("ls-remote", 0, "");
+    let scan = bench.scan(Some("app"), "make check");
+    assert!(!result::gate_due(
+        &bench.ctx,
+        &mut bench.cadence,
+        &scan,
+        1_000
+    ));
+    let exception = bench.check().exception.expect("a cadence exception");
+    assert!(exception.reason.contains("absent"), "{}", exception.reason);
+    assert!(bench.check().waiting_main.is_none());
 }
