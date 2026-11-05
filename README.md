@@ -560,9 +560,23 @@ step's task, state and verdict.
 | `repair` | Two repairer attempts, the `main` rung on the repair branch, then a merge; otherwise the need is unrepaired, main stays red and the pump raises an alarm. A red main files a repair need |
 
 A need runs when it has an open **pump record**. `vivi pump send --need <need>`
-files one, and sending is the dispatch. The flow is the record's `kind`
-(`build`, `research`, `release` or `repair`), else the need's mark (`research`,
-`release`, `repair`), else `build`. A landing closes the need and closes the
+files one, and sending is the dispatch: it queues the build. A new run is
+authorized only when the build's effective prerequisites have landed and its
+rank and the `[pump.flow] max_live_runs` capacity allow it. The effective
+prerequisites are the need's `depends_on` front matter as the newest
+`dependency-added` / `dependency-removed` letter per dependency rewrites it. An
+ordinary build whose prerequisite is still open waits silently, keeps its place
+in the queue and consumes no live-run slot, so a lower-ranked eligible need
+fills that slot meanwhile. A prerequisite held by an operator-only step raises
+`flow-build-prereq-held`, one closed without landing raises
+`flow-build-prereq-unlanded`, and a prerequisite the pump cannot read raises
+`flow-build-prereq-unreadable`; each diagnostic names its own build and leaves
+the other needs admitted. The wait is reassessed every tick, even with the cap
+full, and dropped once the need is admitted, its record closes, or the need is
+done. This gates new runs only: a run already `starting` is recovered even when
+a dependency was added after it crossed admission. The flow is the record's
+`kind` (`build`, `research`, `release` or `repair`), else the need's mark
+(`research`, `release`, `repair`), else `build`. A landing closes the need and closes the
 record `landed`. A record also closes `withdrawn` or `superseded`. A send is
 refused for a need that already has an open record, a need that is done, or a
 handle that is not a need. The front matter of the record is in the
