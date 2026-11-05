@@ -33,9 +33,14 @@ pub(super) fn request(
         .jobs
         .get(id)
         .ok_or_else(|| VivariumError::Message(format!("unknown job: {id}")))?;
-    if job.status != JobStatus::Pending || job.held.is_none() {
+    if job.status != JobStatus::Pending || job.held.is_none() || job.applied_at.is_some() {
+        let retirement = if job.applied_at.is_some() {
+            " and applied"
+        } else {
+            ""
+        };
         return Err(VivariumError::Message(format!(
-            "job {id} is {:?} and not held; nothing to release",
+            "job {id} is {:?}{retirement} and not held; nothing to release",
             job.status
         )));
     }

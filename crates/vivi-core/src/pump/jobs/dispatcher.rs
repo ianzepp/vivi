@@ -60,7 +60,7 @@ pub const REFUSAL_LIMIT: u32 = 3;
 
 /// Whether a job waits for a pool: Pending and not held.
 fn dispatchable(job: &PoolJob) -> bool {
-    job.status == JobStatus::Pending && job.held.is_none()
+    job.status == JobStatus::Pending && job.held.is_none() && job.applied_at.is_none()
 }
 
 /// One job being offered to its candidate pools in order.
