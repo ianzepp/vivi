@@ -71,13 +71,13 @@ pub fn spec(
          Diagnosis for job {}: {diagnosis}\n\n\
          Rewrite only the envelope; do not redo the work; keep every fact. \
          Answer with the corrected reply and nothing else.\n\n\
-         The envelope rules and this role's fields:\n{}\n\n\
-         The reply to correct:\n{}",
+         The reply to correct:\n{}\n\n\
+         The envelope rules and this role's fields:\n{}",
         row.run,
         row.node,
         original.id,
-        super::format::role(kind),
         capped(&final_text(original)),
+        super::format::role(kind),
     );
     let mut spec = JobSpec::new(id, KIND, role, format!("envelope fix: {}", row.node), body);
     spec.target.clone_from(&original.target);

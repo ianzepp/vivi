@@ -9,7 +9,7 @@ use crate::pump::envelope::EnvelopeError;
 use crate::pump::flow::index::StepJobRow;
 use crate::pump::jobs::{JobOutcome, JobSpec, JobStore, PoolJob};
 use crate::pump::store::{DB_FILENAME, PumpStore};
-use vivi_mail::letter::roles::RoleKind;
+use vivi_mail::letter::roles::{Planner, RoleKind, parse_role_reply};
 
 #[derive(Default)]
 struct Store {
@@ -89,6 +89,30 @@ fn the_spec_names_the_step_and_asks_for_the_envelope_only() {
     assert!(got.body.contains("keep every fact"));
     assert!(got.body.contains("planner: answer"));
     assert!(got.body.contains("the plan, no fences"));
+    let original = got.body.find("The reply to correct:").unwrap();
+    let footer = got
+        .body
+        .find("The envelope rules and this role's fields:")
+        .unwrap();
+    assert!(original < footer, "faulty reply must precede final footer");
+    let (prefix, example) = got
+        .body
+        .rsplit_once("Example (illustrative only):\n")
+        .unwrap();
+    assert!(prefix.contains("The envelope rules and this role's fields:"));
+    assert!(
+        got.body.ends_with("+++"),
+        "the shared footer example is final"
+    );
+    assert!(
+        got.body
+            .contains("Rewrite only the envelope; do not redo the work; keep every fact.")
+    );
+    let parsed = parse_role_reply::<Planner>(example).unwrap();
+    assert_eq!(
+        parsed.front.answer,
+        vivi_mail::letter::roles::PlannerAnswer::Delivered
+    );
 }
 
 #[test]
