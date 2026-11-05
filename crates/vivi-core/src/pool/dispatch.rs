@@ -32,6 +32,7 @@ struct ResolvedJob {
     budget: u64,
     reasoning: Option<String>,
     committer: PoolCommitter,
+    publish_if: Vec<job::PublicationAssertion>,
 }
 
 /// The flags of `vivi pool dispatch`.
@@ -49,6 +50,8 @@ pub struct DispatchFlags {
     /// Exact commit the candidate must equal before it is published (a need-branch rename).
     pub publish_expect: Option<String>,
     pub publish_contains: Option<String>,
+    /// Branch tips that must still equal their supplied object ids at publish time.
+    pub publish_if: Vec<String>,
     pub delete_ref: Option<String>,
     pub delete_expect: Option<String>,
     /// Extra refs the job may read (`--with`); when any are given they beat
@@ -132,7 +135,7 @@ pub fn plan_job(
     validate_source(config, pool)?;
     let committer = plan_committer(config, pool)?;
     let (harness, reasoning) = plan_harness(config, pool, flags)?;
-    validate_publish_flags(flags)?;
+    let publish_if = validate_publish_flags(flags)?;
     check_task_letter(handle, body)?;
     let refs = plan_refs(flags, body)?;
     let with = job::resolve_with(&flags.with, body, &refs.from, &refs.branch)?
@@ -163,6 +166,7 @@ pub fn plan_job(
             budget,
             reasoning,
             committer,
+            publish_if,
         },
     ))
 }
@@ -183,6 +187,7 @@ fn assemble_job_plan(
         budget,
         reasoning,
         committer,
+        publish_if,
     } = resolved;
     JobPlan {
         target: None,
@@ -204,6 +209,7 @@ fn assemble_job_plan(
         publish_ref: flags.publish_ref.clone(),
         publish_expect: flags.publish_expect.clone(),
         publish_contains: flags.publish_contains.clone(),
+        publish_if,
         delete_ref: flags.delete_ref.clone(),
         delete_expect: flags.delete_expect.clone(),
         publish_remote: None,
@@ -211,13 +217,7 @@ fn assemble_job_plan(
         model: flags.model.clone(),
         budget,
         depth: config.fetch_depth(),
-        harness_cmd: match (&flags.command, harness) {
-            (Some(command), _) => command.clone(),
-            (None, Some(harness)) => {
-                job::render_harness(&harness.run, &flags.model, reasoning.as_deref())
-            }
-            (None, None) => String::new(),
-        },
+        harness_cmd: harness_command(flags, harness, reasoning.as_deref()),
         env_names: harness.map(|h| h.env.clone()).unwrap_or_default(),
         committer,
         read_only: flags.read_only,
@@ -227,7 +227,21 @@ fn assemble_job_plan(
     }
 }
 
-fn validate_publish_flags(flags: &DispatchFlags) -> Result<(), VivariumError> {
+fn harness_command(
+    flags: &DispatchFlags,
+    harness: Option<&super::config::PoolHarness>,
+    reasoning: Option<&str>,
+) -> String {
+    match (&flags.command, harness) {
+        (Some(command), _) => command.clone(),
+        (None, Some(harness)) => job::render_harness(&harness.run, &flags.model, reasoning),
+        (None, None) => String::new(),
+    }
+}
+
+fn validate_publish_flags(
+    flags: &DispatchFlags,
+) -> Result<Vec<job::PublicationAssertion>, VivariumError> {
     if flags.read_only && flags.publish_ref.is_some() {
         return Err(VivariumError::Config(
             "read-only jobs cannot request privileged publication".into(),
@@ -253,7 +267,48 @@ fn validate_publish_flags(flags: &DispatchFlags) -> Result<(), VivariumError> {
             "publish expectation must be a full 40- or 64-character commit SHA".into(),
         ));
     }
-    validate_runner_guards(flags)
+    let publish_if = validate_publish_if(flags)?;
+    validate_runner_guards(flags)?;
+    Ok(publish_if)
+}
+
+fn validate_publish_if(
+    flags: &DispatchFlags,
+) -> Result<Vec<job::PublicationAssertion>, VivariumError> {
+    let publish_if = flags
+        .publish_if
+        .iter()
+        .map(|assertion| {
+            let (reference, sha) = assertion.split_once('=').ok_or_else(|| {
+                VivariumError::Config(format!(
+                    "publish assertion must have REF=SHA form, got {assertion:?}"
+                ))
+            })?;
+            let branch = reference
+                .strip_prefix("refs/heads/")
+                .unwrap_or_default();
+            if !valid_publish_ref(branch) || !full_commit_sha(sha) {
+                return Err(VivariumError::Config(format!(
+                    "publish assertion must name a complete refs/heads branch and full commit SHA, got {assertion:?}"
+                )));
+            }
+            Ok(job::PublicationAssertion {
+                reference: reference.to_string(),
+                sha: sha.to_string(),
+            })
+        })
+        .collect::<Result<Vec<_>, VivariumError>>()?;
+    if !publish_if.is_empty() && flags.publish_ref.is_none() {
+        return Err(VivariumError::Config(
+            "publish assertions require --publish-ref".into(),
+        ));
+    }
+    if !publish_if.is_empty() && flags.read_only {
+        return Err(VivariumError::Config(
+            "read-only jobs cannot request publication assertions".into(),
+        ));
+    }
+    Ok(publish_if)
 }
 
 fn validate_runner_guards(flags: &DispatchFlags) -> Result<(), VivariumError> {

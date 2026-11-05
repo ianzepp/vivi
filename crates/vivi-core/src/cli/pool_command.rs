@@ -152,6 +152,15 @@ pub struct PoolDispatchCommand {
     )]
     pub publish_contains: Option<String>,
 
+    /// Require selected branches to still point at these full commits when publishing; repeatable.
+    #[arg(
+        long = "publish-if",
+        value_name = "REF=SHA",
+        requires = "publish_ref",
+        conflicts_with = "read_only"
+    )]
+    pub publish_if: Vec<String>,
+
     /// Delete an owned need branch only if it still matches --delete-expect.
     #[arg(long, value_name = "REF", requires = "delete_expect", conflicts_with_all = ["read_only", "publish_ref"])]
     pub delete_ref: Option<String>,
