@@ -185,6 +185,80 @@ fn enqueue_records_the_job_under_the_steps_own_task_and_attempt() {
 }
 
 #[test]
+fn the_guidance_reports_the_originals_discarded_evidence() {
+    let mut job = original("j1", "the plan, no fences");
+    job.read_only = true;
+    job.outcome = Some(JobOutcome {
+        state: "finished".to_owned(),
+        detail: String::new(),
+        receipt: "result: read_only_discarded 3\ndiscarded paths (3 of 3):\n  src/a.rs\n\n\
+                  --- receipt\nthe plan, no fences\n"
+            .to_owned(),
+        at: 0,
+    });
+    let got = spec(
+        "n1",
+        &row("j1", 1),
+        "planner",
+        RoleKind::Planner,
+        &job,
+        &EnvelopeError::NoOpening,
+        1,
+        45,
+    );
+    assert!(got.body.contains("Diagnosis for job j1:"), "{}", got.body);
+    assert!(got.body.contains("reply has no envelope"), "{}", got.body);
+    assert!(
+        got.body
+            .contains("the read-only job changed 3 files (first: src/a.rs)"),
+        "{}",
+        got.body
+    );
+    assert!(
+        got.body.contains("Rewrite only the envelope"),
+        "{}",
+        got.body
+    );
+}
+
+#[test]
+fn a_correction_reply_carries_its_own_discarded_evidence() {
+    let mut job = original("j1-c1", "the corrected plan");
+    job.read_only = true;
+    job.outcome = Some(JobOutcome {
+        state: "finished".to_owned(),
+        detail: String::new(),
+        receipt: "result: read_only_discarded 2\ndiscarded paths (2 of 2):\n  src/b.rs\n\n\
+                  --- receipt\nthe corrected plan\n"
+            .to_owned(),
+        at: 0,
+    });
+    let got = spec(
+        "n1",
+        &row("j1-c1", 1),
+        "planner",
+        RoleKind::Planner,
+        &job,
+        &EnvelopeError::Unclosed,
+        2,
+        45,
+    );
+    assert_eq!(got.id, "j1-c2");
+    assert!(
+        got.body.contains("Diagnosis for job j1-c1:"),
+        "{}",
+        got.body
+    );
+    assert!(
+        got.body
+            .contains("the read-only job changed 2 files (first: src/b.rs)"),
+        "{}",
+        got.body
+    );
+    assert!(got.body.contains("the corrected plan"), "{}", got.body);
+}
+
+#[test]
 fn a_job_is_never_resumable() {
     assert!(!resumable(&original("j1", "x")));
 }
