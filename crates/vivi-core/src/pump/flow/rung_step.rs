@@ -143,7 +143,10 @@ pub(crate) fn hold_env<S: JobStore, M: FlowMail>(
 
 /// The answer word and outcome payload of a finished rung job. The payload
 /// carries `exit`, `tail` and the sorted `failing` ids: facts from cargo's own
-/// output (N4a-29), never from model text.
+/// output (N4a-29), never from model text. It also keeps the dispatch
+/// provenance as the job saved it (`rung`, the exact `command`, `target`,
+/// tested `tip`, source `job` and dispatch `task`) and the bounded `excerpt`,
+/// so describing completed work never resolves the current configuration.
 pub(crate) fn answer(pool_job: &PoolJob) -> (&'static str, serde_json::Value) {
     let result = rung_result::parse(pool_job);
     let word = match (result.pass, result.exit) {
@@ -155,8 +158,122 @@ pub(crate) fn answer(pool_job: &PoolJob) -> (&'static str, serde_json::Value) {
         "exit": result.exit,
         "tail": result.tail,
         "failing": result.failing,
+        "excerpt": result.excerpt,
+        "rung": pool_job.payload.get("rung").and_then(serde_json::Value::as_str),
+        "command": pool_job.command.as_deref(),
+        "target": pool_job.target.as_deref(),
+        "tip": pool_job.from_ref.as_deref(),
+        "job": pool_job.id.as_str(),
+        "task": pool_job.task.as_deref(),
     });
     (word, payload)
+}
+
+/// A value the payload saved, as text; none when the key is absent or null.
+fn recorded<'a>(payload: &'a serde_json::Value, key: &str) -> Option<&'a str> {
+    payload.get(key).and_then(serde_json::Value::as_str)
+}
+
+/// Render a saved rung answer as a diagnostic: the rung, exact command,
+/// target, tested commit, exit, durable source job and dispatch task, then
+/// the canonical failing ids, then the excerpt selection and its bounded
+/// text. Reads only the stored payload; a value it does not carry is
+/// reported as `not recorded`, never guessed from current configuration.
+pub(crate) fn render_diagnostic(payload: &serde_json::Value) -> String {
+    let mut out = String::new();
+    for (label, key) in [
+        ("rung: ", "rung"),
+        ("command: ", "command"),
+        ("target: ", "target"),
+        ("tested: ", "tip"),
+        ("source job: ", "job"),
+    ] {
+        out.push_str(label);
+        out.push_str(recorded(payload, key).unwrap_or("not recorded"));
+        out.push('\n');
+    }
+    out.push_str(&format!("exit: {}\n", exit_text(payload)));
+    match recorded(payload, "task") {
+        Some(task) => out.push_str(&format!(
+            "task: {task} (dispatch task; task show --latest is not an immutable reference)\n"
+        )),
+        None => out.push_str("task: not recorded\n"),
+    }
+    out.push_str(&failing_text(payload));
+    out.push_str(&excerpt_text(payload));
+    out
+}
+
+/// The stored exit code, or `not recorded` when the job never reported one.
+fn exit_text(payload: &serde_json::Value) -> String {
+    payload
+        .get("exit")
+        .and_then(serde_json::Value::as_i64)
+        .map_or_else(|| String::from("not recorded"), |code| code.to_string())
+}
+
+/// The canonical failing ids on their own lines. An empty set says that no
+/// test was named: a build, size-check, timeout or lost-job failure is still
+/// a failure and must not read as green.
+fn failing_text(payload: &serde_json::Value) -> String {
+    let ids = match payload.get("failing") {
+        Some(serde_json::Value::Array(ids)) => ids,
+        _ => return String::from("failing: not recorded\n"),
+    };
+    if ids.is_empty() {
+        return String::from(
+            "failing: no canonical failing test id (an empty set is not green; a build, \
+             size-check, timeout or lost-job failure names no test)\n",
+        );
+    }
+    let mut out = format!("failing: {} canonical test id(s)\n", ids.len());
+    for id in ids.iter().filter_map(serde_json::Value::as_str) {
+        out.push_str("  ");
+        out.push_str(id);
+        out.push('\n');
+    }
+    out
+}
+
+/// The excerpt's selection and cut counts, then its bounded text. Missing
+/// evidence is reported as such rather than rendered as an empty green run.
+fn excerpt_text(payload: &serde_json::Value) -> String {
+    let Some(excerpt) = payload.get("excerpt").filter(|value| value.is_object()) else {
+        return String::from("excerpt: not recorded\n");
+    };
+    let mode = excerpt
+        .get("mode")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("unknown");
+    let kept = excerpt
+        .get("kept_lines")
+        .and_then(serde_json::Value::as_u64);
+    let source = excerpt
+        .get("source_lines")
+        .and_then(serde_json::Value::as_u64);
+    let omitted = excerpt
+        .get("omitted_lines")
+        .and_then(serde_json::Value::as_u64);
+    let truncated = excerpt
+        .get("truncated")
+        .and_then(serde_json::Value::as_bool);
+    let mut out = match (kept, source, omitted, truncated) {
+        (Some(kept), Some(source), Some(omitted), Some(truncated)) => format!(
+            "excerpt: {mode}; kept {kept} of {source} source lines; omitted {omitted}; truncated {truncated}\n"
+        ),
+        _ => format!("excerpt: {mode}; selection counts not recorded\n"),
+    };
+    let text = excerpt
+        .get("text")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    if text.is_empty() {
+        out.push_str("(no excerpt evidence)\n");
+    } else {
+        out.push_str(text);
+        out.push('\n');
+    }
+    out
 }
 
 fn payload_str<'a>(job: &'a PoolJob, key: &str) -> Result<&'a str, VivariumError> {
