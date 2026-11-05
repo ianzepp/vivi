@@ -378,6 +378,61 @@ fn finish_rung1(rig: &mut Rig, receipt: &str) -> R {
     rig.tick()
 }
 
+/// A rung receipt whose early offender context precedes hundreds of passing
+/// lines and whose bounded excerpt runs well past 2000 characters.
+fn long_receipt() -> String {
+    let mut text = String::from("agent exit 101 in 90s\n\n");
+    text.push_str("OFFENDER: crates/vivi-core/src/pump/flow/repair_steps.rs is 1004 lines\n");
+    for line in 0..300 {
+        text.push_str(&format!("test pump::flow::passing::{line:03} ... ok\n"));
+    }
+    for case in 0..80 {
+        text.push_str(&format!(
+            "error: pump::flow::repair_steps::case_{case:03}\n"
+        ));
+        text.push_str("  the excerpt kept this whole\n");
+    }
+    text
+}
+
+#[test]
+fn a_prior_rung_failure_keeps_its_early_context_and_its_whole_excerpt() -> R {
+    let mut rig = rig(true)?;
+    finish_rung1(&mut rig, &long_receipt())?;
+    let rung = rig.step("rung1")?;
+    let replies = rig.mail.tasks[&rung.task].replies.clone();
+    let note = replies
+        .iter()
+        .filter_map(|reply| note_of(reply))
+        .find(|note| note.pump.note == NoteWord::RepairRung)
+        .unwrap_or_else(|| panic!("no rung verdict reply: {replies:?}"));
+    let prose = &note.prose;
+    assert_eq!(repair::parse_tested(prose).as_deref(), Some(COMMIT));
+    assert_eq!(
+        prose.split_whitespace().next(),
+        Some("tested=2222222222222222222222222222222222222222")
+    );
+    assert!(prose.contains("command: cargo test"), "{prose}");
+    assert!(prose.contains("target: default"), "{prose}");
+    assert!(
+        prose.contains(&format!("source job: rung-main-{}-a1", rung.task)),
+        "{prose}"
+    );
+    assert!(prose.contains(&format!("task: {} (", rung.task)), "{prose}");
+    assert!(
+        prose.contains("OFFENDER: crates/vivi-core/src/pump/flow/repair_steps.rs is 1004 lines"),
+        "{prose}"
+    );
+    let late = prose
+        .find("case_020")
+        .unwrap_or_else(|| panic!("late evidence dropped: {prose}"));
+    assert!(
+        late > 2000,
+        "evidence past the old 2000-character cut was dropped at {late}: {prose}"
+    );
+    Ok(())
+}
+
 #[test]
 fn an_environment_failure_posts_no_verdict_and_holds_the_rung() -> R {
     let mut rig = rig(true)?;

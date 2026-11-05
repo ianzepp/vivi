@@ -21,8 +21,6 @@ mod merge;
 
 /// The rung a repair rung step runs.
 const MAIN_RUNG: &str = "main";
-/// Characters of the rung tail a verdict reply keeps.
-const TAIL_CHARS: usize = 2000;
 
 /// The attempt number a repair rung or merge step node carries.
 fn attempt_for(step: &StepRow) -> Result<u32, VivariumError> {
@@ -131,31 +129,19 @@ impl<S: JobStore, M: FlowMail> StepCollector<S, M> for RepairRungCollector {
     }
 }
 
-/// `tested=<tip>; exit <code>; failing <ids>; tail: <first 2000 chars>` on one
-/// line; the `tested=` part is left out when the rung job has no `tip`.
+/// `tested=<tip>` as the first word of the prose when the rung job carries a
+/// `tip`, then [`rung_step::render_diagnostic`] of the enriched payload: the
+/// rung, exact saved command, target, tested commit, exit, source job and
+/// dispatch task, the canonical failing ids, and the bounded excerpt with its
+/// own selection counts and cuts. Multiline evidence is kept as written, so the
+/// source context is never flattened or cut a second time; the `tested=` word
+/// stays parseable by [`repair::parse_tested`].
 fn verdict_text(tip: Option<&str>, payload: &Value) -> String {
-    let exit = payload
-        .get("exit")
-        .and_then(Value::as_i64)
-        .map_or_else(|| "none".to_owned(), |code| code.to_string());
-    let failing: Vec<&str> = payload
-        .get("failing")
-        .and_then(Value::as_array)
-        .map(|ids| ids.iter().filter_map(Value::as_str).collect())
-        .unwrap_or_default();
-    let tail: String = payload
-        .get("tail")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .chars()
-        .take(TAIL_CHARS)
-        .collect();
-    let tested = tip.map_or_else(String::new, |tip| format!("tested={tip}; "));
-    format!(
-        "{tested}exit {exit}; failing {}; tail: {}",
-        failing.join(" "),
-        tail.replace('\n', " | ")
-    )
+    let diagnostic = rung_step::render_diagnostic(payload);
+    match tip {
+        Some(tip) => format!("tested={tip}\n{diagnostic}"),
+        None => diagnostic,
+    }
 }
 
 /// Registers this module's handlers.
