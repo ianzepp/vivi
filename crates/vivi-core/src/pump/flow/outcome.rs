@@ -105,7 +105,7 @@ pub fn role_job(
         kind,
         role,
         format!("{} ({} r{})", step.node, run.need, run.run),
-        brief,
+        crate::pump::envelope::submit::with_section(brief, execution),
     );
     spec.task = Some(step.task.clone());
     spec.budget = ctx.cfg.dispatch.step_budget(execution);

@@ -79,6 +79,7 @@ pub fn spec(
         role_row(kind),
         capped(&final_text(original)),
     );
+    let body = super::submit::with_section(&body, kind);
     let mut spec = JobSpec::new(id, KIND, role, format!("envelope fix: {}", row.node), body);
     spec.target.clone_from(&original.target);
     spec.pool_candidates.clone_from(&original.pool_candidates);

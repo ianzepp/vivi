@@ -55,6 +55,12 @@ impl RoleKind {
         }
     }
 
+    /// The role named `name` (as [`RoleKind::name`] spells it).
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| kind.name() == name)
+    }
+
     /// The `answer` words the role's envelope accepts.
     pub fn answer_words(self) -> &'static [&'static str] {
         match self {

@@ -482,7 +482,10 @@ fn hand_spec<M: SliceMail>(
         KIND,
         &role.name,
         format!("{} a{attempt} ({need})", slice.node),
-        body,
+        crate::pump::envelope::submit::with_section(
+            &body,
+            vivi_mail::letter::roles::RoleKind::Hand,
+        ),
     );
     spec.task = Some(slice.task.clone());
     spec.target = Some(target.to_owned());

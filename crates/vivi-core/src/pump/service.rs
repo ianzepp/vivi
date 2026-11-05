@@ -293,6 +293,19 @@ pub enum Supervised {
 ///
 /// The registry's `pump = false` is retired: on start it is moved into the
 /// project's control state (stopped) once, and the entry is marked migrated.
+/// The environment variable that gives a pump child the server's own base
+/// URL; the pump builds each role step's reply-check address from it.
+pub const REPLY_CHECK_ENV: &str = "VIVI_REPLY_CHECK_URL";
+
+static REPLY_CHECK_BASE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Record the base URL (`http://<address>:<port>`) that pool slots reach
+/// this server on; every pump child started afterwards gets it as
+/// [`REPLY_CHECK_ENV`]. The first call wins.
+pub fn set_reply_check_base(base: String) {
+    drop(REPLY_CHECK_BASE.set(base));
+}
+
 pub async fn supervise_in_server(state_file: PathBuf) -> Supervised {
     let lock = match take_service_lock() {
         Ok(lock) => lock,
@@ -625,7 +638,11 @@ fn shutdown_is_pending(project: &Path, home: &Path) -> bool {
 }
 
 async fn spawn_pump(executable: &Path, project: &Path) -> Result<Child, std::io::Error> {
-    let mut child = Command::new(executable)
+    let mut command = Command::new(executable);
+    if let Some(base) = REPLY_CHECK_BASE.get() {
+        command.env(REPLY_CHECK_ENV, base);
+    }
+    let mut child = command
         .args(["pump", "run", "--service-child", "--project"])
         .arg(project)
         .stdin(Stdio::null())

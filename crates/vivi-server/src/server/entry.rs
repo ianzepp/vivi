@@ -73,6 +73,11 @@ async fn serve(config: ServerConfig) {
         Ok(listener) => listener,
         Err(err) => die(1, &format!("cannot bind {addr}: {err}")),
     };
+    // Pool slots check role replies against this server; a wildcard bind
+    // names no address a slot could reach, so it offers none.
+    if !config.bind.is_unspecified() {
+        vivi_core::pump::service::set_reply_check_base(format!("http://{addr}"));
+    }
 
     check_store_and_warn(&config);
 

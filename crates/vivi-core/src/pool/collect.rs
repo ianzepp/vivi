@@ -37,11 +37,14 @@ const SECTION_LOG: &str = "@@vivi-pool log";
 
 /// Runs inside the slot (`WORK` names its root where that is not `/work`).
 /// Prints nothing until the job's result exists, then the result, the receipt,
-/// and the log tails, each under a marker line.
+/// and the log tails, each under a marker line. The receipt is the reply the
+/// agent handed in with `vivi-submit` (`reply.md`) when there is one, else
+/// the agent's printed output.
 pub const COLLECT_SCRIPT: &str = r#"J="${WORK:-/work}/job"
 [ -f "$J/result" ] || exit 0
 echo '@@vivi-pool result'; cat "$J/result"
-echo '@@vivi-pool receipt'; head -c 262144 "$J/agent.out" 2>/dev/null; echo
+R="$J/agent.out"; [ ! -s "$J/reply.md" ] || R="$J/reply.md"
+echo '@@vivi-pool receipt'; head -c 262144 "$R" 2>/dev/null; echo
 echo '@@vivi-pool stderr'; tail -c 4096 "$J/agent.err" 2>/dev/null; echo
 echo '@@vivi-pool log'; tail -c 4096 "$J/run.log" 2>/dev/null; echo
 "#;
