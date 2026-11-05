@@ -101,6 +101,78 @@ fn restart_entry_round_trips_and_replaces() {
 }
 
 #[test]
+fn restart_metadata_persists_and_legacy_rows_read_without_provenance() {
+    let dir = tempdir().expect("tempdir");
+    let store = open(&dir);
+    store
+        .set_restart_entry("legacy", 1, "plan")
+        .expect("legacy");
+    assert_eq!(
+        store
+            .restart_metadata("legacy", 1)
+            .expect("read")
+            .unwrap()
+            .origin_record,
+        None
+    );
+    let run = RunRow {
+        need: "n1".into(),
+        run: 1,
+        flow: "f".into(),
+        flow_version: 1,
+        kind: "build".into(),
+        entry: "plan".into(),
+        state: "live".into(),
+    };
+    store.insert_run(&run).expect("run");
+    let request = super::RestartMetadata {
+        need: "n1".into(),
+        run: 1,
+        entry: "slice".into(),
+        origin_record: Some("rec".into()),
+        action_id: Some("act".into()),
+        unlock_task: Some("task".into()),
+    };
+    assert!(store.request_restart(&request, 55).expect("request"));
+    assert!(!store.request_restart(&request, 99).expect("replay"));
+    assert_eq!(
+        store.restart_metadata("n1", 1).expect("metadata"),
+        Some(request)
+    );
+    assert_eq!(store.runs_in_state("restarting").expect("state").len(), 1);
+    assert!(store.applied_action_ids().expect("receipt").contains("act"));
+}
+
+#[test]
+fn restart_request_rolls_back_when_receipt_write_fails() {
+    let dir = tempdir().expect("tempdir");
+    let store = open(&dir);
+    let run = RunRow {
+        need: "n1".into(),
+        run: 1,
+        flow: "f".into(),
+        flow_version: 1,
+        kind: "build".into(),
+        entry: "plan".into(),
+        state: "live".into(),
+    };
+    store.insert_run(&run).expect("run");
+    store.conn().execute_batch("CREATE TRIGGER fail_receipt BEFORE INSERT ON applied_actions BEGIN SELECT RAISE(ABORT, 'failure'); END;").expect("trigger");
+    let request = super::RestartMetadata {
+        need: "n1".into(),
+        run: 1,
+        entry: "slice".into(),
+        origin_record: None,
+        action_id: Some("act".into()),
+        unlock_task: None,
+    };
+    assert!(store.request_restart(&request, 1).is_err());
+    assert_eq!(store.restart_entry("n1", 1).expect("entry"), None);
+    assert_eq!(store.runs_of("n1").expect("run")[0].state, "live");
+    assert!(!store.applied_action_ids().expect("actions").contains("act"));
+}
+
+#[test]
 fn reopening_the_file_keeps_the_rows() {
     let dir = tempdir().expect("tempdir");
     {
