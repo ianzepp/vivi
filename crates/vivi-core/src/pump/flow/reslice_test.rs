@@ -48,12 +48,16 @@ const SPLIT_LEAD: &str = "Return a slice list for this slice (sliced) or escalat
 const REWORK_LEAD: &str = "Return a slice list for this blocked-scope rework (sliced) or \
                            escalate. Do not implement it; your checkout is read-only.";
 
-/// The target's main ref: a reslice job must never start here.
+/// The target's main ref: a reslice job starts here only as a fallback.
 const MAIN: &str = "1111111111111111111111111111111111111111";
 /// The published tip of the need branch.
 const NEED_TIP: &str = "2222222222222222222222222222222222222222";
 /// The base recorded for the need branch.
 const BASE: &str = "3333333333333333333333333333333333333333";
+/// The `alpha` target's main tip.
+const ALPHA_MAIN: &str = "4444444444444444444444444444444444444444";
+/// The `beta` target's main tip.
+const BETA_MAIN: &str = "5555555555555555555555555555555555555555";
 
 #[derive(Default)]
 struct Jobs {
@@ -97,21 +101,45 @@ fn rig() -> Result<Rig, VivariumError> {
 
 fn rig_with(cfg: PumpConfig) -> Result<Rig, VivariumError> {
     let rig = rig_bare(cfg)?;
+    seed_main(&rig, "default", MAIN)?;
     seed_live_branch(&rig, "default")?;
     Ok(rig)
 }
 
-/// The fake remote's command line answering the need branch of `target`.
-fn branch_rule(rig: &Rig, target: &str) -> String {
-    let remote = rig
-        .ctx
+/// The fake remote's command line answering `name` on `target`.
+fn ref_rule(ctx: &Ctx, target: &str, name: &str) -> String {
+    let remote = ctx
         .cfg
         .for_target(target)
-        .map_or_else(|| rig.ctx.cfg.remote.clone(), |cfg| cfg.remote);
-    format!(
-        "ls-remote {remote} refs/heads/{}",
-        need_branch::branch(NEED)
-    )
+        .map_or_else(|| ctx.cfg.remote.clone(), |cfg| cfg.remote);
+    format!("ls-remote {remote} refs/heads/{name}")
+}
+
+/// The main ref name of `target`.
+fn main_ref(ctx: &Ctx, target: &str) -> String {
+    ctx.cfg
+        .for_target(target)
+        .map_or_else(|| ctx.cfg.main.clone(), |cfg| cfg.main.clone())
+}
+
+/// Publish `name` at `sha` on `target`'s remote.
+fn publish(rig: &Rig, target: &str, name: &str, sha: &str) {
+    rig.host.reply(
+        &ref_rule(&rig.ctx, target, name),
+        0,
+        &format!("{sha}\trefs/heads/{name}\n"),
+    );
+}
+
+/// The target's main ref, published at `sha`.
+fn seed_main(rig: &Rig, target: &str, sha: &str) -> Result<(), VivariumError> {
+    publish(rig, target, &main_ref(&rig.ctx, target), sha);
+    Ok(())
+}
+
+/// The fake remote's command line answering the need branch of `target`.
+fn branch_rule(rig: &Rig, target: &str) -> String {
+    ref_rule(&rig.ctx, target, &need_branch::branch(NEED))
 }
 
 /// A live need branch on `target` whose published tip is [`NEED_TIP`] and
@@ -125,11 +153,9 @@ fn seed_live_branch(rig: &Rig, target: &str) -> Result<(), VivariumError> {
         target,
         Vec::new(),
     ))?;
-    rig.host.reply(
-        &branch_rule(rig, target),
-        0,
-        &format!("{NEED_TIP}\trefs/heads/{}\n", need_branch::branch(NEED)),
-    );
+    publish(rig, target, &need_branch::branch(NEED), NEED_TIP);
+    // The published tip holds a commit main does not: the branch is the base.
+    rig.host.reply("merge-base --is-ancestor", 1, "");
     Ok(())
 }
 
@@ -146,8 +172,7 @@ fn unpublish_branch(rig: &Rig, target: &str, base: Option<&str>) -> Result<(), V
     ))
 }
 
-fn rig_bare(mut cfg: PumpConfig) -> Result<Rig, VivariumError> {
-    cfg.main = String::from(MAIN);
+fn rig_bare(cfg: PumpConfig) -> Result<Rig, VivariumError> {
     let dir = tempdir().map_err(|e| VivariumError::Other(e.to_string()))?;
     let (ctx, host) = test_ctx(dir.path(), cfg);
     let mut routing = (*ctx.routing).clone();
@@ -455,7 +480,14 @@ fn reslice_jobs_without_a_slicer_override_take_the_changed_fallback() -> R {
     Ok(())
 }
 
-// ---- the need branch a reslice job starts from ----
+// ---- the base a reslice job starts from ----
+
+/// The brief's metadata value for `key`, or `None` when the brief omits it.
+fn metadata<'a>(brief: &'a str, key: &str) -> Option<&'a str> {
+    brief
+        .lines()
+        .find_map(|line| line.strip_prefix(key)?.strip_prefix(": "))
+}
 
 /// Ask, and prove a refusal changed nothing: no send, no indexed reslice row,
 /// no slice link, no job.
@@ -485,29 +517,141 @@ fn refused(rig: &mut Rig, mode: Mode, input: &str) -> VivariumError {
     err
 }
 
+/// Prove the job for `task` starts from the target's main and says why.
+fn assert_main_base(rig: &Rig, task: &str, reason: &str) {
+    let job = &rig.jobs.jobs[&format!("reslice-{task}-a1")];
+    assert_eq!(job.target.as_deref(), Some("default"));
+    assert_eq!(job.from_ref.as_deref(), Some(MAIN));
+    let brief = brief_of(rig, task);
+    assert_eq!(
+        metadata(&brief, "base source"),
+        Some("target-main"),
+        "{brief}"
+    );
+    assert_eq!(metadata(&brief, "base target"), Some("default"), "{brief}");
+    assert_eq!(
+        metadata(&brief, "base ref"),
+        Some("refs/heads/main"),
+        "{brief}"
+    );
+    assert_eq!(metadata(&brief, "base sha"), Some(MAIN), "{brief}");
+    let fallback = metadata(&brief, "base fallback").unwrap_or_else(|| panic!("{brief}"));
+    assert!(fallback.contains(reason), "{fallback}");
+    assert_eq!(job.body, brief, "the job carries the brief verbatim");
+}
+
 #[test]
-fn a_need_with_no_branch_row_is_refused_and_changes_nothing() -> R {
-    let mut rig = rig_bare(PumpConfig::default())?;
+fn a_need_with_no_branch_row_starts_from_the_target_main() -> R {
+    let rig = rig_bare(PumpConfig::default())?;
+    seed_main(&rig, "default", MAIN)?;
+    // With no row and no slice hint, the target comes from the root need.
+    let front = vivi_mail::letter::work::NeedFront::new(vec![String::from("Ship it")]);
+    let body = vivi_mail::letter::fixture::need_body_with(&front, "");
+    let thread = serde_json::json!([{ "handle": NEED, "body": body }]);
+    rig.host
+        .reply("need show", 0, &serde_json::to_string(&thread).unwrap());
+    let mut rig = rig;
 
-    let err = refused(&mut rig, Mode::Split, "too big");
+    let task = ask(&mut rig, Mode::Split, "too big")?;
 
-    assert!(err.to_string().contains("no need branch row"), "{err}");
+    assert_main_base(&rig, &task, "no need branch row");
     Ok(())
 }
 
 #[test]
-fn a_non_live_branch_is_refused_and_changes_nothing() -> R {
-    for status in [
-        need_branch::FRESH,
-        need_branch::RENAMING,
-        need_branch::DELETING,
-        need_branch::PRUNED,
-    ] {
+fn fresh_and_pruned_rows_start_from_the_target_main() -> R {
+    for status in [need_branch::FRESH, need_branch::PRUNED] {
         let mut rig = rig()?;
         rig.store.upsert_need_branch(&NeedBranchRow::for_run(
             &rig.run,
             need_branch::branch(NEED),
-            None,
+            Some(BASE.into()),
+            status,
+            "default",
+            Vec::new(),
+        ))?;
+
+        let task = ask(&mut rig, Mode::Rework, "redo it")?;
+
+        assert_main_base(&rig, &task, status);
+    }
+    Ok(())
+}
+
+#[test]
+fn an_unpublished_live_branch_starts_from_the_target_main() -> R {
+    for base in [Some(BASE), None] {
+        let mut rig = rig()?;
+        unpublish_branch(&rig, "default", base)?;
+
+        let task = ask(&mut rig, Mode::FollowUp, "then this")?;
+
+        assert_main_base(&rig, &task, "is not published");
+    }
+    Ok(())
+}
+
+#[test]
+fn every_mode_uses_one_resolved_base_and_the_job_copies_it() -> R {
+    for (label, published, source, reference, sha) in [
+        (
+            "published need work",
+            true,
+            "need-branch",
+            format!("refs/heads/{}", need_branch::branch(NEED)),
+            NEED_TIP,
+        ),
+        (
+            "target main",
+            false,
+            "target-main",
+            String::from("refs/heads/main"),
+            MAIN,
+        ),
+    ] {
+        for mode in [Mode::Split, Mode::Rework, Mode::FollowUp] {
+            let mut rig = rig()?;
+            if !published {
+                unpublish_branch(&rig, "default", Some(BASE))?;
+            }
+
+            let task = ask(&mut rig, mode, "too big")?;
+
+            let brief = brief_of(&rig, &task);
+            assert_eq!(
+                metadata(&brief, "base source"),
+                Some(source),
+                "{label}/{mode:?}: {brief}"
+            );
+            assert_eq!(metadata(&brief, "base target"), Some("default"), "{label}");
+            assert_eq!(
+                metadata(&brief, "base ref"),
+                Some(reference.as_str()),
+                "{label}"
+            );
+            assert_eq!(metadata(&brief, "base sha"), Some(sha), "{label}");
+            assert_eq!(
+                metadata(&brief, "base fallback").is_some(),
+                !published,
+                "{label}: a need-branch base has no fallback reason"
+            );
+            let job = &rig.jobs.jobs[&format!("reslice-{task}-a1")];
+            assert_eq!(job.target.as_deref(), Some("default"), "{label}");
+            assert_eq!(job.from_ref.as_deref(), Some(sha), "{label}");
+            assert_eq!(job.body, brief, "{label}: the job carries the brief");
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn a_branch_being_moved_or_of_unknown_status_is_refused_and_changes_nothing() -> R {
+    for status in [need_branch::RENAMING, need_branch::DELETING, "bogus"] {
+        let mut rig = rig()?;
+        rig.store.upsert_need_branch(&NeedBranchRow::for_run(
+            &rig.run,
+            need_branch::branch(NEED),
+            Some(BASE.into()),
             status,
             "default",
             Vec::new(),
@@ -515,40 +659,8 @@ fn a_non_live_branch_is_refused_and_changes_nothing() -> R {
 
         let err = refused(&mut rig, Mode::Rework, "redo it");
 
-        assert!(
-            err.to_string().contains("no published tip"),
-            "{status}: {err}"
-        );
+        assert!(err.to_string().contains(status), "{status}: {err}");
     }
-    Ok(())
-}
-
-#[test]
-fn an_unpublished_live_branch_starts_at_its_recorded_base() -> R {
-    let mut rig = rig()?;
-    unpublish_branch(&rig, "default", Some(BASE))?;
-
-    let task = ask(&mut rig, Mode::Split, "too big")?;
-
-    let job = &rig.jobs.jobs[&format!("reslice-{task}-a1")];
-    assert_eq!(job.target.as_deref(), Some("default"));
-    assert_eq!(job.from_ref.as_deref(), Some(BASE));
-    assert_ne!(job.from_ref.as_deref(), Some(MAIN));
-    Ok(())
-}
-
-#[test]
-fn an_unpublished_live_branch_without_a_base_is_refused_and_changes_nothing() -> R {
-    let mut rig = rig()?;
-    unpublish_branch(&rig, "default", None)?;
-
-    let err = refused(&mut rig, Mode::FollowUp, "then this");
-
-    assert!(err.to_string().contains("no recorded base"), "{err}");
-    assert!(
-        err.to_string().contains(&need_branch::branch(NEED)),
-        "{err}"
-    );
     Ok(())
 }
 
@@ -584,40 +696,70 @@ fn a_failing_tip_lookup_is_refused_and_changes_nothing() -> R {
 }
 
 #[test]
-fn a_repeated_request_returns_its_task_before_branch_resolution() -> R {
+fn an_unresolved_main_is_refused_and_changes_nothing() -> R {
+    let mut rig = rig()?;
+    let rule = ref_rule(&rig.ctx, "default", &main_ref(&rig.ctx, "default"));
+    rig.host.reply(&rule, 0, "");
+
+    let err = refused(&mut rig, Mode::Split, "too big");
+
+    assert!(err.to_string().contains("does not exist"), "{err}");
+    Ok(())
+}
+
+#[test]
+fn a_repeated_request_returns_its_task_before_base_resolution() -> R {
     let mut rig = rig()?;
     let first = ask(&mut rig, Mode::Split, "too big")?;
-    // The branch goes away after the first request was queued: the repeat still
-    // answers with the existing task.
-    unpublish_branch(&rig, "default", None)?;
-    let before = sends(&rig);
+    let saved_task = rig.mail.tasks[&first].body.clone();
+    let id = format!("reslice-{first}-a1");
+    let saved_job = rig.jobs.jobs[&id].clone();
+    let saved_rows = rig.store.steps_of(NEED, 1)?.len();
+    let saved_sends = sends(&rig);
+    // Break every remote query after the first request was queued: the repeat
+    // still answers with the existing task and asks git nothing.
+    for rule in [
+        ref_rule(&rig.ctx, "default", &main_ref(&rig.ctx, "default")),
+        branch_rule(&rig, "default"),
+    ] {
+        rig.host.reply(&rule, 128, "fatal: remote gone");
+    }
+    let commands = rig.host.commands().len();
 
     let again = ask(&mut rig, Mode::Split, "too big")?;
 
     assert_eq!(again, first);
-    assert_eq!(sends(&rig), before);
-    assert_eq!(rig.jobs.jobs.len(), 1);
+    assert_eq!(rig.host.commands().len(), commands, "no new git query");
+    assert_eq!(sends(&rig), saved_sends, "no new task");
+    assert_eq!(rig.jobs.jobs.len(), 1, "no new job");
+    assert_eq!(rig.store.steps_of(NEED, 1)?.len(), saved_rows, "no new row");
+    assert_eq!(
+        rig.mail.tasks[&first].body, saved_task,
+        "saved task changed"
+    );
+    assert_eq!(rig.jobs.jobs[&id], saved_job, "saved job inputs changed");
     Ok(())
 }
 
 #[test]
 fn a_job_pins_the_stored_target_and_its_tip_when_it_is_not_the_primary_one() -> R {
     let mut cfg = PumpConfig::default();
-    for id in ["alpha", "beta"] {
+    for (id, main) in [("alpha", ALPHA_MAIN), ("beta", BETA_MAIN)] {
         cfg.targets.insert(
             String::from(id),
             PumpTarget {
                 path: String::from(id),
                 remote: format!("{id}-origin"),
-                main: String::from(MAIN),
+                main: format!("{id}/main"),
                 ..PumpTarget::default()
             },
         );
     }
     let rig = rig_bare(cfg)?;
+    // Distinct main tips: only the stored target's remote may answer.
+    seed_main(&rig, "alpha", ALPHA_MAIN)?;
+    seed_main(&rig, "beta", BETA_MAIN)?;
     seed_live_branch(&rig, "beta")?;
-    // The other target's need branch would answer nothing: it must not be read.
-    rig.host.reply(&branch_rule(&rig, "alpha"), 0, "");
     let mut rig = rig;
 
     let task = ask(&mut rig, Mode::Rework, "redo it")?;
@@ -626,7 +768,7 @@ fn a_job_pins_the_stored_target_and_its_tip_when_it_is_not_the_primary_one() -> 
     assert!(job.read_only);
     assert_eq!(job.target.as_deref(), Some("beta"));
     assert_eq!(job.from_ref.as_deref(), Some(NEED_TIP));
-    assert_ne!(job.from_ref.as_deref(), Some(MAIN));
+    assert_ne!(job.from_ref.as_deref(), Some(BETA_MAIN));
     assert_eq!(
         job.extra_targets,
         crate::pump::flow::step_inputs::targets(&rig.ctx)
@@ -637,8 +779,24 @@ fn a_job_pins_the_stored_target_and_its_tip_when_it_is_not_the_primary_one() -> 
         .into_iter()
         .filter(|line| line.contains("ls-remote"))
         .collect();
-    assert_eq!(reads.len(), 1, "{reads:?}");
-    assert!(reads[0].ends_with(&branch_rule(&rig, "beta")), "{reads:?}");
+    assert!(!reads.is_empty(), "the base is resolved once");
+    assert!(
+        reads.iter().all(|line| !line.contains("alpha-origin")),
+        "{reads:?}"
+    );
+    let beta_main = main_ref(&rig.ctx, "beta");
+    assert!(
+        reads
+            .iter()
+            .any(|line| line.ends_with(&ref_rule(&rig.ctx, "beta", &beta_main))),
+        "{reads:?}"
+    );
+    assert!(
+        reads
+            .iter()
+            .any(|line| line.ends_with(&branch_rule(&rig, "beta"))),
+        "{reads:?}"
+    );
     Ok(())
 }
 

@@ -173,7 +173,9 @@ fn by_ref_state(ctx: &Ctx, req: &VerifyReq, remote: &str, tip: Option<&str>) -> 
     }
 }
 
-fn fetch(ctx: &Ctx, remote: &str, remote_ref: &str) -> Result<(), String> {
+/// Fetch `remote_ref` from `remote` into the local object store, so a later
+/// ancestry query over either snapshot has both commits locally.
+pub(crate) fn fetch(ctx: &Ctx, remote: &str, remote_ref: &str) -> Result<(), String> {
     let out = ctx.git(
         &format!("fetch {} {}", shell_quote(remote), shell_quote(remote_ref)),
         FETCH_SECS,

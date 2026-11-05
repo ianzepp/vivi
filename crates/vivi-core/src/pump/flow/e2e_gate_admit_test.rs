@@ -13,7 +13,7 @@
 //! the held CTO as the operator would, through the mailspace: the branch-less
 //! `rework` is refused once, and a `plan` ruling restarts the need.
 
-use super::e2e_rig::{Rig, agent_receipt, rig};
+use super::e2e_rig::{Rig, agent_receipt, env_receipt, rig};
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::answer::ANSWER_REFUSED;
 use crate::pump::flow::fanout::SLICES_INVALID;
@@ -24,6 +24,7 @@ use crate::pump::flow::slice_dispatch;
 use crate::pump::flow::step_error::{STEP_ERROR_HELD, STEP_ERROR_LIMIT};
 use crate::pump::flow::tick::{OPERATOR_HOLD, RUN_ERROR, WORD_REJECTED};
 use crate::pump::jobs::JobStatus;
+use crate::pump::jobs::rung_result::ENV_FAILURE;
 use crate::routing::RoutedRole;
 use vivi_error::VivariumError;
 
@@ -31,6 +32,8 @@ type R = Result<(), VivariumError>;
 
 /// The alarm a parked run raises, once.
 const PARKED_ALARM: &str = "flow-need-parked";
+/// The current main tip every `ls-remote` of main answers.
+const MAIN: &str = "3333333333333333333333333333333333333333";
 
 /// A build run started at `plan`, with an admitter and a slicer routed and the
 /// need thread readable.
@@ -57,11 +60,17 @@ fn build() -> Result<Rig, VivariumError> {
     }
     rig.ctx = rig.ctx.with_routing(routing);
     rig.registry = shipped(&rig.ctx);
+    let front = vivi_mail::letter::work::NeedFront {
+        target: Some(String::from("default")),
+        ..vivi_mail::letter::work::NeedFront::new(vec![String::from("Build the thing")])
+    };
+    let body = vivi_mail::letter::fixture::need_body_with(&front, "Build the thing");
     let shown = serde_json::json!([
         {"handle": rig.need, "message_id": "m1", "from": "operator@local",
-         "subject": "Need", "body": "Build the thing"}
+         "subject": "Need", "body": body}
     ]);
     rig.project.host.reply("need show", 0, &shown.to_string());
+    rig.git("refs/heads/main", MAIN);
     Ok(rig)
 }
 
@@ -300,12 +309,11 @@ const SLICED_NOWHERE: &str = "mode = \"slice\"\n\n[[slice]]\nid = \"a\"\ntitle =
                               brief = 'build the thing'\ntarget = \"nowhere\"\n\
                               write_scope = [\"src/a.rs\"]\ndeps = []\n\n";
 
-/// Drive an invalid-slice run to the held CTO, entirely through the shipped
+/// Drive an invalid-slice run to the open CTO, entirely through the shipped
 /// handlers: the slicer answers `sliced` for a slice naming an unknown target,
-/// the real fanout validator refuses it (`SLICES_INVALID`), the CTO opens, and
-/// its branch-less `rework` answer is rejected before any routing effect, so
-/// the CTO step waits on [`OPERATOR_HOLD`]. Asserts the absence of expansion
-/// effects on the way, so every caller starts from the same produced state.
+/// the real fanout validator refuses it (`SLICES_INVALID`), and the CTO opens.
+/// Asserts the absence of expansion effects on the way, so every caller starts
+/// from the same produced state, and stops before answering the CTO.
 fn held_after_invalid_slices() -> Result<Rig, VivariumError> {
     let mut rig = build()?;
     to_slice(&mut rig)?;
@@ -330,10 +338,96 @@ fn held_after_invalid_slices() -> Result<Rig, VivariumError> {
     );
     assert!(rig.store.need_branch(&rig.need)?.is_none());
     assert!(rig.store.open_fanout(&rig.need, 1)?.is_none());
+    Ok(rig)
+}
+
+/// Assert the open rework1 job and its brief name the same immutable target
+/// main base, and that the job is a read-only slicer job.
+fn assert_main_slicer(rig: &Rig, id: &str) -> Result<(), VivariumError> {
+    let job = rig
+        .jobs
+        .jobs
+        .get(id)
+        .ok_or_else(|| VivariumError::Message(format!("no job {id}")))?;
+    assert_eq!(job.kind, "flow-rework");
+    assert_eq!(job.role.to_lowercase(), "slicer");
+    assert!(job.read_only, "the rework slicer job is read-only");
+    assert_eq!(job.target.as_deref(), Some("default"));
+    assert_eq!(job.from_ref.as_deref(), Some(MAIN));
+    for line in [
+        "target: default",
+        "base source: target main",
+        "base ref: refs/heads/main",
+        &format!("base sha: {MAIN}")[..],
+    ] {
+        assert!(job.body.contains(line), "{line} missing: {}", job.body);
+    }
+    Ok(())
+}
+
+/// Assert the run and job counts are stable after further ticks: no second
+/// restart and no second rework job.
+fn ticks_change_nothing(rig: &mut Rig, jobs: usize, runs: usize) -> R {
+    for _ in 0..=STEP_ERROR_LIMIT {
+        rig.tick()?;
+    }
+    assert_eq!(rig.jobs.jobs.len(), jobs);
+    assert_eq!(rig.runs()?.len(), runs);
+    Ok(())
+}
+
+/// A branch-less CTO `rework` now restarts the need at `rework1` from the
+/// current target main: the old run and CTO close, the need stays open, and
+/// the read-only slicer job names that same main base as its brief.
+#[test]
+fn cto_rework_after_invalid_slices_restarts_from_main() -> R {
+    let mut rig = held_after_invalid_slices()?;
+    answer(&mut rig, "cto", "rework", REASON)?;
+    let job = open(&mut rig, "rework1")?;
+
+    let runs = rig.runs()?;
+    assert_eq!(runs.len(), 2);
+    assert_eq!(runs[0].run, 1);
+    assert_eq!(runs[0].state, "superseded");
+    assert_eq!(runs[1].run, 2);
+    assert_eq!(runs[1].state, "live");
+    assert_eq!(runs[1].entry, "rework1");
+    let old_cto = rig
+        .store
+        .steps_of(&rig.need, 1)?
+        .into_iter()
+        .find(|row| row.node == "cto")
+        .ok_or_else(|| VivariumError::Message("no old cto row".into()))?;
+    assert_eq!(old_cto.state, StepState::Done);
+    assert_eq!(old_cto.verdict.as_deref(), Some("rework"));
+    let closed = rig.port.task_state(&old_cto.task)?;
+    assert_eq!(closed.status, TaskStatus::Done);
+    assert_eq!(closed.verdict.as_deref(), Some("rework"));
+    assert_eq!(rig.port.need_state(&rig.need)?, NeedStatus::Open);
+
+    assert_main_slicer(&rig, &job)?;
+    assert!(rig.store.need_branch(&rig.need)?.is_none());
+    let jobs = rig.jobs.jobs.len();
+    ticks_change_nothing(&mut rig, jobs, 2)?;
+    assert!(rig.store.need_branch(&rig.need)?.is_none());
+    let log = rig.exceptions();
+    assert!(!log.contains(WORD_REJECTED), "{log}");
+    assert!(!log.contains(RUN_ERROR), "{log}");
+    assert!(!log.contains(STEP_ERROR_HELD), "{log}");
+    assert!(!log.contains(ANSWER_REFUSED), "{log}");
+    assert_eq!(log.matches(SLICES_INVALID).count(), 1, "{log}");
+    Ok(())
+}
+
+/// An operator `rework` on a genuinely held branch-less CTO is applied once
+/// and opens the read-only main-based slicer job, rather than being refused:
+/// the hold comes from the existing environment-failure receipt, not from
+/// treating valid rework as invalid.
+#[test]
+fn operator_rework_on_the_held_cto_opens_the_slicer() -> R {
+    let mut rig = held_after_invalid_slices()?;
     let id = open(&mut rig, "cto")?;
-    let envelope =
-        "+++\nanswer = \"rework\"\nreason = 'no need branch exists to rework'\n+++\nrework";
-    finish(&mut rig, &id, &agent_receipt(0, envelope))?;
+    rig.finish(&id, JobStatus::Finished, &env_receipt("agent"))?;
     rig.tick_until("held cto", |rig| {
         rig.row("cto").is_ok_and(|row| {
             row.is_some_and(|row| {
@@ -341,167 +435,44 @@ fn held_after_invalid_slices() -> Result<Rig, VivariumError> {
             })
         })
     })?;
-    Ok(rig)
-}
-
-/// A branch-less CTO `rework` is held before any restart: the run stays as it
-/// was, the finished CTO job counts as applied, and ticking past the step
-/// error limit changes nothing.
-#[test]
-fn cto_rework_after_invalid_slices_is_held_before_restart() -> R {
-    let mut rig = held_after_invalid_slices()?;
-    let exceptions = rig.exceptions();
-    assert_eq!(exceptions.matches(WORD_REJECTED).count(), 1, "{exceptions}");
-    let cto = rig.row("cto")?.expect("cto row");
-    assert_eq!(cto.state, StepState::Waiting);
-    assert_eq!(cto.verdict.as_deref(), Some(OPERATOR_HOLD));
-    assert_eq!(rig.port.task_state(&cto.task)?.status, TaskStatus::Open);
-    let cto_job = rig
-        .jobs
-        .jobs
-        .values()
-        .find(|job| job.payload.get("node").and_then(|n| n.as_str()) == Some("cto"))
-        .expect("the finished cto job");
-    assert_eq!(cto_job.status, JobStatus::Finished);
-    assert!(cto_job.applied_at.is_some());
-    assert!(rig.store.step_payload(&cto.task)?.is_none());
-    let runs = rig.runs()?;
-    assert_eq!(runs.len(), 1);
-    assert_eq!(runs[0].state, "live");
-    assert!(rig.row("rework1")?.is_none());
-    assert!(
-        rig.jobs
-            .jobs
-            .values()
-            .all(|job| job.payload.get("node").and_then(|n| n.as_str()) != Some("rework1"))
-    );
-
-    // The hold is stable: ticking past the step error limit mints no job,
-    // re-raises no alarm, and starts no rework run.
-    let jobs_before = rig.jobs.jobs.len();
-    for _ in 0..=STEP_ERROR_LIMIT {
-        rig.tick()?;
-    }
-    let log = rig.exceptions();
-    assert_eq!(rig.jobs.jobs.len(), jobs_before);
-    assert_eq!(log.matches(WORD_REJECTED).count(), 1, "{log}");
-    assert_eq!(log.matches(SLICES_INVALID).count(), 1, "{log}");
-    assert!(!log.contains(RUN_ERROR), "{log}");
-    assert!(!log.contains(STEP_ERROR_HELD), "{log}");
-    let runs = rig.runs()?;
-    assert_eq!(runs.len(), 1);
-    assert_eq!(runs[0].state, "live");
-    assert!(rig.row("rework1")?.is_none());
-    Ok(())
-}
-
-/// An operator `rework` on the held branch-less CTO is refused once and
-/// strands nothing: the hold stands past the step error limit with the letter
-/// consumed, and a later operator `plan` on the same held task closes the old
-/// CTO, supersedes the held run, and starts a new run at `plan` — with no
-/// fabricated need branch, no rework row or job, and no new alarm.
-#[test]
-fn operator_rework_on_the_held_cto_is_refused_then_plan_recovers() -> R {
-    let mut rig = held_after_invalid_slices()?;
     let held = rig.row("cto")?.expect("held cto row");
-    assert_eq!(held.state, StepState::Waiting);
-    assert_eq!(held.verdict.as_deref(), Some(OPERATOR_HOLD));
+    let env_alarms = rig.exceptions().matches(ENV_FAILURE).count();
+    assert_eq!(env_alarms, 1, "{}", rig.exceptions());
 
-    // The operator answers `rework` on the held task: the answer path
-    // translates the branch-preservation refusal into one alarm and records
-    // the letter as applied, without moving anything else.
     let rework = rig
         .port
         .mailspace
         .lock()
-        .pump_post_answer(None, &held.task, "rework", "still no need branch")
+        .pump_post_answer(None, &held.task, "rework", "bounded rework")
         .map(|posted| posted.id)?;
-    let jobs_before = rig.jobs.jobs.len();
-    rig.tick()?;
-    let log = rig.exceptions();
-    assert_eq!(log.matches(ANSWER_REFUSED).count(), 1, "{log}");
+    let job = open(&mut rig, "rework1")?;
     assert!(rig.store.applied_action_ids()?.contains(&rework));
-    assert_eq!(rig.jobs.jobs.len(), jobs_before);
-    assert_eq!(rig.runs()?.len(), 1);
-    assert!(rig.store.step_payload(&held.task)?.is_none());
-    assert!(rig.row("rework1")?.is_none());
-    let cto = rig.row("cto")?.expect("cto row");
-    assert_eq!(cto.state, StepState::Waiting);
-    assert_eq!(cto.verdict.as_deref(), Some(OPERATOR_HOLD));
-    assert_eq!(rig.port.task_state(&cto.task)?.status, TaskStatus::Open);
-    assert_eq!(rig.port.need_state(&rig.need)?, NeedStatus::Open);
 
-    // The consumed letter is not retried: ticking past the step error limit
-    // repeats no refusal, rejection or step alarm and starts no run.
-    for _ in 0..=STEP_ERROR_LIMIT {
-        rig.tick()?;
-    }
-    let log = rig.exceptions();
-    assert_eq!(log.matches(ANSWER_REFUSED).count(), 1, "{log}");
-    assert_eq!(log.matches(WORD_REJECTED).count(), 1, "{log}");
-    assert_eq!(log.matches(SLICES_INVALID).count(), 1, "{log}");
-    assert!(!log.contains(RUN_ERROR), "{log}");
-    assert!(!log.contains(STEP_ERROR_HELD), "{log}");
-    assert_eq!(rig.jobs.jobs.len(), jobs_before);
-    let runs = rig.runs()?;
-    assert_eq!(runs.len(), 1);
-    assert_eq!(runs[0].state, "live");
-
-    // The operator rules `plan` instead: the held CTO closes with that
-    // verdict, the held run is superseded, and a new run opens at `plan`.
-    let plan = rig
-        .port
-        .mailspace
-        .lock()
-        .pump_post_answer(None, &cto.task, "plan", "plan it again")
-        .map(|posted| posted.id)?;
-    let plan_job = open(&mut rig, "plan")?;
-    assert!(rig.store.applied_action_ids()?.contains(&plan));
     let runs = rig.runs()?;
     assert_eq!(runs.len(), 2);
     assert_eq!(runs[0].state, "superseded");
     assert_eq!(runs[1].state, "live");
-    assert_eq!(runs[1].entry, "plan");
-    let job = rig
-        .jobs
-        .jobs
-        .get(&plan_job)
-        .ok_or_else(|| VivariumError::Message(format!("no job {plan_job}")))?;
-    assert_eq!(job.payload["run"], serde_json::json!(runs[1].run));
-    let old_cto = rig
+    assert_eq!(runs[1].entry, "rework1");
+    let cto = rig
         .store
-        .steps_of(&rig.need, runs[0].run)?
+        .steps_of(&rig.need, 1)?
         .into_iter()
         .find(|row| row.node == "cto")
         .ok_or_else(|| VivariumError::Message("no old cto row".into()))?;
-    assert_eq!(old_cto.state, StepState::Done);
-    assert_eq!(old_cto.verdict.as_deref(), Some("plan"));
-    let closed = rig.port.task_state(&old_cto.task)?;
-    assert_eq!(closed.status, TaskStatus::Done);
-    assert_eq!(closed.verdict.as_deref(), Some("plan"));
+    assert_eq!(cto.state, StepState::Done);
+    assert_eq!(cto.verdict.as_deref(), Some("rework"));
+    assert_eq!(rig.port.task_state(&cto.task)?.status, TaskStatus::Done);
+    assert_eq!(rig.port.need_state(&rig.need)?, NeedStatus::Open);
 
-    // The recovery fabricated no branch and no rework step or job, and the
-    // log still holds only the earlier slice and word findings.
+    assert_main_slicer(&rig, &job)?;
     assert!(rig.store.need_branch(&rig.need)?.is_none());
-    assert!(rig.row("rework1")?.is_none());
-    for run in [runs[0].run, runs[1].run] {
-        assert!(
-            !rig.store
-                .steps_of(&rig.need, run)?
-                .iter()
-                .any(|row| row.node == "rework1")
-        );
-    }
-    assert!(
-        rig.jobs
-            .jobs
-            .values()
-            .all(|job| job.payload.get("node").and_then(|n| n.as_str()) != Some("rework1"))
-    );
+    let jobs = rig.jobs.jobs.len();
+    ticks_change_nothing(&mut rig, jobs, 2)?;
     let log = rig.exceptions();
-    assert_eq!(log.matches(ANSWER_REFUSED).count(), 1, "{log}");
-    assert_eq!(log.matches(WORD_REJECTED).count(), 1, "{log}");
+    assert_eq!(log.matches(ENV_FAILURE).count(), env_alarms, "{log}");
     assert_eq!(log.matches(SLICES_INVALID).count(), 1, "{log}");
+    assert!(!log.contains(ANSWER_REFUSED), "{log}");
+    assert!(!log.contains(WORD_REJECTED), "{log}");
     assert!(!log.contains(RUN_ERROR), "{log}");
     assert!(!log.contains(STEP_ERROR_HELD), "{log}");
     Ok(())
