@@ -10,11 +10,13 @@ use serde_json::json;
 
 use crate::pump::attempt_record::{agent_silent, hand_message};
 use crate::pump::envelope::correct::{self, correction_n};
+use crate::pump::envelope::refusal;
 use crate::pump::envelope::{EnvelopeError, split};
 use crate::pump::flow::budget_retry;
 use crate::pump::flow::def::NodeClass;
 use crate::pump::flow::index::StepJobRow;
 use crate::pump::flow::mail::MailWriter;
+use crate::pump::flow::tick::raise_once;
 use crate::pump::host::Ctx;
 use crate::pump::jobs::{JobStatus, PoolJob};
 use vivi_mail::letter::roles::{Parsed, RoleKind, parse_for};
@@ -185,15 +187,29 @@ fn has_new_fact(front: &serde_json::Value) -> bool {
 }
 
 /// A broken envelope: a correction while some remain, then `failed`.
+///
+/// A reply with no envelope at all raises [`ENVELOPE_FAILED`] as soon as it
+/// is seen, even though the correction still runs: the operator hears about
+/// the missing envelope before the chain is spent. Alarms are raised once
+/// per emitting job, so re-collecting a job and its own exhaustion branch do
+/// not repeat the line. Other parse errors keep the exhaustion timing.
 fn broken(ctx: &Ctx, job: &PoolJob, step: &StepJobRow, error: EnvelopeError) -> Collected {
+    let text = format!(
+        "{} job {}: {}",
+        step.node,
+        job.id,
+        refusal::describe(job, &error)
+    );
+    let missing = matches!(error, EnvelopeError::NoOpening);
+    if missing {
+        raise_once(ctx, ENVELOPE_FAILED, &job.id, &text);
+    }
     if correction_n(&job.id) < MAX_CORRECTIONS {
         return Collected::Correct { error };
     }
-    ctx.exception(
-        ENVELOPE_FAILED,
-        &step.task,
-        &format!("{} job {}: {error}", step.node, job.id),
-    );
+    if !missing {
+        raise_once(ctx, ENVELOPE_FAILED, &job.id, &text);
+    }
     Collected::Failed
 }
 
@@ -249,7 +265,8 @@ fn merge<M: MailWriter>(
 }
 
 /// A merge step's broken envelope never corrects (the machine decided): post
-/// the parse error on the step task and raise the alarm.
+/// the parse error on the step task and raise the alarm. Both carry the same
+/// formatted diagnosis of the job whose envelope was parsed.
 fn report_envelope_error<M: MailWriter>(
     ctx: &Ctx,
     mail: &mut M,
@@ -257,7 +274,8 @@ fn report_envelope_error<M: MailWriter>(
     job: &PoolJob,
     error: &EnvelopeError,
 ) {
-    if let Err(err) = mail.reply(&step.task, &format!("pump-envelope-error: {error}")) {
+    let diagnosis = refusal::describe(job, error);
+    if let Err(err) = mail.reply(&step.task, &format!("pump-envelope-error: {diagnosis}")) {
         ctx.log(&format!(
             "envelope error reply on {} failed: {err}",
             step.task
@@ -266,7 +284,7 @@ fn report_envelope_error<M: MailWriter>(
     ctx.exception(
         ENVELOPE_FAILED,
         &step.task,
-        &format!("{} job {}: {error}", step.node, job.id),
+        &format!("{} job {}: {diagnosis}", step.node, job.id),
     );
 }
 
