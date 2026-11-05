@@ -1,11 +1,12 @@
-//! Tests for [`crate::pump::report`]: cadence receipts and the missing/unreadable
-//! paths.
+//! Tests for [`crate::pump::report`]: cadence receipts, the persisted build
+//! waits, and the missing/unreadable paths.
 
 use tempfile::tempdir;
 
 use crate::pump::cadence::{CadenceState, RoleRun, set_state};
 use crate::pump::report::{PumpRead, read};
 use crate::pump::state::State;
+use crate::pump::store::build_waits::{BuildPrerequisite, BuildWait, PrerequisiteState};
 use crate::pump::store::{DB_FILENAME, PumpStore};
 
 fn ready(st: State) -> crate::pump::report::Snapshot {
@@ -76,4 +77,68 @@ fn a_writer_does_not_block_a_reader() {
     conn.execute_batch("BEGIN IMMEDIATE").unwrap();
     assert!(matches!(read(dir.path()).unwrap(), PumpRead::Ready(_)));
     conn.execute_batch("ROLLBACK").unwrap();
+}
+
+fn wait(need: &str, record: &str, handle: &str, state: PrerequisiteState) -> BuildWait {
+    BuildWait {
+        need: need.into(),
+        record: record.into(),
+        prerequisites: vec![BuildPrerequisite {
+            handle: handle.into(),
+            state,
+            detail: None,
+            outcome: None,
+        }],
+        observed_at: 1_700_000_000,
+    }
+}
+
+#[test]
+fn persisted_build_waits_are_available_from_the_snapshot() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join(DB_FILENAME);
+    let store = PumpStore::open(&path).unwrap();
+    store.save(&State::default()).unwrap();
+    let held = wait("n1", "r1", "a", PrerequisiteState::Held);
+    let unlanded = wait("n2", "r2", "b", PrerequisiteState::ClosedUnlanded);
+    store.upsert_build_wait(&unlanded).unwrap();
+    store.upsert_build_wait(&held).unwrap();
+
+    let PumpRead::Ready(snapshot) = read(dir.path()).unwrap() else {
+        panic!("expected a ready snapshot");
+    };
+    assert_eq!(snapshot.build_waits(), [held.clone(), unlanded.clone()]);
+    assert_eq!(snapshot.build_waits()[0].observed_at, 1_700_000_000);
+    // The read judged nothing and wrote nothing.
+    assert!(snapshot.exception_rows().is_empty());
+    assert!(snapshot.cadence_runs().is_empty());
+    assert_eq!(store.build_waits().unwrap(), vec![held, unlanded]);
+    assert!(store.exceptions().unwrap().is_empty());
+}
+
+#[test]
+fn a_snapshot_without_the_wait_table_has_no_waits_and_creates_none() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join(DB_FILENAME);
+    {
+        let store = PumpStore::open(&path).unwrap();
+        store.save(&State::default()).unwrap();
+    }
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute_batch("DROP TABLE build_waits")
+        .unwrap();
+    let PumpRead::Ready(snapshot) = read(dir.path()).unwrap() else {
+        panic!("expected a ready snapshot");
+    };
+    assert!(snapshot.build_waits().is_empty());
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    let tables: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'build_waits'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(tables, 0);
 }

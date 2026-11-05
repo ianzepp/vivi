@@ -10,6 +10,7 @@ use std::path::Path;
 use vivi_error::VivariumError;
 
 use super::state::State;
+use super::store::build_waits::BuildWait;
 use super::store::{DB_FILENAME, PumpStore, SCHEMA_VERSION};
 
 /// What a reader found at the pump home.
@@ -26,6 +27,7 @@ pub enum PumpRead {
 pub struct Snapshot {
     state: State,
     exceptions: Vec<(u64, String, String, String)>,
+    waits: Vec<BuildWait>,
 }
 
 /// One role's latest cadence run, for read-only board and status views.
@@ -56,7 +58,11 @@ pub fn read(home: &Path) -> Result<PumpRead, VivariumError> {
         )));
     }
     match store.load_snapshot() {
-        Ok((state, exceptions)) => Ok(PumpRead::Ready(Snapshot { state, exceptions })),
+        Ok(snapshot) => Ok(PumpRead::Ready(Snapshot {
+            state: snapshot.state,
+            exceptions: snapshot.exceptions,
+            waits: snapshot.waits,
+        })),
         Err(err) => Ok(PumpRead::Unreadable(err.to_string())),
     }
 }
@@ -85,5 +91,14 @@ impl Snapshot {
     #[must_use]
     pub fn exception_rows(&self) -> &[(u64, String, String, String)] {
         &self.exceptions
+    }
+
+    /// The queued build waits as persisted, in need-handle order: the
+    /// dependent need, the open record that queued it, the prerequisites that
+    /// had not landed with the state that classified them, and when the wait
+    /// was observed. Reading them judges no admission and writes nothing.
+    #[must_use]
+    pub fn build_waits(&self) -> &[BuildWait] {
+        &self.waits
     }
 }

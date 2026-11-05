@@ -15,6 +15,7 @@ use crate::pump::collect;
 use crate::pump::config::{PumpConfig, PumpTarget};
 use crate::pump::host::{Ctx, RealHost, shell_quote};
 use crate::pump::state::State;
+use crate::pump::store::build_waits::{BuildPrerequisite, BuildWait, PrerequisiteState};
 use crate::pump::store::{DB_FILENAME, PumpStore};
 use crate::pump::tick_steps;
 use vivi_error::VivariumError;
@@ -141,13 +142,78 @@ fn periodic(ctx: &Ctx, st: &mut State, boardpass: &mut BoardPass) -> Result<(), 
 }
 
 /// Write the status lines to `<home>/status.txt`: a UTC timestamp, then the
-/// cadence lines. A write failure is logged, never fatal.
+/// cadence lines, then one line per persisted build wait. A write failure is
+/// logged, never fatal.
 pub fn write_status(ctx: &Ctx, st: &State) {
     let mut lines = vec![utc_stamp(ctx.now())];
     lines.extend(crate::pump::cadence::status_lines(ctx, st));
+    lines.extend(wait_lines(ctx));
     let path = ctx.home.join("status.txt");
     if let Err(err) = fs::write(&path, lines.join("\n") + "\n") {
         ctx.log(&format!("status write failed at {}: {err}", path.display()));
+    }
+}
+
+/// One `need … waiting on …` line per persisted build wait, in need-handle
+/// order, read from a read-only snapshot of `pump.db`. A missing database has
+/// no waits and is not created; an unreadable one is logged and renders
+/// nothing, so a failed read never looks like an empty frontier.
+fn wait_lines(ctx: &Ctx) -> Vec<String> {
+    let read = match crate::pump::report::read(&ctx.home) {
+        Ok(read) => read,
+        Err(error) => {
+            ctx.log(&format!("status wait read failed: {error}"));
+            return Vec::new();
+        }
+    };
+    let snapshot = match read {
+        crate::pump::report::PumpRead::Ready(snapshot) => snapshot,
+        crate::pump::report::PumpRead::Missing => return Vec::new(),
+        crate::pump::report::PumpRead::Unreadable(reason) => {
+            ctx.log(&format!("status waits unreadable: {reason}"));
+            return Vec::new();
+        }
+    };
+    snapshot.build_waits().iter().map(wait_line).collect()
+}
+
+/// `need <need> waiting on <handle> <state>[ (<detail>)][ outcome <outcome>], …`
+/// with the prerequisites in handle order so two writes of one wait agree.
+fn wait_line(wait: &BuildWait) -> String {
+    let mut prerequisites: Vec<&BuildPrerequisite> = wait.prerequisites.iter().collect();
+    prerequisites.sort_by(|left, right| left.handle.cmp(&right.handle));
+    let labels: Vec<String> = prerequisites
+        .iter()
+        .map(|prerequisite| prerequisite_label(prerequisite))
+        .collect();
+    let on = if labels.is_empty() {
+        String::from("no recorded prerequisite")
+    } else {
+        labels.join(", ")
+    };
+    format!("need {} waiting on {on}", wait.need)
+}
+
+fn prerequisite_label(prerequisite: &BuildPrerequisite) -> String {
+    let mut label = format!(
+        "{} {}",
+        prerequisite.handle,
+        state_label(prerequisite.state)
+    );
+    if let Some(detail) = &prerequisite.detail {
+        label.push_str(&format!(" ({detail})"));
+    }
+    if let Some(outcome) = &prerequisite.outcome {
+        label.push_str(&format!(" outcome {outcome}"));
+    }
+    label
+}
+
+fn state_label(state: PrerequisiteState) -> &'static str {
+    match state {
+        PrerequisiteState::Open => "open",
+        PrerequisiteState::Held => "held",
+        PrerequisiteState::ClosedUnlanded => "closed_unlanded",
     }
 }
 
@@ -694,3 +760,7 @@ fn panic_note(err: &(dyn std::any::Any + Send)) -> String {
         .unwrap_or_else(|| String::from("unknown panic"));
     text.replace('\n', " | ").chars().take(900).collect()
 }
+
+#[cfg(test)]
+#[path = "run_waits_test.rs"]
+mod waits_tests;
