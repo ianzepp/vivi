@@ -142,6 +142,15 @@ fn collected_records_carry_the_result_and_the_receipt() {
     assert_eq!(note["outcome"], "finished");
     assert_eq!(note["push"], "pushed");
     assert_eq!(note["job"], "j1");
+    let captured = finished_with(&[
+        ("capture_receipt_original_bytes", "4"),
+        ("capture_receipt_captured_bytes", "4"),
+        ("capture_receipt_complete", "true"),
+    ]);
+    let captured_note: serde_json::Value =
+        serde_json::from_str(&collected_note(&d, &captured)).unwrap();
+    assert_eq!(captured_note["capture_receipt_complete"], "true");
+    assert_eq!(captured_note["capture_receipt_original_bytes"], "4");
     let text = collected_text(&d, &finished());
     assert!(text.contains("pool result j1: finished"));
     assert!(text.contains("pushed factory/a bbbbbbbbbb"));
