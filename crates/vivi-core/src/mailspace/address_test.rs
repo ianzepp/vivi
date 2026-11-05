@@ -337,11 +337,11 @@ fn pulled_need(mailspace: &Mailspace, to: &str) -> String {
 }
 
 #[test]
-fn a_reply_to_a_remote_sender_needs_no_flags() {
+fn an_unaddressed_reply_stays_local_and_an_explicit_remote_reply_syncs() {
     let (_tmp, mailspace) = space(&["mind"]);
     let handle = pulled_need(&mailspace, &mailspace.address_for("mind"));
 
-    let result = mailspace
+    let unaddressed = mailspace
         .reply(
             &handle,
             "mind",
@@ -351,9 +351,11 @@ fn a_reply_to_a_remote_sender_needs_no_flags() {
             "on it".into(),
         )
         .unwrap();
-
-    assert!(result.delivered.is_empty());
-    assert_eq!(result.remote, ["alice@a1b2c3d4.local"]);
+    assert!(unaddressed.delivered.is_empty());
+    assert!(
+        unaddressed.remote.is_empty(),
+        "an unaddressed reply invents no remote recipient: {unaddressed:?}"
+    );
     let sent = mailspace.list("mind", "sent").unwrap();
     assert_eq!(sent.len(), 1);
     assert_eq!(sent[0].subject, "Re: please");
@@ -361,6 +363,39 @@ fn a_reply_to_a_remote_sender_needs_no_flags() {
         .storage()
         .unwrap()
         .read_message(&sent[0].message_id)
+        .unwrap();
+    let text = String::from_utf8_lossy(&text);
+    assert!(
+        !text.contains("To: <alice@a1b2c3d4.local>"),
+        "the parent sender is not copied: {text}"
+    );
+    assert!(
+        text.contains("In-Reply-To: please@a1b2c3d4.local"),
+        "{text}"
+    );
+
+    let explicit = mailspace
+        .reply(
+            &handle,
+            "mind",
+            vec!["alice@a1b2c3d4.local".into()],
+            Vec::new(),
+            None,
+            "on it".into(),
+        )
+        .unwrap();
+    assert!(explicit.delivered.is_empty());
+    assert_eq!(explicit.remote, ["alice@a1b2c3d4.local"]);
+    let sent = mailspace.list("mind", "sent").unwrap();
+    assert_eq!(sent.len(), 2);
+    let message_id = {
+        let storage = mailspace.storage().unwrap();
+        storage.resolve_message_token(&explicit.sent).unwrap()
+    };
+    let text = mailspace
+        .storage()
+        .unwrap()
+        .read_message(&message_id)
         .unwrap();
     let text = String::from_utf8_lossy(&text);
     assert!(text.contains("To: <alice@a1b2c3d4.local>"), "{text}");

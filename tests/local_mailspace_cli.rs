@@ -1157,7 +1157,7 @@ fn replies_and_lifecycle_notes_assemble_cross_kind_threads() {
         "I reviewed it.",
     ]);
     assert_success(&reply);
-    let reply_handle = handle_after(&stdout(&reply), "replied ceo");
+    let reply_handle = handle_after(&stdout(&reply), "sent");
 
     let task = vivi([
         "task",
@@ -1265,9 +1265,9 @@ fn replies_and_lifecycle_notes_assemble_cross_kind_threads() {
         "--project",
         project.path().to_str().unwrap(),
         "--for",
-        "ceo",
+        "cto",
         "--folder",
-        "inbox",
+        "sent",
         "--json",
     ]);
     assert_success(&dump);
@@ -3129,7 +3129,7 @@ fn trace_command_reconstructs_reply_chain_and_collapses_copies() {
         "I have reviewed the blocker.",
     ]);
     assert_success(&reply);
-    let reply_handle = handle_after(&stdout(&reply), "replied ceo");
+    let reply_handle = handle_after(&stdout(&reply), "sent");
 
     let trace = vivi([
         "trace",
