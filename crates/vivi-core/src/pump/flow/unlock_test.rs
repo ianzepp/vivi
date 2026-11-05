@@ -10,6 +10,7 @@ use crate::pump::fixture::{Project, project};
 use crate::pump::flow::advance::start::start;
 use crate::pump::flow::def::FlowKind;
 use crate::pump::flow::fake_mail::FakeMail;
+use crate::pump::flow::handlers::Registry;
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::load::load;
 use crate::pump::flow::mail::{MailReader, MailWriter, TaskStatus};
@@ -224,5 +225,120 @@ fn an_unlock_still_releases_the_lock_after_the_alarm_was_raised() -> R {
     assert_eq!(rig.runs()?.len(), 2);
     assert_eq!(rig.runs()?[1].state, "live");
     assert!(!rig.exceptions().contains(UNLOCK_REFUSED));
+    Ok(())
+}
+
+/// One intake-and-restarts pass, which is all a deferred restart needs to
+/// finish once admission allows it.
+fn pass(rig: &mut Rig) -> R {
+    let mut flow: Registry<(), FakeMail> = Registry::new();
+    crate::pump::flow::intake::register(&mut flow);
+    crate::pump::flow::advance::restart::register(&mut flow);
+    for phase in flow.phases() {
+        phase.run(&rig.ctx, &mut (), &rig.store, &mut rig.mail)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn a_blocked_unlock_closes_the_lock_and_keeps_its_entry_until_admission() -> R {
+    let mut rig = rig(true)?;
+    let need = rig.need.clone();
+    rig.mail.set_prerequisites(&need, &["dep"]);
+    let id = rig.post(Some("slice"))?;
+
+    apply_pending(&rig.ctx, &rig.store, &mut rig.mail)?;
+
+    assert_eq!(
+        rig.row(1, "locked")?.verdict.as_deref(),
+        Some("unlocked"),
+        "an accepted unlock still closes its lock step"
+    );
+    let runs = rig.runs()?;
+    assert_eq!(runs.len(), 1, "no successor while the build is blocked");
+    assert_eq!(runs[0].state, "restarting");
+    assert_eq!(rig.store.build_waits()?.len(), 1, "the blocker is queued");
+    assert!(rig.store.applied_action_ids()?.contains(&id));
+    assert!(
+        !rig.exceptions().contains(UNLOCK_REFUSED),
+        "waiting is not a refusal: {}",
+        rig.exceptions()
+    );
+    assert_eq!(
+        rig.mail.sentinel_count(&need)?,
+        1,
+        "the old sentinel stays open until its successor binds"
+    );
+
+    // The requested entry survives a reopened store.
+    let reopened = PumpStore::open(&rig.project.home().join(DB_FILENAME))?;
+    assert_eq!(
+        reopened.restart_entry(&need, 1)?.as_deref(),
+        Some("slice"),
+        "the requested entry is durable"
+    );
+    assert_eq!(reopened.build_waits()?.len(), 1);
+
+    // The first eligible admission yields exactly one successor.
+    rig.mail.set_prerequisites(&need, &[]);
+    pass(&mut rig)?;
+    let runs = rig.runs()?;
+    assert_eq!(runs.len(), 2, "exactly one successor: {runs:?}");
+    assert_eq!(
+        (runs[0].state.as_str(), runs[1].state.as_str()),
+        ("superseded", "live")
+    );
+    assert_eq!(runs[1].entry, "slice");
+    assert!(rig.store.build_waits()?.is_empty());
+
+    // Nothing repeats: no second action, no third run.
+    pass(&mut rig)?;
+    apply_pending(&rig.ctx, &rig.store, &mut rig.mail)?;
+    assert_eq!(rig.runs()?.len(), 2, "the unlock is applied exactly once");
+    assert!(!rig.exceptions().contains(UNLOCK_REFUSED));
+    Ok(())
+}
+
+#[test]
+fn an_unlock_write_failure_keeps_its_requested_entry() -> R {
+    let mut rig = rig(true)?;
+    // The write after the lock close fails: the successor cannot start.
+    rig.mail.fail_at = Some(rig.mail.calls.len() + 1);
+    let id = rig.post(Some("slice"))?;
+
+    apply_pending(&rig.ctx, &rig.store, &mut rig.mail)?;
+
+    assert_eq!(
+        rig.row(1, "locked")?.verdict.as_deref(),
+        Some("unlocked"),
+        "the lock step closed before the failure"
+    );
+    assert_eq!(
+        rig.runs()?[0].state,
+        "restarting",
+        "the intent survived the failed write"
+    );
+    assert_eq!(
+        rig.store.restart_entry(&rig.need, 1)?.as_deref(),
+        Some("slice"),
+        "an accepted unlock cannot lose its requested entry"
+    );
+    assert!(rig.store.applied_action_ids()?.contains(&id));
+    assert_eq!(
+        rig.exceptions().matches(UNLOCK_REFUSED).count(),
+        1,
+        "the failure is reported once: {}",
+        rig.exceptions()
+    );
+
+    // The durable intent finishes the run at the requested entry.
+    pass(&mut rig)?;
+    let runs = rig.runs()?;
+    assert_eq!(runs.len(), 2, "one successor: {runs:?}");
+    assert_eq!(
+        (runs[0].state.as_str(), runs[1].state.as_str()),
+        ("superseded", "live")
+    );
+    assert_eq!(runs[1].entry, "slice");
     Ok(())
 }

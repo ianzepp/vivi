@@ -13,18 +13,24 @@
 //! ranks its saved intent against the fresh needs and starts it there. Capacity
 //! and prerequisite waiting are deliberate, so neither raises an alarm; a
 //! restart with no recorded entry stays a detectable inconsistency.
+//!
+//! A parent that waits without a successor is withdrawn once its need or its
+//! pump record closes: it closes its open tasks `withdrawn` (the sentinel last),
+//! drops its queued build wait, and can never start a successor afterwards.
+//! Only a parent with a committed successor is recovered unconditionally.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::mailspace::pump_note::note_body;
 use crate::pump::flow::advance::start::{SENTINEL_NODE, start};
+use crate::pump::flow::advance::terminal::withdraw;
 use crate::pump::flow::build_prereq::assess;
 use crate::pump::flow::def::{FlowKind, VERDICT_SUPERSEDED};
 use crate::pump::flow::fanout::{close_slice, is_slice_row};
 use crate::pump::flow::handlers::{FlowMail, Registry, TickPhase};
 use crate::pump::flow::index::run_state;
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
-use crate::pump::flow::mail::{MailReader, MailWriter, TaskStatus};
+use crate::pump::flow::mail::{MailReader, MailWriter, NeedStatus, TaskStatus};
 use crate::pump::flow::tick::raise_once;
 use crate::pump::host::Ctx;
 use crate::pump::jobs::{JobStatus, JobStore, mark_applied};
@@ -69,9 +75,24 @@ pub(crate) fn restart<M: MailWriter + MailReader>(
     old: &RunRow,
     entry: &str,
 ) -> Result<RestartResult, VivariumError> {
-    store.set_restart_entry(&old.need, old.run, entry)?;
-    store.set_run_state(&old.need, old.run, run_state::RESTARTING)?;
+    begin(store, old, entry)?;
     finish_deferred(ctx, store, mail, old, entry)
+}
+
+/// Record the restart intent durably: the requested entry, then the
+/// `restarting` state. A caller that must close something first, such as the
+/// lock step of an accepted unlock, calls this before that close, so a later
+/// write failure can never strand the run without its requested entry.
+///
+/// # Errors
+/// Returns a [`VivariumError`] when a store write fails.
+pub(crate) fn begin(
+    store: &PumpStore,
+    old: &RunRow,
+    entry: &str,
+) -> Result<(), VivariumError> {
+    store.set_restart_entry(&old.need, old.run, entry)?;
+    store.set_run_state(&old.need, old.run, run_state::RESTARTING)
 }
 
 /// Finish a restart whose intent is already durable: assess the prerequisites
@@ -146,6 +167,7 @@ pub(crate) fn resume<M: MailWriter + MailReader>(
             start(ctx, store, mail, &old.need, Some(&row.entry))?;
         }
         Some(_) => {}
+        None if abandoned(mail, &old.need)? => withdraw_queued(store, mail, old),
         None => {
             let entry = store.restart_entry(&old.need, old.run)?.ok_or_else(|| {
                 VivariumError::Message(format!(
@@ -163,6 +185,27 @@ pub(crate) fn resume<M: MailWriter + MailReader>(
         }
     }
     supersede(store, mail, old)
+}
+
+/// Whether the need this run belongs to closed, by its need state or by its
+/// pump record: a restart that waits then has nothing left to restart for.
+fn abandoned<M: MailReader>(mail: &M, need: &str) -> Result<bool, VivariumError> {
+    if mail.need_state(need)? != NeedStatus::Open {
+        return Ok(true);
+    }
+    Ok(MailReader::open_record(mail, need)?.is_none())
+}
+
+/// Withdraw a restart that will never get a successor: the run closes its open
+/// tasks `withdrawn` (the sentinel last) and its record `withdrawn`, and its
+/// queued build wait is dropped. No successor is started afterwards.
+fn withdraw_queued<M: MailWriter + MailReader>(
+    store: &PumpStore,
+    mail: &mut M,
+    old: &RunRow,
+) -> Result<(), VivariumError> {
+    withdraw(store, mail, old)?;
+    store.remove_build_wait(&old.need)
 }
 
 /// Close every open task of `old` `superseded`, the sentinel last, then set the

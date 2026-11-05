@@ -8,9 +8,15 @@
 //!
 //! Every unlock letter is applied or refused exactly once: its id goes into
 //! `applied_actions` either way, and a refusal raises [`UNLOCK_REFUSED`].
+//!
+//! The accepted unlock records its restart intent (entry, then `restarting`)
+//! before it closes the lock step, so a later write that fails cannot strand a
+//! closed lock with no requested entry: the restart phase or intake finishes
+//! the run at that entry. A restart an unlanded prerequisite defers is waiting,
+//! not a refusal, and needs no second unlock letter.
 
 use crate::mailspace::{PumpAction, PumpActionKind};
-use crate::pump::flow::advance::restart::restart;
+use crate::pump::flow::advance::restart::{begin, finish_deferred};
 use crate::pump::flow::def::{FlowDef, FlowKind, NodeClass};
 use crate::pump::flow::handlers::{FlowMail, Registry, TickPhase};
 use crate::pump::flow::index::run_state;
@@ -148,12 +154,16 @@ fn apply_one<M: MailWriter + MailReader>(
     let def = flow_of(&run)?;
     let row = locked_step(store, need, &run, &def)?;
     let entry = entry_of(action, &def)?;
+    // The intent is durable before the lock close: a write that fails after it
+    // leaves the requested entry for the restart phase or intake to finish.
+    begin(store, &run, &entry)
+        .map_err(|error| format!("cannot record the restart at `{entry}`: {error}"))?;
     mail.close_task(&row.task, UNLOCKED, None, None)
         .map_err(|error| format!("closing the lock step failed: {error}"))?;
     store
         .set_step_state(&row.task, StepState::Done, Some(UNLOCKED))
         .map_err(|error| format!("cannot record the unlock: {error}"))?;
-    restart(ctx, store, mail, &run, &entry)
+    finish_deferred(ctx, store, mail, &run, &entry)
         .map(|_| ())
         .map_err(|error| format!("restarting at `{entry}` failed: {error}"))
 }

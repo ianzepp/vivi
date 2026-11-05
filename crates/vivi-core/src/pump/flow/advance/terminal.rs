@@ -29,8 +29,9 @@ pub(crate) enum Finished {
     Landed,
     /// A new run was started; the old one was superseded.
     Restarted(RunRow),
-    /// The restart deferred, so no new run has started yet; the restart phase
-    /// finishes it. Not a refusal.
+    /// The restart deferred, so no new run has started yet: the requested
+    /// entry stays durable and the restart phase or intake finishes it. Not a
+    /// refusal, and a closed need or record withdraws it instead.
     RestartQueued,
 }
 

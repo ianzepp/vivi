@@ -8,6 +8,11 @@
 //! nothing: the merge is under way and the operator decides. No path holds a
 //! change in silence.
 //!
+//! A restart this phase asks for keeps its `plan` entry when an unlanded
+//! prerequisite defers it: the run waits `restarting` with that entry, is not
+//! watched again (only live runs are), and starts its one successor at `plan`
+//! once admission allows, with no second reply on the thread.
+//!
 //! Assumption: a thread date has one-second resolution, so a reply in the same
 //! second as the run's start post is not newer. Lifecycle events, pump record
 //! letters and action letters are not replies.

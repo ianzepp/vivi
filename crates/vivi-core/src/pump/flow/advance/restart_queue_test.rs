@@ -283,3 +283,91 @@ fn an_immediate_restart_still_replaces_its_occupied_slot() -> R {
     );
     Ok(())
 }
+
+#[test]
+fn a_deferred_parent_is_withdrawn_when_its_need_closes() -> R {
+    let mut rig = rig(None)?;
+    rig.park(NEED, Some("plan"))?;
+    rig.mail.set_prerequisites(NEED, &["dep"]);
+    rig.tick()?;
+    assert_eq!(rig.runs()?, [(1, "plan".into(), "restarting".into())]);
+    assert_eq!(rig.store.build_waits()?.len(), 1, "the blocker is queued");
+
+    rig.mail.close_need_by(NEED, "operator");
+    rig.tick()?;
+
+    assert_eq!(
+        rig.runs()?,
+        [(1, "plan".into(), "withdrawn".into())],
+        "a parent that waits and cannot restart is withdrawn"
+    );
+    assert!(
+        rig.store.build_waits()?.is_empty(),
+        "the withdrawn parent drops its queued wait"
+    );
+    assert_eq!(rig.mail.record_outcome(NEED), Some("withdrawn"));
+    assert_eq!(rig.mail.sentinel_count(NEED)?, 1, "no successor artifacts");
+    assert_eq!(rig.exceptions(), "");
+
+    // A later tick with the blocker gone still starts nothing: the intent is
+    // spent on a withdrawn parent.
+    rig.mail.set_prerequisites(NEED, &[]);
+    rig.host.set_now(epoch() + 700);
+    rig.tick()?;
+    rig.tick()?;
+    assert_eq!(rig.runs()?, [(1, "plan".into(), "withdrawn".into())]);
+    assert_eq!(rig.mail.sentinel_count(NEED)?, 1);
+    assert!(rig.store.build_waits()?.is_empty());
+    Ok(())
+}
+
+#[test]
+fn a_deferred_parent_is_withdrawn_when_its_record_closes() -> R {
+    let mut rig = rig(None)?;
+    rig.park(NEED, Some("rework1"))?;
+    rig.mail.set_prerequisites(NEED, &["dep"]);
+    rig.tick()?;
+    assert_eq!(rig.store.build_waits()?.len(), 1);
+
+    rig.mail.close_record(NEED, "superseded")?;
+    rig.tick()?;
+
+    let runs = rig.runs()?;
+    assert_eq!(runs[0], (1, "plan".into(), "withdrawn".into()));
+    assert!(
+        runs.iter().all(|(_, entry, _)| entry != "rework1"),
+        "the saved entry is never used after the record closed: {runs:?}"
+    );
+    assert!(
+        rig.store.build_waits()?.is_empty(),
+        "no stale wait projection is left behind"
+    );
+    assert_eq!(rig.mail.sentinel_count(NEED)?, 1);
+    assert_eq!(rig.exceptions(), "");
+    Ok(())
+}
+
+#[test]
+fn a_committed_successor_is_still_recovered_after_the_need_closed() -> R {
+    let mut rig = rig(None)?;
+    rig.park(NEED, Some("rework1"))?;
+    let old = rig.store.runs_of(NEED)?.remove(0);
+    rig.store.insert_run(&RunRow {
+        run: old.run + 1,
+        entry: "rework1".into(),
+        state: run_state::STARTING.to_string(),
+        ..old.clone()
+    })?;
+    rig.mail.close_need_by(NEED, "operator");
+
+    resume(&rig.ctx, &rig.store, &mut rig.mail, &old)?;
+    assert_eq!(
+        rig.runs()?,
+        [
+            (1, "plan".into(), "superseded".into()),
+            (2, "rework1".into(), "live".into())
+        ],
+        "the committed-successor boundary is untouched"
+    );
+    Ok(())
+}

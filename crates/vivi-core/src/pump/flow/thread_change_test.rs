@@ -8,9 +8,9 @@ use std::time::Duration;
 use super::{THREAD_CHANGED, THREAD_CHECK_FAILED, ThreadChange};
 use crate::pump::fixture::{Project, project};
 use crate::pump::flow::advance::start::start;
-use crate::pump::flow::handlers::TickPhase;
+use crate::pump::flow::handlers::{Registry, TickPhase};
 use crate::pump::flow::index::{StepRow, StepState};
-use crate::pump::flow::mail::{MailWriter, MailspacePort};
+use crate::pump::flow::mail::{MailReader, MailWriter, MailspacePort};
 use crate::pump::host::Ctx;
 use crate::pump::store::{DB_FILENAME, PumpStore};
 use vivi_error::VivariumError;
@@ -219,5 +219,92 @@ fn a_valid_run_raises_no_check_failure() -> R {
     rig.phase()?;
     assert_eq!(rig.runs()?, [(1, "plan".into(), "live".into())]);
     assert_eq!(rig.exceptions().matches(THREAD_CHECK_FAILED).count(), 0);
+    Ok(())
+}
+
+impl Rig {
+    /// Make `need` depend on a fresh open prerequisite need, so its build is
+    /// not admitted; returns the prerequisite's handle.
+    fn block_on(&self, need: &str) -> Result<String, VivariumError> {
+        let dep = self._project.need("blocks the change");
+        self.port.mailspace.lock().set_dependencies(
+            "mind",
+            need,
+            "need",
+            std::slice::from_ref(&dep),
+            &[],
+        )?;
+        Ok(dep)
+    }
+
+    /// Drop the prerequisite edge again, so admission is allowed.
+    fn unblock(&self, need: &str, dep: &str) -> R {
+        self.port
+            .mailspace
+            .lock()
+            .set_dependencies("mind", need, "need", &[], std::slice::from_ref(&dep))?;
+        Ok(())
+    }
+
+    /// One intake-and-restarts pass: all a deferred restart needs to finish.
+    fn pass(&mut self) -> R {
+        let mut flow: Registry<(), MailspacePort> = Registry::new();
+        crate::pump::flow::intake::register(&mut flow);
+        crate::pump::flow::advance::restart::register(&mut flow);
+        for phase in flow.phases() {
+            phase.run(&self.ctx, &mut (), &self.store, &mut self.port)?;
+        }
+        Ok(())
+    }
+}
+
+#[test]
+fn a_blocked_thread_change_keeps_plan_and_needs_no_second_reply() -> R {
+    let mut rig = rig()?;
+    let need = rig.need.clone();
+    let dep = rig.block_on(&need)?;
+    rig.reply_as("operator")?;
+
+    rig.phase()?;
+
+    // The change is accepted: the run waits `restarting` at `plan` with its
+    // old sentinel still open, and no successor exists yet.
+    let runs = rig.runs()?;
+    assert_eq!(runs, [(1, "plan".into(), "restarting".into())], "{runs:?}");
+    assert_eq!(
+        rig.store.restart_entry(&need, 1)?.as_deref(),
+        Some("plan"),
+        "the requested entry is durable"
+    );
+    assert_eq!(rig.store.build_waits()?.len(), 1, "the blocker is queued");
+    assert_eq!(rig.port.sentinel_count(&need)?, 1, "no successor yet");
+    assert_eq!(rig.exceptions(), "");
+
+    // The reply needs no follow-up: the phase watches live runs only and the
+    // saved entry survives a reopened store.
+    rig.phase()?;
+    let reopened = PumpStore::open(&rig.ctx.home.join(DB_FILENAME))?;
+    assert_eq!(
+        reopened.restart_entry(&need, 1)?.as_deref(),
+        Some("plan")
+    );
+
+    // The first eligible admission yields exactly one successor at `plan`.
+    rig.unblock(&need, &dep)?;
+    rig.pass()?;
+    let runs = rig.runs()?;
+    assert_eq!(runs.len(), 2, "exactly one successor: {runs:?}");
+    assert_eq!(
+        (runs[0].state.as_str(), runs[1].state.as_str()),
+        ("superseded", "live")
+    );
+    assert_eq!(runs[1].entry, "plan");
+    assert!(rig.store.build_waits()?.is_empty());
+
+    // No repeated action: another pass and another thread check add nothing.
+    rig.pass()?;
+    rig.phase()?;
+    assert_eq!(rig.runs()?.len(), 2);
+    assert_eq!(rig.exceptions(), "");
     Ok(())
 }

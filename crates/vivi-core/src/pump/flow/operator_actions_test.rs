@@ -581,3 +581,60 @@ fn a_blocked_replan_waits_and_raises_no_refusal() -> R {
     assert_eq!(rig.exceptions(), alarms, "the queue raises nothing new");
     Ok(())
 }
+
+#[test]
+fn a_withdraw_during_a_deferred_restart_withdraws_the_parent_and_drops_its_wait() -> R {
+    let mut rig = rig()?;
+    let need = rig.need.clone();
+    rig.mail.set_prerequisites(&need, &["dep"]);
+    rig.post(&PumpActionRequest::replan())?;
+    rig.phase()?;
+    let old = rig.store.runs_of(&need)?.remove(0);
+    assert_eq!(old.state, "restarting", "the replan is deferred");
+    assert_eq!(rig.store.build_waits()?.len(), 1);
+
+    let id = rig.post(&PumpActionRequest::withdraw())?;
+    rig.phase()?;
+    assert!(rig.applied(&id)?, "the withdraw is applied once");
+    assert_eq!(rig.mail.record_outcome(&need), Some("withdrawn"));
+
+    crate::pump::flow::advance::restart::resume(&rig.ctx, &rig.store, &mut rig.mail, &old)?;
+    let runs = rig.store.runs_of(&need)?;
+    assert_eq!(runs.len(), 1, "a withdrawn parent starts no successor");
+    assert_eq!(runs[0].state, "withdrawn");
+    assert!(
+        rig.store.build_waits()?.is_empty(),
+        "no stale wait projection is left behind"
+    );
+
+    // Even a landed prerequisite starts nothing afterwards.
+    rig.mail.set_prerequisites(&need, &[]);
+    let mut flow: Registry<Jobs, FakeMail> = Registry::new();
+    crate::pump::flow::intake::register(&mut flow);
+    crate::pump::flow::advance::restart::register(&mut flow);
+    for phase in flow.phases() {
+        phase.run(&rig.ctx, &mut rig.jobs, &rig.store, &mut rig.mail)?;
+    }
+    assert_eq!(rig.store.runs_of(&need)?.len(), 1, "no later successor");
+    assert!(rig.store.build_waits()?.is_empty());
+    Ok(())
+}
+
+#[test]
+fn a_need_closure_during_a_deferred_restart_withdraws_the_parent() -> R {
+    let mut rig = rig()?;
+    let need = rig.need.clone();
+    rig.mail.set_prerequisites(&need, &["dep"]);
+    rig.post(&PumpActionRequest::replan())?;
+    rig.phase()?;
+    let old = rig.store.runs_of(&need)?.remove(0);
+
+    rig.mail.close_need_by(&need, "operator");
+    crate::pump::flow::advance::restart::resume(&rig.ctx, &rig.store, &mut rig.mail, &old)?;
+
+    let runs = rig.store.runs_of(&need)?;
+    assert_eq!(runs.len(), 1, "a closed need gets no successor run");
+    assert_eq!(runs[0].state, "withdrawn");
+    assert!(rig.store.build_waits()?.is_empty());
+    Ok(())
+}
