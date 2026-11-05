@@ -250,12 +250,22 @@ impl Rig {
     }
 
     /// Script the `ls-remote origin <reference>` reply: `sha` at `reference`.
+    /// A short branch name also answers the fully qualified `refs/heads/` form
+    /// that base selection asks for.
     pub(crate) fn git(&self, reference: &str, sha: &str) {
         self.project.host.reply(
             &format!("ls-remote origin {reference}"),
             0,
             &format!("{sha}\t{reference}\n"),
         );
+        if !reference.starts_with("refs/") {
+            let full = format!("refs/heads/{reference}");
+            self.project.host.reply(
+                &format!("ls-remote origin {full}"),
+                0,
+                &format!("{sha}\t{full}\n"),
+            );
+        }
     }
 }
 

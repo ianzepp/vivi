@@ -537,7 +537,7 @@ fn an_unchanged_fanout_whose_branch_moved_says_the_tips_differ() {
 }
 
 #[test]
-fn with_no_need_branch_row_the_brief_says_rework_is_unavailable() {
+fn with_no_need_branch_row_the_brief_says_rework_starts_from_main() {
     let f = fixture();
     let run = two_runs(&f, "defects");
     let spec = start(&f, &run);
@@ -547,11 +547,16 @@ fn with_no_need_branch_row_the_brief_says_rework_is_unavailable() {
         spec.body
     );
     assert!(
-        spec.body.contains("No need-branch row exists"),
+        spec.body.contains("No need-branch row is stored"),
         "{}",
         spec.body
     );
-    assert!(spec.body.contains("rework is unavailable"), "{}", spec.body);
+    assert!(
+        spec.body
+            .contains("rework restarts the need at rework1 from the current target main tip"),
+        "{}",
+        spec.body
+    );
     assert!(
         spec.body
             .contains("Research, plan, slice and lock remain the choices"),
@@ -588,12 +593,19 @@ fn a_stored_need_branch_row_names_the_branch_and_target_for_rework() {
     );
     assert!(spec.body.contains("gate-distinctive"), "{}", spec.body);
     assert!(
-        spec.body.contains("rework restarts the need at rework1"),
+        spec.body
+            .contains("rework restarts the need at rework1 on the existing branch"),
         "{}",
         spec.body
     );
     assert!(
-        !spec.body.contains("rework is unavailable"),
+        spec.body
+            .contains("The row itself is not evidence that any slice merged"),
+        "{}",
+        spec.body
+    );
+    assert!(
+        !spec.body.contains("from the current target main tip"),
         "{}",
         spec.body
     );
