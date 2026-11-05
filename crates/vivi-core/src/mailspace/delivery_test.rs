@@ -294,6 +294,69 @@ fn deliver_refuses_an_oversize_letter_only_when_sync_is_configured() {
 }
 
 #[test]
+fn unaddressed_raw_delivery_keeps_exact_bytes() {
+    let (_tmp, mailspace) = space(false);
+    let domain = mailspace.address_domain();
+    let raw = format!(
+        "From: mind@{domain}\r\nSubject: raw only\r\nMessage-ID: <only@x.test>\r\n\\
+         Date: Sun, 11 Oct 2026 12:00:00 +0000\r\nX-Vivi-Kind: task\r\nX-Vivi-Format: 1\r\n\r\n{}",
+        task_body("raw only")
+    );
+    let result = mailspace.deliver_raw(raw.as_bytes(), "inbox").unwrap();
+    assert!(result.delivered.is_empty());
+    assert!(result.remote.is_empty());
+    let handle = result.sent.unwrap();
+    let storage = mailspace.storage().unwrap();
+    let id = storage.resolve_message_token(&handle).unwrap();
+    assert_eq!(storage.read_message(&id).unwrap(), raw.as_bytes());
+    let rows = rows(&mailspace);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        (rows[0].account.as_str(), rows[0].local_role.as_str()),
+        ("mind", "sent")
+    );
+    assert!(rows[0].read_state);
+    assert_eq!(rows[0].handle, handle);
+}
+
+#[test]
+fn unaddressed_raw_delivery_does_not_notify() {
+    let (_tmp, mailspace) = space(false);
+    let domain = mailspace.address_domain();
+    let raw = format!(
+        "From: mind@{domain}\r\nSubject: raw only\r\nMessage-ID: <only@x.test>\r\n\\
+         Date: Sun, 11 Oct 2026 12:00:00 +0000\r\nX-Vivi-Kind: task\r\nX-Vivi-Format: 1\r\n\r\n{}",
+        task_body("raw only")
+    );
+    let result = mailspace.deliver_raw(raw.as_bytes(), "inbox").unwrap();
+    let handle = result.sent.unwrap();
+    assert!(mailspace.backlog_item_tracked(&handle).unwrap());
+    let storage = mailspace.storage().unwrap();
+    let id = storage.resolve_message_token(&handle).unwrap();
+    let events = storage.list_mailspace_events(&id).unwrap();
+    assert!(
+        events.iter().any(|e| e.event_type == "sent_copy_created"),
+        "{events:?}"
+    );
+    assert!(
+        !events.iter().any(|e| e.event_type == "delivered"),
+        "{events:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .all(|e| e.account != "mind" || e.event_type != "delivered"),
+        "{events:?}"
+    );
+    for from in ["stranger@example.com", "mind@3f9a1c7e.local"] {
+        let invalid = format!("From: {from}\r\nSubject: invalid\r\n\r\nbody\r\n");
+        let before = rows(&mailspace).len();
+        assert!(mailspace.deliver_raw(invalid.as_bytes(), "inbox").is_err());
+        assert_eq!(rows(&mailspace).len(), before);
+    }
+}
+
+#[test]
 fn deliver_classifies_local_and_remote_recipients_like_send() {
     let (_tmp, mailspace) = space(true);
     let raw = format!(
