@@ -34,10 +34,54 @@ const SENDING_KEY: &str = "main-repair-sending:default";
 const FAILING_KEY: &str = "main-failing:default";
 /// The one failing id the seeded receipt parses to.
 const FAILING_ID: &str = "mir_emit_harness::emit::a";
-/// The receipt a red unittest run leaves: one failing test, agent exit 101.
-const RECEIPT: &str = "     Running unittests src/lib.rs (target/debug/deps/mir_emit_harness-1a2b3c4d5e)\n\
-                       test emit::a ... FAILED\n\
-                       agent exit 101 in 9s\n";
+/// The command saved on the seeded job when it was dispatched.
+const SAVED_COMMAND: &str = "cargo test --lib mir_emit_harness";
+/// The current main-rung command after the saved job exists: a report must
+/// keep describing the saved job instead of re-resolving this one.
+const CURRENT_COMMAND: &str = "cargo test --all --no-fail-fast";
+/// The early tracked-file-size error the report must keep above the noise.
+const EARLY_ERROR: &str =
+    "error: tracked file src/pump/flow/main_rung/red.rs has 1004 lines, over the 1000-line ceiling";
+/// The line naming the offender, and the context just below it.
+const OFFENDER: &str = "offender: src/pump/flow/main_rung/red.rs (tracked-file-size check)";
+const EARLY_CONTEXT: &str = "first over-ceiling line: fn report_red(";
+
+/// The sectioned receipt a collected red unittest run leaves: a nonzero agent
+/// exit in the pool summary, an early tracked-file-size error with its
+/// offender context, hundreds of passing lines, the existing libtest failure,
+/// and misleading failure-looking facts and log content that the report must
+/// never substitute for the receipt.
+fn collected_receipt() -> String {
+    let mut receipt = format!(
+        "pool result rung-main-main-step-a1: finished\n\
+         agent exit 101 in 19s, job 20s, started from 1234567890\n\
+         \n--- facts\n\
+         command: {CURRENT_COMMAND}\n\
+         target: misleading-target\n\
+         error: misleading failure-looking fact\n\
+         \n--- receipt\n\
+         {EARLY_ERROR}\n\
+         check: hooks/pre-commit/tracked_file_size\n\
+         {OFFENDER}\n\
+         {EARLY_CONTEXT}\n\
+         \n"
+    );
+    for n in 0..400 {
+        receipt.push_str(&format!("test passing::unrelated_case_{n:03} ... ok\n"));
+    }
+    receipt.push_str(
+        "test result: ok. 400 passed; 0 ignored; 0 measured; 0 filtered out\n\
+         Running unittests src/lib.rs (target/debug/deps/mir_emit_harness-1a2b3c4d5e)\n\
+         test emit::a ... FAILED\n\
+         test result: FAILED. 1 failed; 400 passed; 0 ignored; 0 measured; 0 filtered out\n\
+         \n--- stderr tail\n\
+         warning: an unrelated compiler warning\n\
+         \n--- runner log tail\n\
+         test misleading::log_only ... FAILED\n\
+         error: misleading failure-looking log content\n",
+    );
+    receipt
+}
 
 #[test]
 fn main_red_files_and_opens_a_repair_need_in_one_tick_through_real_cli() {
@@ -55,7 +99,7 @@ fn main_red_files_and_opens_a_repair_need_in_one_tick_through_real_cli() {
         root(&project),
     ]));
 
-    let ctx = real_ctx(&project);
+    let mut ctx = real_ctx(&project);
     let needs_before = open_need_handles(&project);
 
     // The main rung started recently: the scheduler must not enqueue or touch
@@ -66,8 +110,24 @@ fn main_red_files_and_opens_a_repair_need_in_one_tick_through_real_cli() {
         .unwrap();
     drop(store);
 
+    // The seeded job ran on a real task: the report's task pointer must name
+    // a handle this mailspace can resolve.
+    let task = send_task(&project, "mind", "main rung dispatch");
     let mut state = State::default();
-    let seeded = seed_red_main_rung_job(&ctx, &mut state);
+    let seeded = seed_red_main_rung_job(&ctx, &mut state, &task);
+    assert_eq!(
+        state.jobs[&seeded].command.as_deref(),
+        Some(SAVED_COMMAND),
+        "the seeded job saved the command it ran"
+    );
+
+    // The current configuration now names another command. The filed report
+    // must keep the saved job's command rather than resolving this one.
+    ctx = real_ctx_with_main(&project, CURRENT_COMMAND);
+    assert_eq!(
+        ctx.cfg.effective_rungs(Some(TARGET)).command("main"),
+        Some(CURRENT_COMMAND)
+    );
 
     tick(&ctx, &mut state).unwrap();
 
@@ -110,6 +170,11 @@ fn main_red_files_and_opens_a_repair_need_in_one_tick_through_real_cli() {
     let storage = mailspace.storage().unwrap();
     let message_id = storage.resolve_message_token(&filed).unwrap();
     assert_eq!(message_id, repair.message_id, "exact message id");
+    // The task the seeded job ran on is a real handle in this mailspace.
+    assert!(
+        storage.resolve_message_token(&task).is_ok(),
+        "the seeded job's task handle {task} resolves"
+    );
 
     // Exactly one open pump record names the repair need, and it is readable.
     let open = mailspace.pump_list(None, Some(PumpState::Open)).unwrap();
@@ -159,6 +224,7 @@ fn main_red_files_and_opens_a_repair_need_in_one_tick_through_real_cli() {
         "the repair need carries the repair mark: {:?}",
         root.marks
     );
+    assert_useful_report(&letter.body, &seeded, &task);
 
     // The record letter: a repair run on this need, at the seeded tip.
     let record_letter = record_of(&record_handle, &body).unwrap();
@@ -166,6 +232,7 @@ fn main_red_files_and_opens_a_repair_need_in_one_tick_through_real_cli() {
     assert_eq!(record_letter.front.kind, Some(RecordKind::Repair));
     assert_eq!(record_letter.front.target.as_deref(), Some(TARGET));
     assert_eq!(record_letter.front.tested.as_deref(), Some(TIP));
+    assert_useful_report(&record_letter.body, &seeded, &task);
 
     // The filing completed inside this tick: the sending marker is cleared.
     assert!(
@@ -270,6 +337,34 @@ fn main_red_files_and_opens_a_repair_need_in_one_tick_through_real_cli() {
     );
 }
 
+/// A filed report's prose: the exact saved command, target, tested tip,
+/// source job and real task, plus the early failure context and libtest
+/// failure. Never the current command or the misleading facts/log content.
+fn assert_useful_report(report: &str, job: &str, task: &str) {
+    for expected in [
+        format!("command: {SAVED_COMMAND}"),
+        format!("target: {TARGET}"),
+        format!("tested: {TIP}"),
+        format!("source job: {job}"),
+        format!("task: {task}"),
+        EARLY_ERROR.to_owned(),
+        OFFENDER.to_owned(),
+        EARLY_CONTEXT.to_owned(),
+        String::from("test emit::a ... FAILED"),
+    ] {
+        assert!(
+            report.contains(&expected),
+            "filed prose missing {expected:?}: {report}"
+        );
+    }
+    for stale in [CURRENT_COMMAND, "misleading", "log_only"] {
+        assert!(
+            !report.contains(stale),
+            "filed prose must not carry {stale:?}: {report}"
+        );
+    }
+}
+
 /// The `flow-run-error` exception rows naming the main-rung unit: the
 /// identifiers only, never the diagnostic text.
 fn main_rung_run_errors(store: &PumpStore) -> Vec<String> {
@@ -294,18 +389,20 @@ fn open_need_handles(project: &tempfile::TempDir) -> BTreeSet<String> {
 }
 
 /// Seed one terminal, failing main rung job for `TARGET` at `TIP` into
-/// `state.jobs`: the finished job red.rs applies. Returns the job id.
-fn seed_red_main_rung_job(ctx: &Ctx, state: &mut State) -> String {
+/// `state.jobs`: the finished job red.rs applies, on the real `task` handle.
+/// Returns the job id.
+fn seed_red_main_rung_job(ctx: &Ctx, state: &mut State, task: &str) -> String {
     let mut spec = rung::spec(ctx, TARGET, "main", TIP, "main-step", 1)
         .unwrap_or_else(|| panic!("target {TARGET} has a main rung"));
     spec.payload["main_rung"] = serde_json::json!(TARGET);
+    spec.task = Some(task.to_owned());
     let id = spec.id.clone();
     let mut job = PoolJob::from(spec);
     job.status = JobStatus::Finished;
     job.outcome = Some(JobOutcome {
         state: "finished".into(),
         detail: String::new(),
-        receipt: RECEIPT.to_owned(),
+        receipt: collected_receipt(),
         at: 1,
     });
     state.jobs.insert(id.clone(), job);
@@ -313,6 +410,10 @@ fn seed_red_main_rung_job(ctx: &Ctx, state: &mut State) -> String {
 }
 
 fn real_ctx(project: &tempfile::TempDir) -> Ctx {
+    real_ctx_with_main(project, SAVED_COMMAND)
+}
+
+fn real_ctx_with_main(project: &tempfile::TempDir, main: &str) -> Ctx {
     let home = project.path().join(".vivi/pump");
     fs::create_dir_all(home.join("plans")).unwrap();
     let cfg = PumpConfig {
@@ -321,7 +422,7 @@ fn real_ctx(project: &tempfile::TempDir) -> Ctx {
             ..BoardConfig::default()
         },
         rungs: RungsConfig {
-            main: Some(String::from("cargo test")),
+            main: Some(main.to_owned()),
             ..RungsConfig::default()
         },
         flow: FlowConfig {
@@ -381,6 +482,31 @@ fn temp_mailspace() -> tempfile::TempDir {
         root(&project),
     ]));
     project
+}
+
+fn send_task(project: &tempfile::TempDir, to: &str, subject: &str) -> String {
+    let out = vivi([
+        "task",
+        "send",
+        "--from",
+        "mind",
+        "--to",
+        to,
+        "--subject",
+        subject,
+        "--body",
+        "the main rung dispatch",
+        "--project",
+        root(project),
+    ]);
+    assert_success(&out);
+    stdout(&out)
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix(&format!("created {to} "))
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| panic!("no handle in {}", stdout(&out)))
 }
 
 fn send_need(project: &tempfile::TempDir, to: &str, subject: &str) -> String {
