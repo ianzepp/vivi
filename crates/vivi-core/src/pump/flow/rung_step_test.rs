@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 
 use tempfile::{TempDir, tempdir};
 
-use super::{answer, job, register};
+use super::{answer, job, register, render_diagnostic};
 use crate::pump::config::{PumpConfig, RungsConfig};
 use crate::pump::flow::advance::start::start;
 use crate::pump::flow::fake_mail::FakeMail;
@@ -264,6 +264,100 @@ fn a_passing_rung_payload_has_no_failing_ids() {
     let (word, payload) = answer(&finished("ok\nagent exit 0 in 8s"));
     assert_eq!(word, "pass");
     assert_eq!(payload["failing"], serde_json::json!([]));
+}
+
+/// A finished rung job whose receipt is an early size-check failure: an
+/// error before any test binary ran, so no canonical failing id exists.
+const SIZE_CHECK: &str = "    Checking vivi-core v0.1.0\n\
+error: src/pump/huge.rs has 1004 lines, over the 1000-line ceiling\n\
+agent exit 101 in 3s\n";
+
+fn provenance_job() -> PoolJob {
+    let mut job = finished(SIZE_CHECK);
+    job.command = Some("cargo test --quiet".into());
+    job.target = Some("default".into());
+    job.from_ref = Some(BASE.into());
+    job.task = Some("t-early".into());
+    job.payload = serde_json::json!({
+        "rung": "need",
+        "tip": BASE,
+        "target": "default",
+    });
+    job
+}
+
+#[test]
+fn saved_rung_provenance_survives_a_config_change() -> R {
+    let mut rig = rig(config(true))?;
+    let id = first_job(&mut rig)?;
+    rig.finish(&id, JobStatus::Finished, SIZE_CHECK)?;
+    let saved = rig
+        .jobs
+        .jobs
+        .get(&id)
+        .cloned()
+        .ok_or_else(|| VivariumError::Message(format!("no job {id}")))?;
+    let saved_task = saved
+        .task
+        .clone()
+        .ok_or_else(|| VivariumError::Message("no saved task".into()))?;
+
+    // The current rung configuration now names another command. The answer
+    // for the completed job must keep describing what the job ran.
+    let mut changed = config(true);
+    changed.rungs.need = Some(String::from("cargo test --all"));
+    let current = changed.effective_rungs(Some("default"));
+    assert_eq!(current.command("need"), Some("cargo test --all"));
+    assert_ne!(current.command("need"), saved.command.as_deref());
+
+    let (word, payload) = answer(&saved);
+    assert_eq!(word, "fail");
+    assert_eq!(payload["rung"], serde_json::json!("need"));
+    assert_eq!(payload["command"], serde_json::json!("cargo test"));
+    assert_eq!(payload["target"], serde_json::json!("default"));
+    assert_eq!(payload["tip"], serde_json::json!(BASE));
+    assert_eq!(payload["job"], serde_json::json!(id));
+    assert_eq!(payload["task"], serde_json::json!(saved_task));
+    Ok(())
+}
+
+#[test]
+fn render_diagnostic_shows_a_size_check_failure_with_no_failing_ids() {
+    let job = provenance_job();
+    let (word, payload) = answer(&job);
+    assert_eq!(word, "fail");
+    assert_eq!(payload["exit"], serde_json::json!(101));
+    assert_eq!(payload["failing"], serde_json::json!([]));
+
+    let text = render_diagnostic(&payload);
+    assert!(text.contains("need"), "{text}");
+    assert!(text.contains("cargo test --quiet"), "{text}");
+    assert!(text.contains("default"), "{text}");
+    assert!(text.contains(BASE), "{text}");
+    assert!(text.contains("rung-need-t-a1"), "{text}");
+    assert!(text.contains("t-early"), "{text}");
+    assert!(text.contains("1004 lines"), "{text}");
+    assert!(text.contains("no canonical failing test id"), "{text}");
+    assert!(text.contains("markers"), "{text}");
+}
+
+#[test]
+fn render_diagnostic_reports_missing_task_and_evidence() {
+    let mut job = finished("");
+    job.outcome = None;
+    job.command = None;
+    job.target = None;
+    job.from_ref = None;
+    job.payload = serde_json::json!({ "rung": "main" });
+    let (word, payload) = answer(&job);
+    assert_eq!(word, "failed");
+    assert_eq!(payload["task"], serde_json::Value::Null);
+    assert_eq!(payload["excerpt"]["text"], serde_json::json!(""));
+
+    let text = render_diagnostic(&payload);
+    assert!(text.contains("rung-need-t-a1"), "{text}");
+    assert_eq!(text.matches("not recorded").count(), 5, "{text}");
+    assert!(text.contains("no excerpt evidence"), "{text}");
 }
 
 #[test]
