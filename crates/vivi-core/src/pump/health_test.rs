@@ -9,7 +9,9 @@ use tempfile::tempdir;
 
 use super::writer::{LockRow, ProcRoot, holder_in, parse_locks, split_dev};
 use super::{HealthOptions, Signals, Verdict, decide, default_stale_after, health};
+use crate::pump::report::{self, PumpRead};
 use crate::pump::state::State;
+use crate::pump::store::build_waits::{BuildPrerequisite, BuildWait, PrerequisiteState};
 use crate::pump::store::{DB_FILENAME, PumpStore};
 
 fn running() -> Signals {
@@ -296,4 +298,275 @@ fn a_holding_pump_is_unknown_not_stalled() {
     assert_eq!(h.reasons.len(), 1, "{:?}", h.reasons);
     assert!(h.reasons[0].starts_with("not ready: "), "{:?}", h.reasons);
     assert_eq!(h.control.as_deref(), Some("running"));
+}
+
+fn wait(need: &str, record: &str, prerequisites: &[(&str, PrerequisiteState)]) -> BuildWait {
+    BuildWait {
+        need: need.into(),
+        record: record.into(),
+        prerequisites: prerequisites
+            .iter()
+            .map(|(handle, state)| BuildPrerequisite {
+                handle: (*handle).into(),
+                state: *state,
+                detail: None,
+                outcome: None,
+            })
+            .collect(),
+        observed_at: 1_700_000_000,
+    }
+}
+
+/// A pump home holding `waits`, with a fresh tick and a status file.
+fn home_with_waits(now: u64, waits: &[BuildWait]) -> (tempfile::TempDir, std::path::PathBuf) {
+    let dir = project(TOML);
+    let home = dir.path().join(".vivi/pump");
+    write_pump_home(&home, now);
+    let store = PumpStore::open(&home.join(DB_FILENAME)).unwrap();
+    for wait in waits {
+        store.upsert_build_wait(wait).unwrap();
+    }
+    drop(store);
+    (dir, home)
+}
+
+#[test]
+fn waiting_carries_the_persisted_handles_states_and_details() {
+    let now = epoch_now();
+    let mut first = wait(
+        "n1",
+        "r1",
+        &[
+            ("b", PrerequisiteState::ClosedUnlanded),
+            ("a", PrerequisiteState::Held),
+        ],
+    );
+    first.prerequisites[0].outcome = Some(String::from("failed"));
+    first.prerequisites[1].detail = Some(String::from("waiting on the gate"));
+    let second = wait("n2", "r2", &[("c", PrerequisiteState::Open)]);
+    let (dir, home) = home_with_waits(now, &[first, second]);
+    let h = health(dir.path(), &HealthOptions::default()).unwrap();
+    assert_eq!(h.waiting.len(), 2, "{:?}", h.waiting);
+    let view = &h.waiting[0];
+    assert_eq!(view.need, "n1");
+    assert_eq!(view.record, "r1");
+    assert_eq!(view.observed_at, 1_700_000_000);
+    let handles: Vec<&str> = view
+        .prerequisites
+        .iter()
+        .map(|prerequisite| prerequisite.handle.as_str())
+        .collect();
+    assert_eq!(handles, ["a", "b"], "a wait renders in handle order");
+    assert_eq!(view.prerequisites[0].state, PrerequisiteState::Held);
+    assert_eq!(
+        view.prerequisites[0].detail.as_deref(),
+        Some("waiting on the gate")
+    );
+    assert_eq!(
+        view.prerequisites[1].state,
+        PrerequisiteState::ClosedUnlanded
+    );
+    assert_eq!(view.prerequisites[1].outcome.as_deref(), Some("failed"));
+    assert_eq!(h.waiting[1].prerequisites[0].state, PrerequisiteState::Open);
+    // The same handles and states as the persisted projection, not a
+    // classification recomputed here.
+    let PumpRead::Ready(snapshot) = report::read(&home).unwrap() else {
+        panic!("expected a ready snapshot");
+    };
+    assert_eq!(snapshot.build_waits().len(), h.waiting.len());
+    for (persisted, view) in snapshot.build_waits().iter().zip(&h.waiting) {
+        assert_eq!(&persisted.need, &view.need);
+        assert_eq!(&persisted.record, &view.record);
+        assert_eq!(persisted.observed_at, view.observed_at);
+        // The view orders the prerequisites; the persisted row keeps insert
+        // order, so match by handle rather than by position.
+        for view in &view.prerequisites {
+            let prerequisite = persisted
+                .prerequisites
+                .iter()
+                .find(|prerequisite| prerequisite.handle == view.handle)
+                .unwrap_or_else(|| panic!("{} is not persisted", view.handle));
+            assert_eq!(prerequisite.state, view.state);
+            assert_eq!(prerequisite.detail, view.detail);
+            assert_eq!(prerequisite.outcome, view.outcome);
+        }
+    }
+    // The JSON names each classification in its persisted snake case.
+    let value = serde_json::to_value(&h).unwrap();
+    assert_eq!(value["waiting"][0]["record"], "r1");
+    assert_eq!(value["waiting"][0]["observed_at"], 1_700_000_000);
+    assert_eq!(value["waiting"][0]["prerequisites"][0]["state"], "held");
+    assert_eq!(
+        value["waiting"][0]["prerequisites"][1]["state"],
+        "closed_unlanded"
+    );
+    assert!(
+        value["waiting"][1]["prerequisites"][0]
+            .get("detail")
+            .is_none()
+    );
+}
+
+#[test]
+fn waiting_reads_are_deterministic_and_ignore_the_exception_window() {
+    let now = epoch_now();
+    let (dir, home) = home_with_waits(now, &[wait("n1", "r1", &[("a", PrerequisiteState::Held)])]);
+    let opts = HealthOptions {
+        since: Some(now + 10_000),
+        now: Some(now),
+        ..HealthOptions::default()
+    };
+    let first = health(dir.path(), &opts).unwrap();
+    let second = health(dir.path(), &opts).unwrap();
+    // Current snapshot data: a cursor past the observation keeps the wait.
+    assert_eq!(first.waiting.len(), 1, "waiting is not windowed");
+    assert_eq!(
+        serde_json::to_string(&first).unwrap(),
+        serde_json::to_string(&second).unwrap()
+    );
+    assert_eq!(super::render(&first), super::render(&second));
+    let text = super::render(&first);
+    assert!(
+        text.contains("waiting  1\n  need n1 record r1 observed 1700000000 waiting on a held\n"),
+        "{text}"
+    );
+    // Nothing created: no lock taken, no file written by a read.
+    let lock = home.join("lock").exists();
+    let before = listing(&home);
+    drop(health(dir.path(), &opts).unwrap());
+    drop(health(dir.path(), &opts).unwrap());
+    assert_eq!(listing(&home), before, "a read wrote under the pump home");
+    assert_eq!(
+        home.join("lock").exists(),
+        lock,
+        "a read took the pump lock"
+    );
+}
+
+#[test]
+fn a_database_without_the_waits_table_has_no_waiting() {
+    let now = epoch_now();
+    let (dir, home) = home_with_waits(now, &[]);
+    let conn = rusqlite::Connection::open(home.join(DB_FILENAME)).unwrap();
+    conn.execute_batch("DROP TABLE build_waits").unwrap();
+    drop(conn);
+    let h = health(dir.path(), &HealthOptions::default()).unwrap();
+    assert!(h.waiting.is_empty(), "{:?}", h.waiting);
+    let value = serde_json::to_value(&h).unwrap();
+    assert_eq!(value["waiting"], serde_json::json!([]));
+    let conn = rusqlite::Connection::open(home.join(DB_FILENAME)).unwrap();
+    let tables: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'build_waits'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(tables, 0, "a health read must not create the table");
+}
+
+#[test]
+fn a_wait_leaves_health_after_its_admission_is_recorded() {
+    let now = epoch_now();
+    let (dir, home) = home_with_waits(now, &[wait("n1", "r1", &[("a", PrerequisiteState::Held)])]);
+    let h = health(dir.path(), &HealthOptions::default()).unwrap();
+    assert_eq!(h.waiting.len(), 1);
+    let store = PumpStore::open(&home.join(DB_FILENAME)).unwrap();
+    store.remove_build_wait("n1").unwrap();
+    drop(store);
+    let h = health(dir.path(), &HealthOptions::default()).unwrap();
+    assert!(h.waiting.is_empty(), "{:?}", h.waiting);
+}
+
+#[test]
+fn ordinary_waiting_does_not_change_the_verdict() {
+    let now = epoch_now();
+    let (plain, _home) = home_with_waits(now, &[]);
+    let (waiting, _home) = home_with_waits(
+        now,
+        &[
+            wait(
+                "n1",
+                "r1",
+                &[
+                    ("a", PrerequisiteState::Held),
+                    ("b", PrerequisiteState::Open),
+                ],
+            ),
+            wait("n2", "r2", &[("c", PrerequisiteState::ClosedUnlanded)]),
+        ],
+    );
+    let opts = HealthOptions {
+        now: Some(now),
+        ..HealthOptions::default()
+    };
+    let plain = health(plain.path(), &opts).unwrap();
+    let waiting = health(waiting.path(), &opts).unwrap();
+    assert_eq!(waiting.waiting.len(), 2);
+    assert_eq!(waiting.verdict, plain.verdict, "{:?}", waiting.reasons);
+    assert_eq!(waiting.reasons, plain.reasons);
+    assert_eq!(waiting.schema, plain.schema);
+}
+
+#[test]
+fn waiting_agrees_with_the_status_surface() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join(".vivi")).unwrap();
+    fs::write(
+        dir.path().join(".vivi").join("mailspace.toml"),
+        format!(
+            "name = \"p\"\n\n[pump]\ntick = 20\nhome = \"{}\"\n",
+            dir.path().join("home").display()
+        ),
+    )
+    .unwrap();
+    let (ctx, _host) =
+        crate::pump::host::test_ctx(dir.path(), crate::pump::config::PumpConfig::default());
+    let store = PumpStore::open(&ctx.home.join(DB_FILENAME)).unwrap();
+    store.save(&State::default()).unwrap();
+    let mut first = wait(
+        "n1",
+        "r1",
+        &[
+            ("b", PrerequisiteState::ClosedUnlanded),
+            ("a", PrerequisiteState::Held),
+        ],
+    );
+    first.prerequisites[0].outcome = Some(String::from("failed"));
+    first.prerequisites[1].detail = Some(String::from("waiting on the gate"));
+    store.upsert_build_wait(&first).unwrap();
+    drop(store);
+    crate::pump::run::write_status(&ctx, &State::default());
+    let status = fs::read_to_string(ctx.home.join("status.txt")).unwrap();
+    let h = health(dir.path(), &HealthOptions::default()).unwrap();
+    let rendered = super::render(&h);
+    let view = &h.waiting[0];
+    let status_line = status
+        .lines()
+        .find(|line| line.starts_with(&format!("need {} waiting on ", view.need)))
+        .unwrap_or_else(|| panic!("no status line for {}: {status}", view.need));
+    let on = status_line.split_once("waiting on ").unwrap().1;
+    let rendered_line = rendered
+        .lines()
+        .find(|line| line.contains(&format!("need {} record {}", view.need, view.record)))
+        .unwrap_or_else(|| panic!("no health line for {}: {rendered}", view.need));
+    assert!(
+        rendered_line.ends_with(&format!("waiting on {on}")),
+        "{rendered_line} vs {status_line}"
+    );
+}
+
+/// Every entry of a directory with its length, sorted, for read-only checks.
+fn listing(dir: &Path) -> Vec<(String, u64)> {
+    let mut out: Vec<(String, u64)> = fs::read_dir(dir)
+        .unwrap()
+        .map(|entry| {
+            let entry = entry.unwrap();
+            let len = entry.metadata().unwrap().len();
+            (entry.file_name().to_string_lossy().into_owned(), len)
+        })
+        .filter(|(name, _)| !name.ends_with("-shm") && !name.ends_with("-wal"))
+        .collect();
+    out.sort();
+    out
 }

@@ -26,7 +26,7 @@ use super::store::SCHEMA_VERSION;
 
 pub use render::render;
 pub use verdict::{Signals, Verdict, decide};
-pub use views::{ChangedSince, ExceptionView};
+pub use views::{ChangedSince, ExceptionView, WaitingPrerequisite, WaitingView};
 
 /// The default lookback for exceptions when no `since` is given.
 pub const DEFAULT_WINDOW_SECS: u64 = 3600;
@@ -79,6 +79,12 @@ pub struct PumpHealth {
     /// The pump.db schema this binary reads.
     pub schema: i64,
     pub exceptions: Vec<ExceptionView>,
+    /// The queued build waits as persisted right now: a dependent need, the
+    /// open record that queued it, the prerequisites that had not landed with
+    /// the state that classified them, and when the wait was observed. Current
+    /// snapshot data, so `since` never filters it; a schema without the
+    /// additive table has no waits.
+    pub waiting: Vec<WaitingView>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub changed_since: Option<ChangedSince>,
 }
@@ -168,6 +174,7 @@ fn blank(now: u64, tick_secs: u64, opts: &HealthOptions) -> PumpHealth {
         status_age_secs: None,
         schema: SCHEMA_VERSION,
         exceptions: Vec::new(),
+        waiting: Vec::new(),
         changed_since: None,
     }
 }
@@ -183,6 +190,7 @@ fn fill(out: &mut PumpHealth, home: &Path, snapshot: &Snapshot, opts: &HealthOpt
         .since
         .unwrap_or_else(|| now.saturating_sub(DEFAULT_WINDOW_SECS));
     out.exceptions = views::exceptions(snapshot.exception_rows(), window);
+    out.waiting = views::waiting(snapshot.build_waits());
     out.changed_since = opts
         .since
         .map(|since| views::changed_since(snapshot.exception_rows(), since));

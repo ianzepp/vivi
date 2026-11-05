@@ -13,6 +13,7 @@ use tower::util::ServiceExt;
 use vivi_core::mailspace::Mailspace;
 use vivi_core::pump::health::HealthOptions;
 use vivi_core::pump::state::State;
+use vivi_core::pump::store::build_waits::{BuildPrerequisite, BuildWait, PrerequisiteState};
 use vivi_core::pump::store::{DB_FILENAME, PumpStore, SCHEMA_VERSION, append_exception};
 use vivi_server::server::grants::{GrantLevel, GrantRecord};
 use vivi_server::server::{AppState, app_state, hosted, pump_health, router};
@@ -78,6 +79,29 @@ fn write_pump(root: &Path, at: u64) {
     let store = PumpStore::open(&home.join(DB_FILENAME)).unwrap();
     store.save(&State::default()).unwrap();
     store.initialize_control("paused").unwrap();
+    // A queued build wait: current snapshot data beside the windowed
+    // exceptions.
+    store
+        .upsert_build_wait(&BuildWait {
+            need: String::from("n1"),
+            record: String::from("r1"),
+            prerequisites: vec![
+                BuildPrerequisite {
+                    handle: String::from("b"),
+                    state: PrerequisiteState::ClosedUnlanded,
+                    detail: None,
+                    outcome: Some(String::from("failed")),
+                },
+                BuildPrerequisite {
+                    handle: String::from("a"),
+                    state: PrerequisiteState::Held,
+                    detail: Some(String::from("waiting on the gate")),
+                    outcome: None,
+                },
+            ],
+            observed_at: at - 20,
+        })
+        .unwrap();
     drop(store);
     append_exception(
         &home,
@@ -204,6 +228,7 @@ async fn a_hosted_project_without_a_pump_table_is_unknown() {
             .contains("no [pump] table"),
         "{body}"
     );
+    assert_eq!(body["waiting"], json!([]), "{body}");
 }
 
 #[tokio::test]
@@ -237,6 +262,7 @@ async fn a_saved_pump_reads_as_json_with_changes_since_a_cursor() {
             "status_age_secs",
             "tick_secs",
             "verdict",
+            "waiting",
             "writer",
         ],
         "{body}"
@@ -284,6 +310,28 @@ async fn a_saved_pump_reads_as_json_with_changes_since_a_cursor() {
     assert_eq!(exceptions[0]["kind"], "merge-conflict");
     assert_eq!(exceptions[0]["unit"], "u2");
     assert_eq!(exceptions[0]["text"], "rebase failed");
+    // The persisted wait travels verbatim: the dependent, the open record,
+    // the classifications in handle order and the observation time. It is
+    // current snapshot data, so `since` above did not filter it.
+    let waiting = body["waiting"].as_array().unwrap();
+    assert_eq!(waiting.len(), 1, "{body}");
+    assert_eq!(waiting[0]["need"], "n1", "{body}");
+    assert_eq!(waiting[0]["record"], "r1", "{body}");
+    assert_eq!(waiting[0]["observed_at"], Value::from(at - 20), "{body}");
+    assert_eq!(waiting[0]["prerequisites"][0]["handle"], "a", "{body}");
+    assert_eq!(waiting[0]["prerequisites"][0]["state"], "held", "{body}");
+    assert_eq!(
+        waiting[0]["prerequisites"][0]["detail"], "waiting on the gate",
+        "{body}"
+    );
+    assert_eq!(
+        waiting[0]["prerequisites"][1]["state"], "closed_unlanded",
+        "{body}"
+    );
+    assert_eq!(
+        waiting[0]["prerequisites"][1]["outcome"], "failed",
+        "{body}"
+    );
     let changed = &body["changed_since"];
     let mut changed_fields: Vec<&str> = changed
         .as_object()
@@ -299,6 +347,7 @@ async fn a_saved_pump_reads_as_json_with_changes_since_a_cursor() {
     // last hour: both exception rows.
     let (_, plain) = fx.get("?stale_after=5", Some(&fx.key())).await;
     assert_eq!(plain["stale_after_secs"], 5);
+    assert_eq!(plain["waiting"], body["waiting"], "waiting is not windowed");
     assert!(plain.get("changed_since").is_none(), "{plain}");
     assert_eq!(plain["exceptions"].as_array().unwrap().len(), 2, "{plain}");
 }
@@ -363,6 +412,11 @@ async fn the_pump_mcp_tool_answers_the_same_verdict() {
     let body: Value = serde_json::from_str(text).unwrap();
     assert_eq!(body["verdict"], "degraded");
     assert_eq!(body["stale_after_secs"], 900);
+    // Both transports serialize the same answer: the waiting array is
+    // identical over REST and MCP.
+    let (_, rest) = fx.get("?stale_after=900", Some(&fx.key())).await;
+    assert_eq!(body["waiting"], rest["waiting"], "{body} vs {rest}");
+    assert_eq!(body["waiting"].as_array().unwrap().len(), 1, "{body}");
     let bad = fx
         .rpc(
             &key,
