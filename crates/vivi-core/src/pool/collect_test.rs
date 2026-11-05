@@ -395,7 +395,10 @@ fn a_timeout_is_recorded_and_the_slot_stopped() {
     assert_eq!(*seen.borrow(), "timeout");
     assert_eq!(lines[0].state, "timeout");
     assert_eq!(fake.state_of("m1"), "stopped");
-    assert!(fake.meta("m1", META_TASK).is_none());
+    // A timed-out job may hold unpublished work: the slot is stopped but keeps
+    // its claim until someone recovers the work and destroys it deliberately.
+    assert!(fake.meta("m1", META_TASK).is_some());
+    assert!(lines[0].detail.contains("kept"), "{}", lines[0].detail);
 }
 
 #[test]
@@ -887,5 +890,52 @@ fn a_backoff_looks_again_soon_then_backs_off_to_its_cap() {
         short.wait(),
         Duration::from_millis(30),
         "never above the cap"
+    );
+}
+
+fn finished_with_push(push: &str) -> Outcome {
+    Outcome::Finished(Collected {
+        result: JobResult::parse(&format!("job=j1\nstate=done\npush={push}\n")),
+        receipt: String::new(),
+        stderr: String::new(),
+        log: String::new(),
+    })
+}
+
+#[test]
+fn a_slot_is_freed_only_when_its_work_is_safe() {
+    for push in [
+        "pushed",
+        "committed",
+        "read_only_discarded",
+        "no_changes",
+        "checkout_failed",
+    ] {
+        assert!(
+            slot_work_is_safe(&finished_with_push(push)),
+            "{push} is safe to free"
+        );
+    }
+    for push in [
+        "push_refused",
+        "handles_in_history",
+        "commit_failed",
+        "ramdisk_full",
+        "verify_failed",
+        "",
+        "something_new",
+    ] {
+        assert!(
+            !slot_work_is_safe(&finished_with_push(push)),
+            "{push:?} must keep its slot"
+        );
+    }
+    assert!(
+        !slot_work_is_safe(&Outcome::Timeout),
+        "a timed-out slot may hold work"
+    );
+    assert!(
+        !slot_work_is_safe(&Outcome::Lost),
+        "a lost slot may hold work"
     );
 }

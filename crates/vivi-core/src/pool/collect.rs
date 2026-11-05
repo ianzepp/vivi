@@ -806,6 +806,41 @@ pub fn run_round(
     Ok(lines)
 }
 
+/// Runner outcome words after which freeing the slot loses nothing: the work
+/// is published (or kept in the local worktree), the job could publish
+/// nothing by design, or it failed before the agent ran.
+const SAFE_TO_FREE: &[&str] = &[
+    "pushed",
+    "already-on-remote",
+    "committed",
+    "read_only_unchanged",
+    "read_only_discarded",
+    "no_changes",
+    "checkout_failed",
+    "fetch_failed",
+    "branch_exists",
+    "workdir_missing",
+    "ramdisk_env_invalid",
+    "target_cache_invalid",
+    "target_key_invalid",
+    "target_prepare_failed",
+    "target_requirement_failed",
+    "target_seed_failed",
+    "target_source_mismatch",
+    "target_worktree_missing",
+];
+
+/// Whether freeing the slot of a settled dispatch can lose agent work. Only a
+/// finished job whose push word is in [`SAFE_TO_FREE`] is safe; a refused or
+/// failed publish, an unknown word, a timeout or a lost slot keeps the slot.
+#[must_use]
+pub fn slot_work_is_safe(outcome: &Outcome) -> bool {
+    match outcome {
+        Outcome::Finished(done) => SAFE_TO_FREE.contains(&done.result.get("push")),
+        Outcome::Timeout | Outcome::Lost => false,
+    }
+}
+
 /// A poll error saying the dispatch's slot does not belong to this pool.
 pub(crate) fn foreign_slot(error: &VivariumError) -> bool {
     error.to_string().contains("not a slot of this pool")
@@ -837,6 +872,26 @@ fn settle(
         Outcome::Timeout => "no result; slot stopped".to_string(),
         Outcome::Lost => "slot ended without a result".to_string(),
     };
+    // A slot whose work is not safely published keeps its claim: freeing it
+    // would destroy (per-dispatch) or reset (persistent) the only copy of the
+    // agent's commits. It stays until someone recovers the work and frees it
+    // deliberately with `vivi pool destroy`.
+    if !slot_work_is_safe(outcome) {
+        // An overdue job is still stopped (its processes must not run on),
+        // but its files and its claim stay.
+        if matches!(outcome, Outcome::Timeout)
+            && let Err(e) = stop_confirmed(provider, &dispatch.record.machine, pacing)
+        {
+            detail = format!("{detail}; slot not stopped yet ({e})");
+        }
+        return Ok(Some((
+            outcome.word(),
+            format!(
+                "{detail}; slot {} kept: its work is not published; recover it, then free it with `vivi pool destroy`",
+                dispatch.record.slot
+            ),
+        )));
+    }
     // The result is recorded; a slot that would not free is retried by
     // `reconcile`, and must not hide this result.
     if let Err(e) = release(provider, &dispatch.record.machine, &dispatch.task, pacing) {
