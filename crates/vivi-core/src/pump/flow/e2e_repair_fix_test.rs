@@ -2,9 +2,10 @@
 //! edge out of `fix1` and `fix2`, driven only by finishing the repairer job
 //! and ticking.
 
-use super::e2e_rig::{Rig, agent_receipt, env_receipt, push_receipt, rig};
+use super::e2e_rig::{Rig, agent_receipt, env_receipt, filed_repair_rig, push_receipt, rig};
 use crate::pump::config::{PumpConfig, RungsConfig};
 use crate::pump::flow::index::StepState;
+use crate::pump::flow::mail::MailReader;
 use crate::pump::flow::repair;
 use crate::pump::jobs::{JobStatus, PoolJob};
 use vivi_error::VivariumError;
@@ -14,6 +15,16 @@ type R = Result<(), VivariumError>;
 const MAIN: &str = "1111111111111111111111111111111111111111";
 const COMMIT: &str = "2222222222222222222222222222222222222222";
 const TESTED: &str = "0000000000000000000000000000000000000000";
+const TESTED_FILED: &str = "abcdef0123456789";
+const NEWER: &str = "fedcba9876543210";
+const SOURCE_RECEIPT: &str = "error: src/pump/flow/size.rs has 1004 lines, over the 1000-line ceiling\n\
+    Running unittests src/lib.rs\n\
+test pump::flow::passes ... ok\n\
+test pump::flow::breaks ... FAILED\n\
+agent exit 101 in 9s\n";
+const SOURCE_FAILURE: &str = "size.rs has 1004 lines";
+const ATTEMPT_SUMMARY: &str = "attempt one distinctive model summary";
+const ATTEMPT_FAILURE: &str = "attempt-one-stderr-marker";
 const BUILT: &str = "+++\nanswer = \"built\"\n+++\nfixed";
 const FAILED: &str = "+++\nanswer = \"failed\"\n+++\ngave up";
 
@@ -83,6 +94,215 @@ fn assert_unrepaired(rig: &mut Rig) -> R {
     let text = rig.exceptions();
     assert_eq!(text.matches("flow-main-unrepaired").count(), 1, "{text}");
     assert_eq!(rig.runs()?[0].state, "live");
+    Ok(())
+}
+
+#[test]
+fn failed_fix_context_without_rung() -> R {
+    let cfg = PumpConfig {
+        rungs: RungsConfig {
+            main: Some(String::from("cargo test --quiet")),
+            timeout: Some(900),
+            pools: vec![String::from("build-pool")],
+            ..RungsConfig::default()
+        },
+        ..PumpConfig::default()
+    };
+    let mut rig = filed_repair_rig(cfg, TESTED_FILED, SOURCE_RECEIPT)?;
+    let source = rig
+        .jobs
+        .jobs
+        .values()
+        .find(|job| job.kind == "rung")
+        .cloned()
+        .ok_or_else(|| VivariumError::Message("missing original main job".into()))?;
+    let source_task = source.task.clone().expect("source task");
+    let source_id = source.id.clone();
+    let record = rig
+        .port
+        .open_record(&rig.need)?
+        .map(|(_, body)| body)
+        .ok_or_else(|| VivariumError::Message("missing filed repair record".into()))?;
+    assert!(record.contains("command: cargo test --quiet"), "{record}");
+    assert!(
+        record.contains(&format!("source job: {source_id}")),
+        "{record}"
+    );
+    assert!(record.contains(SOURCE_FAILURE), "{record}");
+    rig.git("main", NEWER);
+    rig.tick_until("fix1 job", |rig| rig.open_job("fix1").is_some())?;
+    let first = open(&rig, "fix1")?;
+    for value in [
+        "cargo test --quiet",
+        "target: default",
+        TESTED_FILED,
+        &source_id,
+        SOURCE_FAILURE,
+    ] {
+        assert!(
+            first.body.contains(value),
+            "fix1 brief missing {value:?}: {}",
+            first.body
+        );
+    }
+    assert!(
+        first.body.contains(&format!("Current main tip: {NEWER}")),
+        "{}",
+        first.body
+    );
+    let first_task = first.task.clone().expect("fix1 task");
+    let receipt = agent_receipt(
+        1,
+        &format!("+++\nanswer = \"failed\"\n+++\n{ATTEMPT_SUMMARY}"),
+    )
+    .replace(
+        "--- stderr tail\n\n",
+        &format!("--- stderr tail\n{ATTEMPT_FAILURE}\n"),
+    );
+    end(&mut rig, "fix1", JobStatus::Finished, &receipt)?;
+    rig.tick_until("fix2 job", |rig| rig.open_job("fix2").is_some())?;
+    let second = open(&rig, "fix2")?;
+    for value in [
+        SOURCE_FAILURE,
+        ATTEMPT_SUMMARY,
+        ATTEMPT_FAILURE,
+        &source_id,
+        &source_task,
+        "Attempt 1",
+    ] {
+        assert!(
+            second.body.contains(value),
+            "fix2 brief missing {value:?}: {}",
+            second.body
+        );
+    }
+    assert!(
+        second.body.contains("Attempt 1 published nothing."),
+        "{}",
+        second.body
+    );
+    assert!(rig.open_job("rung1").is_none());
+    let payload = rig
+        .store
+        .step_payload(&first_task)?
+        .expect("fix1 payload")
+        .payload;
+    let prior = &payload["prior_context"];
+    assert_eq!(prior["source_job"], first.id, "payload={payload}");
+    assert_eq!(prior["task"], first_task, "payload={payload}");
+    assert_eq!(prior["summary"]["text"], ATTEMPT_SUMMARY, "{payload}");
+    assert!(
+        prior["failure"]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .contains(ATTEMPT_FAILURE),
+        "{payload}"
+    );
+    assert!(
+        prior["failure"]["source_lines"]
+            .as_u64()
+            .unwrap_or_default()
+            > 0,
+        "{payload}"
+    );
+    assert_eq!(
+        rig.jobs
+            .jobs
+            .values()
+            .filter(|job| job.payload.get("node").and_then(|n| n.as_str()) == Some("rung1"))
+            .count(),
+        0
+    );
+    Ok(())
+}
+
+#[test]
+fn prior_summary_survives_publication_refusal_end_to_end() -> R {
+    for (push, publish, expected) in [
+        ("no_changes", "", "no_changes"),
+        (
+            "push_refused",
+            "runner publish: failed refs/heads/attempt-branch 2222222222222222222222222222222222222222 2222222222222222222222222222222222222222",
+            "push_refused",
+        ),
+    ] {
+        let mut rig = repair_rig()?;
+        let job = open(&rig, "fix1")?;
+        let receipt = agent_receipt(
+            0,
+            &format!("+++\nanswer = \"built\"\n+++\n{ATTEMPT_SUMMARY}"),
+        )
+        .replace("push: \n", &format!("push: {push}\n"))
+        .replace(
+            "--- stderr tail\n\n",
+            &format!("--- stderr tail\n{ATTEMPT_FAILURE}\n"),
+        );
+        let receipt = if publish.is_empty() {
+            receipt
+        } else {
+            receipt.replace("\n\n--- receipt", &format!("\n{publish}\n\n--- receipt"))
+        };
+        end(&mut rig, "fix1", JobStatus::Finished, &receipt)?;
+        rig.tick_until("fix2 job", |rig| rig.open_job("fix2").is_some())?;
+        let row = rig.row("fix1")?.expect("fix1 row");
+        let payload = rig.store.step_payload(&row.task)?.expect("payload").payload;
+        assert_eq!(payload["front"]["answer"], "built", "{payload}");
+        assert_eq!(payload["body"], ATTEMPT_SUMMARY, "{payload}");
+        assert_eq!(payload["job"], job.id, "{payload}");
+        assert!(
+            payload["reason"]
+                .as_str()
+                .unwrap_or_default()
+                .contains(expected),
+            "{payload}"
+        );
+        let prior = &payload["prior_context"];
+        assert_eq!(prior["source_job"], job.id, "{payload}");
+        assert_eq!(
+            prior["task"],
+            job.task.as_deref().unwrap_or_default(),
+            "{payload}"
+        );
+        assert_eq!(prior["summary"]["text"], ATTEMPT_SUMMARY, "{payload}");
+        assert!(
+            prior["failure"]["text"]
+                .as_str()
+                .unwrap_or_default()
+                .contains(ATTEMPT_FAILURE),
+            "{payload}"
+        );
+        let body = open(&rig, "fix2")?.body;
+        for value in [ATTEMPT_SUMMARY, ATTEMPT_FAILURE, &job.id, expected] {
+            assert!(body.contains(value), "fix2 missing {value:?}: {body}");
+        }
+        assert!(rig.open_job("rung1").is_none());
+    }
+    Ok(())
+}
+
+#[test]
+fn overtime_context_unavailable_end_to_end() -> R {
+    let mut rig = repair_rig()?;
+    let first = open(&rig, "fix1")?;
+    end(&mut rig, "fix1", JobStatus::Timeout, "")?;
+    rig.tick_until("fix2 job", |rig| rig.open_job("fix2").is_some())?;
+    let row = rig.row("fix1")?.expect("fix1 row");
+    let payload = rig.store.step_payload(&row.task)?.expect("payload").payload;
+    assert_eq!(payload["job"], first.id, "{payload}");
+    let prior = &payload["prior_context"];
+    assert_eq!(prior["source_job"], first.id, "{payload}");
+    assert_eq!(
+        prior["task"],
+        first.task.as_deref().unwrap_or_default(),
+        "{payload}"
+    );
+    assert!(prior["summary"].is_null(), "{payload}");
+    assert_eq!(prior["failure"]["text"], "", "{payload}");
+    assert_eq!(prior["failure"]["source_lines"], 0, "{payload}");
+    let body = open(&rig, "fix2")?.body;
+    assert!(body.contains(&first.id), "{body}");
+    assert!(body.contains("unavailable"), "{body}");
+    assert!(rig.open_job("rung1").is_none());
     Ok(())
 }
 
