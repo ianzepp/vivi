@@ -19,7 +19,7 @@ use crate::pump::flow::index::{RunRow, StepJobRow, StepRow, StepState, run_state
 use crate::pump::flow::scope::ScopeState;
 use crate::pump::store::flow_links::SliceLink;
 use crate::pump::store::step_payload::StepPayloadRow;
-use crate::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
+use crate::pump::store::{DB_FILENAME, FlowWaitRow, NeedBranchRow, PumpStore, WaitingHandle};
 
 const NEEDS: [&str; 2] = ["n1", "n2"];
 const RUNS: [u32; 2] = [1, 2];
@@ -27,7 +27,7 @@ const TASKS: [&str; 7] = [
     "t-plan", "t-slice", "t-s1", "t-s2", "t-merge", "t-park", "t-bad",
 ];
 const JOBS: [&str; 4] = ["j-a1", "j-a1-c1", "j-a2", "j-other"];
-const FLOW_TABLES: [&str; 12] = [
+const FLOW_TABLES: [&str; 13] = [
     "flow_runs",
     "flow_steps",
     "step_jobs",
@@ -40,6 +40,7 @@ const FLOW_TABLES: [&str; 12] = [
     "restart_entries",
     "fanout_starts",
     "step_payloads",
+    "flow_waits",
 ];
 const MAIN_KEYS: [&str; 3] = ["tip", "pushed", "gone"];
 const ACTIONS: [&str; 3] = ["act-1", "act-2", "act-3"];
@@ -264,6 +265,18 @@ fn write_everything(store: &PumpStore) {
     write_jobs(store, &live);
     write_scopes_and_links(store, &live);
     write_branches_payloads_and_state(store, &live, &other);
+    store
+        .upsert_flow_wait(&FlowWaitRow {
+            need: s("n1"),
+            record: s("r2"),
+            handles: vec![WaitingHandle {
+                handle: s("n-prereq"),
+                state: s("open"),
+                detail: s("waiting"),
+            }],
+            evaluated_at: 7,
+        })
+        .expect("flow wait");
 }
 
 fn read_scope(store: &PumpStore, task: &str) -> ScopeRead {

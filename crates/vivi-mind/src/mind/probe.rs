@@ -193,7 +193,7 @@ pub fn read_store(
         )));
     }
     read_lock_waits(&store, signals)?;
-    let (state, exceptions) = store.load_snapshot()?;
+    let (state, exceptions, _waits) = store.load_snapshot()?;
     fold_exceptions(&exceptions, now, signals);
     let jobs: Vec<&PoolJob> = state.jobs.values().collect();
     fold_jobs(jobs.iter().copied(), now, signals);
