@@ -215,12 +215,13 @@ fn brief<M: FlowMail>(
     mode: Mode,
     input: &str,
 ) -> Result<String, VivariumError> {
+    let context = reslice_context::quoted_context(&mail.task_body(&slice.task)?);
     Ok(format!(
-        "mode: {}\nslice size: aim for 5 to {} minutes\ntargets: {}\n{input}\noriginal slice task:\n{}",
+        "mode: {}\nslice size: aim for 5 to {} minutes\ntargets: {}\n{input}\n{}\n{context}",
         mode.word(),
         ctx.cfg.slice.minutes(),
         targets(ctx).join(", "),
-        mail.task_body(&slice.task)?
+        reslice_context::CONTEXT_HEADING,
     ))
 }
 
@@ -519,6 +520,9 @@ fn reply_of(
     }
     Ok(Some(slicer))
 }
+
+#[path = "reslice_context.rs"]
+mod reslice_context;
 
 #[path = "reslice_retry.rs"]
 mod retry;

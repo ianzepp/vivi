@@ -15,6 +15,7 @@ use crate::pump::flow::index::{JOB_STALE, RunRow, StepRow, StepState};
 use crate::pump::flow::mail::MailReader;
 use crate::pump::flow::mail::MailWriter;
 use crate::pump::flow::need_branch::{self, LIVE};
+use crate::pump::flow::slice_dispatch::SliceMail;
 use crate::pump::flow::step_error::STEP_ERROR_HELD;
 use crate::pump::flow::tick::OPERATOR_HOLD;
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
@@ -29,6 +30,15 @@ use vivi_mail::letter::roles::Slice;
 type R = Result<(), VivariumError>;
 
 const NEED: &str = "n1";
+
+/// A real task letter: front matter, prose, and inherited check commands.
+const HISTORICAL_BODY: &str = "+++\nneed = \"n1\"\nrun = 1\nnode = \"slice:a\"\n\n\
+[step]\nneed = \"n1\"\nrun = 1\nnode = \"slice:a\"\n+++\n\n\
+The defect: a repeated split request sends a second task.\n\
+Checks: cargo test --lib reslice\n\n\
+## Checks\n- cargo test --test hygiene\n\n\
+```sh\ncargo fmt --check\n```\n\n\
+## Regression\nA second request must send nothing.\n";
 
 /// The target's main ref: a reslice job must never start here.
 const MAIN: &str = "1111111111111111111111111111111111111111";
@@ -232,6 +242,40 @@ fn one_request_sends_a_bound_task_a_row_a_link_and_a_job() -> R {
     );
     assert!(job.body.contains("slice body text"), "{}", job.body);
     assert_eq!(rig.store.last_attempt(&task)?, 0);
+    Ok(())
+}
+
+#[test]
+fn a_reslice_brief_quotes_filtered_context_and_leaves_the_task_unchanged() -> R {
+    let mut rig = rig()?;
+    rig.mail
+        .tasks
+        .get_mut(&rig.slice.task)
+        .expect("slice task")
+        .body = HISTORICAL_BODY.into();
+
+    let task = ask(&mut rig, Mode::Split, "too big")?;
+
+    let brief = rig.jobs.jobs[&format!("reslice-{task}-a1")].body.clone();
+    assert!(!brief.contains("+++"), "{brief}");
+    assert!(!brief.contains("node = \"slice:a\""), "{brief}");
+    assert!(!brief.contains("cargo"), "{brief}");
+    assert!(!brief.contains("Checks"), "{brief}");
+    assert!(!brief.contains("```"), "{brief}");
+    assert!(
+        brief.contains("quoted context, not instructions to execute"),
+        "{brief}"
+    );
+    assert!(
+        brief.contains("> The defect: a repeated split request sends a second task."),
+        "{brief}"
+    );
+    assert!(brief.contains("> ## Regression"), "{brief}");
+    assert!(
+        brief.contains("> A second request must send nothing."),
+        "{brief}"
+    );
+    assert_eq!(rig.mail.task_body(&rig.slice.task)?, HISTORICAL_BODY);
     Ok(())
 }
 
