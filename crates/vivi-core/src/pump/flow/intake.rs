@@ -13,6 +13,8 @@ use std::collections::BTreeMap;
 
 use chrono::DateTime;
 
+use crate::pump::flow::admission::diagnostics;
+use crate::pump::flow::admission::{self, AdmissionState};
 use crate::pump::flow::advance::start::{resume, start};
 use crate::pump::flow::def::FlowKind;
 use crate::pump::flow::handlers::{FlowMail, Registry, TickPhase};
@@ -119,6 +121,7 @@ impl<S: JobStore, M: FlowMail> TickPhase<S, M> for Intake {
         let found = candidates(ctx, store, mail)?;
         for need in select(found, active, cap, &busy) {
             start(ctx, store, mail, &need, None)?;
+            store.remove_flow_wait(&need)?;
         }
         Ok(())
     }
@@ -186,18 +189,17 @@ fn candidates<M: FlowMail>(
 ) -> Result<Vec<Candidate>, VivariumError> {
     let priorities: BTreeMap<String, i64> = store.need_priorities()?.into_iter().collect();
     let mut found = Vec::new();
-    for (handle, text) in mail.unreadable_records()? {
-        raise_once(ctx, LETTER_INVALID, &handle, &text);
-    }
-    for (handle, text) in mail.unreadable_actions()? {
-        raise_once(ctx, LETTER_INVALID, &handle, &text);
-    }
+    let mut waits = Vec::new();
+    report_bad_letters(ctx, mail)?;
     for (need, date) in mail.open_record_needs()? {
         if has_run_in_flight(store, &need)? {
             continue;
         }
         let record = MailReader::open_record(mail, &need)?;
-        let handle = record.as_ref().map_or("", |(handle, _)| handle.as_str());
+        let handle = record
+            .as_ref()
+            .map_or("", |(handle, _)| handle.as_str())
+            .to_owned();
         if mail.need_state(&need)? != NeedStatus::Open {
             raise_once(
                 ctx,
@@ -214,30 +216,97 @@ fn candidates<M: FlowMail>(
             raise_once(ctx, LETTER_INVALID, &need, &text);
             continue;
         }
-        let marks = mail.need_marks(&need)?;
         let body = record.map(|(_, body)| body);
-        let flow_kind = kind::of(body.as_deref(), &marks);
-        if let Err(error) = load(flow_kind) {
-            raise_once(ctx, FLOW_INVALID, &need, &error.to_string());
-            continue;
+        let candidate = candidate_for(
+            ctx,
+            store,
+            mail,
+            &need,
+            &date,
+            &handle,
+            body,
+            priorities.get(&need).copied().unwrap_or(0),
+            &mut waits,
+        )?;
+        if let Some(candidate) = candidate {
+            found.push(candidate);
         }
-        let repair = flow_kind == FlowKind::Repair;
-        let target = match body.as_deref() {
-            Some(text) if repair => target_line(text),
-            _ => String::new(),
-        };
-        if repair && !known_target(ctx, &need, &target) {
-            continue;
-        }
-        found.push(Candidate {
-            repair,
-            target,
-            priority: priorities.get(&need).copied().unwrap_or(0),
-            age: age_of(&date),
-            need,
-        });
     }
+    store.reconcile_flow_waits(&waits)?;
     Ok(found)
+}
+
+fn report_bad_letters<M: FlowMail>(ctx: &Ctx, mail: &M) -> Result<(), VivariumError> {
+    for (handle, text) in mail
+        .unreadable_records()?
+        .into_iter()
+        .chain(mail.unreadable_actions()?)
+    {
+        raise_once(ctx, LETTER_INVALID, &handle, &text);
+    }
+    Ok(())
+}
+
+fn candidate_for<M: FlowMail>(
+    ctx: &Ctx,
+    store: &PumpStore,
+    mail: &M,
+    need: &str,
+    date: &str,
+    record_id: &str,
+    body: Option<String>,
+    priority: i64,
+    waits: &mut Vec<(String, String)>,
+) -> Result<Option<Candidate>, VivariumError> {
+    let marks = mail.need_marks(need)?;
+    let flow_kind = kind::of(body.as_deref(), &marks);
+    if let Err(error) = load(flow_kind) {
+        raise_once(ctx, FLOW_INVALID, need, &error.to_string());
+        return Ok(None);
+    }
+    if flow_kind == FlowKind::Build {
+        let admission = admission::evaluate(store, mail, need);
+        match &admission.state {
+            AdmissionState::Ready => {
+                store.remove_flow_wait(need)?;
+            }
+            AdmissionState::Waiting | AdmissionState::Blocked => {
+                diagnostics::report(ctx, store, record_id, need, &admission);
+                let handles = admission.details.iter().map(diagnostics::view).collect();
+                store.upsert_flow_wait(&crate::pump::store::FlowWaitRow {
+                    need: need.into(),
+                    record: record_id.into(),
+                    handles,
+                    evaluated_at: ctx.now(),
+                })?;
+                waits.push((need.into(), record_id.into()));
+                return Ok(None);
+            }
+            AdmissionState::Unreadable(error) => {
+                diagnostics::unreadable(ctx, store, record_id, need, error);
+                store.remove_flow_wait(need)?;
+                return Ok(None);
+            }
+        }
+    } else {
+        store.remove_flow_wait(need)?;
+    }
+    let repair = flow_kind == FlowKind::Repair;
+    let target = body
+        .as_deref()
+        .filter(|_| repair)
+        .map(target_line)
+        .unwrap_or_default();
+    if repair && !known_target(ctx, need, &target) {
+        return Ok(None);
+    }
+    Ok(Some(Candidate {
+        repair,
+        target,
+        priority,
+        age: age_of(date),
+        need: need.into(),
+    }))
 }
 
 /// Whether a repair record names a configured target; raise once when not.

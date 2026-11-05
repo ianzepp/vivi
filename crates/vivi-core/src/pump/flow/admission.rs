@@ -1,5 +1,6 @@
 //! Side-effect-free evaluation of a need's prerequisite readiness.
 
+pub(crate) mod diagnostics;
 use crate::pump::flow::mail::MailReader;
 use crate::pump::flow::milestone::prereq::{Prereq, PrereqState, prerequisites};
 use crate::pump::store::PumpStore;
