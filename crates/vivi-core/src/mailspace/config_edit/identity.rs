@@ -22,6 +22,8 @@ pub struct IdentityPatch {
     pub host: Option<Option<String>>,
     pub cadence: Option<Option<String>>,
     pub pool: Option<Option<String>>,
+    pub command: Option<Option<String>>,
+    pub target: Option<Option<String>>,
     pub read_only: Option<Option<bool>>,
     pub labels: Option<Vec<String>>,
     pub aliases: Option<Vec<String>>,

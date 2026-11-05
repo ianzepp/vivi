@@ -17,6 +17,8 @@ fn role(name: &str, kind: Option<&str>, pid: Option<u32>, cadence: Option<&str>)
         host: None,
         cadence: cadence.map(str::to_string),
         pool: None,
+        command: None,
+        target: None,
         read_only: None,
         models: Vec::new(),
         charter: String::new(),

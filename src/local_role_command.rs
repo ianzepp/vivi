@@ -317,6 +317,8 @@ fn runtime_only(update: &RoleUpdate) -> bool {
         pid,
         host,
         cadence,
+        command,
+        target,
         add_labels,
         clear_labels,
         pool,
@@ -330,6 +332,8 @@ fn runtime_only(update: &RoleUpdate) -> bool {
         || model.is_some()
         || thinking.is_some()
         || cadence.is_some()
+        || command.is_some()
+        || target.is_some()
         || !add_labels.is_empty()
         || !clear_labels.is_empty()
         || pool.is_some()

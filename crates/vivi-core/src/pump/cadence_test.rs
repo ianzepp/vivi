@@ -163,6 +163,8 @@ fn head_role(name: &str) -> RoleView {
         host: None,
         cadence: None,
         pool: None,
+        command: None,
+        target: None,
         read_only: None,
         models: Vec::new(),
         charter: String::new(),
