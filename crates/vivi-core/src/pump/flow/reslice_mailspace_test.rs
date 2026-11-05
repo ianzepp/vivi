@@ -9,9 +9,10 @@ use crate::pump::fixture::project;
 use crate::pump::flow::advance::start::start;
 use crate::pump::flow::index::{StepRow, StepState};
 use crate::pump::flow::mail::{MailWriter, MailspacePort};
+use crate::pump::flow::need_branch::{self, LIVE};
 use crate::pump::jobs::{JobStore, PoolJob};
 use crate::pump::store::flow_links::SliceLink;
-use crate::pump::store::{DB_FILENAME, PumpStore};
+use crate::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
 use crate::routing::RoutedRole;
 use vivi_error::VivariumError;
 use vivi_mail::letter::fixture::task_body;
@@ -20,6 +21,10 @@ type R = Result<(), VivariumError>;
 
 /// The pump identity of the default config's `reply_from`.
 const PUMP: &str = "mind";
+
+/// The published tip of the need branch and its recorded base.
+const NEED_TIP: &str = "2222222222222222222222222222222222222222";
+const BASE: &str = "3333333333333333333333333333333333333333";
 
 #[derive(Default)]
 struct Jobs {
@@ -64,6 +69,20 @@ fn a_repeated_request_with_multi_line_input_sends_nothing() -> R {
         &vivi_mail::letter::fixture::record_body(&need, "build"),
     )?;
     let run = start(&ctx, &store, &mut port, &need, Some("plan"))?;
+    // The reslice job starts on the need branch, so it needs a live row.
+    store.upsert_need_branch(&NeedBranchRow::for_run(
+        &run,
+        need_branch::branch(&need),
+        Some(BASE.into()),
+        LIVE,
+        "default",
+        Vec::new(),
+    ))?;
+    p.host.reply(
+        &format!("ls-remote origin refs/heads/{}", need_branch::branch(&need)),
+        0,
+        &format!("{NEED_TIP}\trefs/heads/{}\n", need_branch::branch(&need)),
+    );
 
     let slice_task = port.send_step(
         PUMP,
@@ -123,5 +142,11 @@ fn a_repeated_request_with_multi_line_input_sends_nothing() -> R {
     assert_eq!(reslices.len(), 1, "{reslices:?}");
     let kinds: Vec<&PoolJob> = jobs.jobs.values().filter(|j| j.kind == KIND).collect();
     assert_eq!(kinds.len(), 1, "{kinds:?}");
+    // The one job is pinned to the branch target and tip, not the target's main.
+    let job = kinds[0];
+    assert!(job.read_only);
+    assert_eq!(job.target.as_deref(), Some("default"));
+    assert_eq!(job.from_ref.as_deref(), Some(NEED_TIP));
+    assert_ne!(job.from_ref.as_deref(), Some(ctx.cfg.main.as_str()));
     Ok(())
 }
