@@ -252,3 +252,74 @@ mod store_reads {
         assert_eq!(after.deferring_jobs, 0);
     }
 }
+
+mod build_waits {
+    use std::fs;
+
+    use tempfile::tempdir;
+
+    use super::super::*;
+    use vivi_core::pump::jobs::JobSpec;
+    use vivi_core::pump::state::State;
+    use vivi_core::pump::store::append_exception;
+    use vivi_core::pump::store::build_waits::{BuildPrerequisite, BuildWait, PrerequisiteState};
+
+    /// A project whose `[pump]` table names the default home, `<project>/.vivi/pump`.
+    fn project() -> tempfile::TempDir {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".vivi")).unwrap();
+        fs::write(
+            dir.path().join(".vivi/mailspace.toml"),
+            "name = \"p\"\n\n[pump]\ntick = 1\n",
+        )
+        .unwrap();
+        dir
+    }
+
+    fn wait() -> BuildWait {
+        BuildWait {
+            need: String::from("n1"),
+            record: String::from("r1"),
+            prerequisites: vec![BuildPrerequisite {
+                handle: String::from("a"),
+                state: PrerequisiteState::Held,
+                detail: None,
+                outcome: None,
+            }],
+            observed_at: 1_700_000_000,
+        }
+    }
+
+    #[test]
+    fn persisted_waits_are_read_in_the_snapshot_and_keep_the_other_signals() {
+        let dir = project();
+        let home = dir.path().join(".vivi/pump");
+        let now = epoch_now();
+        let mut st = State::default();
+        let mut job = PoolJob::from(JobSpec::new("j-old", "step", "hand", "s", "b"));
+        job.queued_at = now - STALE_PENDING_SECS;
+        job.status = JobStatus::Pending;
+        st.jobs.insert(job.id.clone(), job);
+        {
+            let store = PumpStore::open(&home.join(DB_FILENAME)).unwrap();
+            store.save(&st).unwrap();
+            store.upsert_build_wait(&wait()).unwrap();
+        }
+        append_exception(&home, now - 10, ENVELOPE_FAILED, "unit", "boom");
+
+        let mut signals = ProjectSignals::default();
+        read_store(dir.path(), now, &mut signals).unwrap();
+        assert_eq!(signals.envelope_failures, 1);
+        assert_eq!(signals.stale_pending_jobs, 1);
+        assert_eq!(signals.locked_needs, 0);
+        assert_eq!(signals.idle_steps, 0);
+        assert_eq!(signals.deferring_jobs, 0);
+
+        // Reading the snapshot leaves the wait and the exceptions as they were.
+        let store = PumpStore::open_read_only(&home.join(DB_FILENAME))
+            .unwrap()
+            .unwrap();
+        assert_eq!(store.build_waits().unwrap(), vec![wait()]);
+        assert_eq!(store.exceptions().unwrap().len(), 1);
+    }
+}

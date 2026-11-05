@@ -193,9 +193,13 @@ pub fn read_store(
         )));
     }
     read_lock_waits(&store, signals)?;
-    let (state, exceptions) = store.load_snapshot()?;
-    fold_exceptions(&exceptions, now, signals);
-    let jobs: Vec<&PoolJob> = state.jobs.values().collect();
+    // The queued build waits come out of the same snapshot, so the reads
+    // below agree with them. Waits need no signal of their own: a wait the
+    // pump cannot build past shows through the lock and idle reads, and this
+    // probe never judges admission.
+    let snapshot = store.load_snapshot()?;
+    fold_exceptions(&snapshot.exceptions, now, signals);
+    let jobs: Vec<&PoolJob> = snapshot.state.jobs.values().collect();
     fold_jobs(jobs.iter().copied(), now, signals);
     read_idle_steps(&store, &jobs, now, signals)?;
     let pending: BTreeSet<&str> = jobs
