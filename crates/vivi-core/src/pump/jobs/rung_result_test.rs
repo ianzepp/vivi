@@ -118,6 +118,8 @@ fn posted_facts(
         receipt: receipt.into(),
         stderr: stderr.into(),
         log: log.into(),
+        stdout_proof: crate::pool::collect::channel_proof(None),
+        stderr_proof: crate::pool::collect::channel_proof(None),
     };
     let open = OpenDispatch {
         task: "aaaa1111".into(),

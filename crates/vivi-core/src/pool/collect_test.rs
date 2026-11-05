@@ -56,6 +56,26 @@ fn fake_with(state: &str, output: &str) -> Fake {
 }
 
 #[test]
+fn stopped_file_proofs_report_sizes_bounds_and_unavailable_channels() {
+    let files = BTreeMap::from([
+        (
+            RESULT_PATHS[0].to_string(),
+            b"job=j1\npush=pushed\n".to_vec(),
+        ),
+        (RESULT_PATHS[1].to_string(), b"receipt".to_vec()),
+        (RESULT_PATHS[2].to_string(), vec![b'x'; PROOF_BYTES + 1]),
+    ]);
+    let got = collected_from_files(&files).unwrap();
+    assert_eq!(got.stdout_proof.original_size, Some(7));
+    assert_eq!(got.stdout_proof.captured_size, 7);
+    assert!(got.stdout_proof.complete && got.stdout_proof.usable);
+    assert_eq!(got.stderr_proof.original_size, Some(PROOF_BYTES + 1));
+    assert_eq!(got.stderr_proof.captured_size, PROOF_BYTES);
+    assert!(!got.stderr_proof.complete);
+    assert!(!channel_proof(None).usable);
+}
+
+#[test]
 fn result_file_parses_key_value_lines() {
     let r =
         JobResult::parse("job=j\npush=pushed\nbranch=b/x\nsha=0123456789abcdef\njunk\n k = v \n");

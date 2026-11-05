@@ -71,6 +71,8 @@ pub const READ_ONLY_DISCARDED: &str = "read_only_discarded";
 /// (the revision input budget is 50 KB), with room for the receipt around it.
 const RECEIPT_BYTES: usize = 262_144;
 const TAIL_BYTES: usize = 4096;
+/// Maximum proof input retained per output channel.
+const PROOF_BYTES: usize = 1_048_576;
 
 /// How the engine paces its polling.
 #[derive(Debug, Clone)]
@@ -300,6 +302,40 @@ pub struct Collected {
     pub receipt: String,
     pub stderr: String,
     pub log: String,
+    pub stdout_proof: ChannelProof,
+    pub stderr_proof: ChannelProof,
+}
+
+/// Bounded channel bytes and facts describing whether they are complete.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChannelProof {
+    pub original_size: Option<usize>,
+    pub captured_size: usize,
+    pub complete: bool,
+    pub usable: bool,
+    pub content: String,
+}
+
+pub(crate) fn channel_proof(bytes: Option<&[u8]>) -> ChannelProof {
+    match bytes {
+        Some(bytes) => {
+            let captured = &bytes[..bytes.len().min(PROOF_BYTES)];
+            ChannelProof {
+                original_size: Some(bytes.len()),
+                captured_size: captured.len(),
+                complete: bytes.len() <= PROOF_BYTES,
+                usable: true,
+                content: String::from_utf8_lossy(captured).into_owned(),
+            }
+        }
+        None => ChannelProof {
+            original_size: None,
+            captured_size: 0,
+            complete: false,
+            usable: false,
+            content: String::new(),
+        },
+    }
 }
 
 /// Parse the collect script's output. `None` when it is empty or lacks a
@@ -331,6 +367,10 @@ pub fn parse_collected(output: &str) -> Option<Collected> {
         receipt: take(SECTION_RECEIPT),
         stderr: take(SECTION_STDERR),
         log: take(SECTION_LOG),
+        // Live collection retains bounded output; explicit file facts are
+        // supplied by the runner for stopped-file collection.
+        stdout_proof: channel_proof(None),
+        stderr_proof: channel_proof(None),
     })
 }
 
@@ -353,6 +393,8 @@ pub fn collected_from_files(files: &BTreeMap<String, Vec<u8>>) -> Option<Collect
         receipt: text_of(&receipt[..receipt.len().min(RECEIPT_BYTES)]),
         stderr: tail(RESULT_PATHS[2]),
         log: tail(RESULT_PATHS[3]),
+        stdout_proof: channel_proof(files.get(RESULT_PATHS[1]).map(Vec::as_slice)),
+        stderr_proof: channel_proof(files.get(RESULT_PATHS[2]).map(Vec::as_slice)),
     })
 }
 

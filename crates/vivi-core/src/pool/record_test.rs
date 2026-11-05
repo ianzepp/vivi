@@ -129,6 +129,8 @@ fn finished_with(extra: &[(&str, &str)]) -> Outcome {
         receipt: "did the thing\n".into(),
         stderr: String::new(),
         log: "from main at abc\n".into(),
+        stdout_proof: super::super::collect::channel_proof(None),
+        stderr_proof: super::super::collect::channel_proof(None),
     })
 }
 
@@ -187,6 +189,8 @@ fn read_only_outcome(extra: &[(&str, &str)]) -> Outcome {
         receipt: "read it all\n".into(),
         stderr: String::new(),
         log: String::new(),
+        stdout_proof: super::super::collect::channel_proof(None),
+        stderr_proof: super::super::collect::channel_proof(None),
     })
 }
 
@@ -529,6 +533,8 @@ fn finished_sections(receipt: &str, stderr: &str, log: &str) -> Outcome {
         receipt: receipt.into(),
         stderr: stderr.into(),
         log: log.into(),
+        stdout_proof: super::super::collect::channel_proof(None),
+        stderr_proof: super::super::collect::channel_proof(None),
     })
 }
 
