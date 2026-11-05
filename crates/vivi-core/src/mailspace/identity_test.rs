@@ -194,7 +194,6 @@ fn ensure_pump_planner_role_fills_a_blank_charter_and_leaves_the_planner_seat_al
 }
 
 #[test]
-#[test]
 fn role_command_target_fields_deserialize_with_legacy_defaults() {
     let legacy: crate::mailspace::MailspaceConfig =
         toml::from_str("name = 'test'\n[[identities]]\nname = 'hand'\n").unwrap();
@@ -236,6 +235,119 @@ fn role_command_target_fields_deserialize_with_legacy_defaults() {
     let json = serde_json::to_value(mailspace.role_view("plain").unwrap()).unwrap();
     assert!(json["command"].is_null());
     assert!(json["target"].is_null());
+}
+
+#[test]
+fn role_command_target_round_trip_and_clear() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut mailspace = Mailspace::init(Some(tmp.path())).unwrap();
+    let command = "sh -c 'vivi step --apply \"slice:1\"' \\\n  --graph # pick next\n";
+    mailspace
+        .add_role(
+            "hand",
+            RoleUpdate {
+                kind: Some(Some(String::from("hand"))),
+                command: Some(Some(command.to_string())),
+                target: Some(Some(String::from("slice:d366cf32-1"))),
+                ..RoleUpdate::default()
+            },
+        )
+        .unwrap();
+    let reopened = Mailspace::open_root(tmp.path().to_path_buf()).unwrap();
+    let view = reopened.role_view("hand").unwrap();
+    assert_eq!(view.command.as_deref(), Some(command));
+    assert_eq!(view.target.as_deref(), Some("slice:d366cf32-1"));
+
+    // Clearing only the requested key leaves the other untouched.
+    let mut mailspace = reopened;
+    let view = mailspace
+        .set_role(
+            "hand",
+            RoleUpdate {
+                command: Some(None),
+                ..RoleUpdate::default()
+            },
+        )
+        .unwrap();
+    assert!(view.command.is_none());
+    assert_eq!(view.target.as_deref(), Some("slice:d366cf32-1"));
+    let reopened = Mailspace::open_root(tmp.path().to_path_buf()).unwrap();
+    let view = reopened.role_view("hand").unwrap();
+    assert!(view.command.is_none());
+    assert_eq!(view.target.as_deref(), Some("slice:d366cf32-1"));
+
+    // The kept row still carries its name and unrelated keys.
+    let raw = std::fs::read_to_string(tmp.path().join(".vivi").join("mailspace.toml")).unwrap();
+    let doc: toml::Value = raw.parse().unwrap();
+    let row = doc["identities"][0].as_table().unwrap();
+    assert_eq!(row["name"].as_str(), Some("hand"));
+    assert_eq!(row["kind"].as_str(), Some("hand"));
+    assert!(row.get("command").is_none(), "command key must be gone: {raw}");
+    assert_eq!(row["target"].as_str(), Some("slice:d366cf32-1"));
+}
+
+#[test]
+fn role_command_blank_or_nul_is_refused() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut mailspace = Mailspace::init(Some(tmp.path())).unwrap();
+    mailspace
+        .add_role(
+            "hand",
+            RoleUpdate {
+                command: Some(Some(String::from("vivi board --graph"))),
+                model: Some(Some(String::from("zai/glm"))),
+                ..RoleUpdate::default()
+            },
+        )
+        .unwrap();
+    let path = tmp.path().join(".vivi").join("mailspace.toml");
+    let before_file = std::fs::read_to_string(&path).unwrap();
+    let before = mailspace.role_view("hand").unwrap();
+
+    for bad in ["", "   \n\t", "sh -c 'a\u{0}b'"] {
+        let error = mailspace
+            .set_role(
+                "hand",
+                RoleUpdate {
+                    command: Some(Some(bad.to_string())),
+                    ..RoleUpdate::default()
+                },
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("command"), "{error}");
+    }
+
+    // A mixed-field update is refused whole: no field lands.
+    let error = mailspace
+        .set_role(
+            "hand",
+            RoleUpdate {
+                model: Some(Some(String::from("zai/other"))),
+                command: Some(Some(String::from("\u{0}"))),
+                ..RoleUpdate::default()
+            },
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("command"), "{error}");
+
+    // add_role refuses invalid commands as well.
+    let error = mailspace
+        .add_role(
+            "gate",
+            RoleUpdate {
+                command: Some(Some(String::from("  "))),
+                ..RoleUpdate::default()
+            },
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("command"), "{error}");
+
+    // Refused updates leave memory and file exactly as they were.
+    let after = mailspace.role_view("hand").unwrap();
+    assert_eq!(after.command.as_deref(), before.command.as_deref());
+    assert_eq!(after.model.as_deref(), before.model.as_deref());
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), before_file);
+    assert!(mailspace.role_named("gate").is_none(), "gate must not exist");
 }
 
 #[test]
