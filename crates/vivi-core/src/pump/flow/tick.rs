@@ -309,7 +309,10 @@ fn resume_run<M: MailWriter + MailReader>(
     let unit = format!("{} r{}", run.need, run.run);
     ctx.log(&format!("flow tick: resume of {unit} failed: {error}"));
     let since = match store.run_state_at(&run.need, run.run) {
-        Ok(Some(at)) => u64::try_from(at).ok(),
+        Ok(Some(at)) => match u64::try_from(at) {
+            Ok(at) => Some(at),
+            Err(_) => None,
+        },
         _ => None,
     };
     if since.is_some_and(|at| ctx.now().saturating_sub(at) > FINISHING_STUCK_SECS) {
