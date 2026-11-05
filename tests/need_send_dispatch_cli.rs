@@ -117,6 +117,48 @@ fn need_send_dispatch_opens_one_record() {
 }
 
 #[test]
+fn unaddressed_need_dispatch_files_one_record() {
+    let project = tempfile::tempdir().unwrap();
+    let root = roster(project.path());
+    let out = ok(&vivi([
+        "need",
+        "send",
+        "--project",
+        &root,
+        "--from",
+        "filer",
+        "--subject",
+        "unaddressed work",
+        "--done-when",
+        "it works",
+        "--body",
+        "please fix login",
+        "--mark",
+        "research",
+        "--dispatch",
+        "--priority",
+        "6",
+    ]));
+    let lines: Vec<&str> = out.lines().collect();
+    let sent = handle_after(&out, "sent ");
+    let record = handle_after(&out, "pump record ");
+    assert_eq!(lines[0], format!("sent {sent}"));
+    assert!(lines[1].starts_with(&format!("node ")));
+    assert_eq!(lines[2], format!("marked {sent} research"));
+    assert_eq!(lines[3], format!("pump record {record} for need {sent}"));
+    let shown = ok(&vivi(["need", "show", &sent, "--project", &root]));
+    assert!(shown.contains("To: \n"), "{shown}");
+    assert!(!shown.contains("Cc:"), "{shown}");
+    assert!(shown.contains("From: filer@"), "{shown}");
+    let record_rows = records(&root);
+    assert_eq!(record_rows.len(), 1);
+    assert_eq!(record_rows[0]["need"], sent);
+    assert!(record_rows[0]["to"].as_str().unwrap().starts_with("mind@"));
+    let priority = ok(&vivi(["pump", "priority", "list", "--project", &root]));
+    assert!(priority.contains(&sent), "{priority}");
+}
+
+#[test]
 fn plain_need_send_is_unchanged() {
     let project = tempfile::tempdir().unwrap();
     let root = roster(project.path());

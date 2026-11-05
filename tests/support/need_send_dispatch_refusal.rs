@@ -1,43 +1,21 @@
-//! Dispatch refusals through the real binary: a `--dispatch` send that the
-//! pump cannot take fails only after the need is filed, wraps the failure in
-//! the dispatch boundary wording (naming the filed `sent` handle), and never
-//! leaves a pump record or a priority write behind.
+//! Dispatch configurations and argument errors through the real binary.
+//! An addressed need delivered to a different role still files through the
+//! pump; missing configuration and invalid priority cases remain refusals.
 //!
-//! Covered here:
-//!
-//! - a dispatch where no delivered copy addresses the pump (`mind`, the
-//!   starter `[pump] reply_from` default): the only local delivery goes to a
-//!   different role, and the same-name pump address in another mailspace
-//!   (`mind@<foreign-prefix>.local`) is remote, with no delivered copy;
-//! - a dispatch without any `[pump]` table at all: the send files first,
-//!   then the missing-pump-configuration refusal fires;
-//! - `--priority` argument errors (missing `--dispatch`, invalid levels)
-//!   refuse before anything is filed, with no storage side effect.
-//!
-//! The tests in this module reach the fixtures of the parent integration
-//! test (`roster`, `vivi`, `stdout`, `stderr`, `records`, `handle_after`,
-//! `listed_needs`, `remove_starter_pump`, ...) through `super::*`.
+//! The tests in this module reach fixtures in the parent integration test.
 
 use super::*;
 use std::path::Path;
 
 use serde_json::Value;
 
-/// A dispatch whose pump never receives the need is refused after filing.
-///
-/// The need is delivered to `hand` (a different local role) with the pump's
-/// own name in another mailspace on Cc: `mind@<foreign-prefix>.local` is
-/// remote and gets no delivered copy, so no delivered copy addresses the
-/// canonical pump identity `mind` (the starter `[pump] reply_from` default).
-/// The filing receipts, the stored need, its backlog node and the marks all
-/// survive; no record opens and no priority is written.
+/// Dispatch does not require the pump to receive the filed need.
 #[test]
 fn dispatch_not_addressed_keeps_the_need() {
     let project = tempfile::tempdir().unwrap();
     let root = roster(project.path());
     let foreign = format!("mind@{}.local", foreign_prefix(&root));
-
-    let out = vivi([
+    let out = ok(&vivi([
         "need",
         "send",
         "--project",
@@ -59,66 +37,28 @@ fn dispatch_not_addressed_keeps_the_need() {
         "--dispatch",
         "--priority",
         "5",
-    ]);
-    assert!(
-        !out.status.success(),
-        "a dispatch without a delivered copy for the pump must fail"
-    );
-
-    // The filing receipts survive: one local delivery (hand), the sent
-    // copy, its backlog node, and both mark writes. The foreign address is
-    // remote: it got no delivered copy and appears in no `created` line.
-    let out_stdout = stdout(&out);
-    let delivered = handle_after(&out_stdout, "created hand ");
-    let sent = handle_after(&out_stdout, "sent ");
-    let lines: Vec<&str> = out_stdout.lines().collect();
-    assert_eq!(lines.len(), 5, "unexpected receipts:\n{out_stdout}");
+    ]));
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines.len(), 6, "{out}");
+    let delivered = handle_after(&out, "created hand ");
+    let sent = handle_after(&out, "sent ");
+    let record = handle_after(&out, "pump record ");
     assert_eq!(lines[0], format!("created hand {delivered}"));
     assert_eq!(lines[1], format!("sent {sent}"));
     assert_eq!(lines[2], format!("node {delivered}"));
     assert_eq!(lines[3], format!("marked {sent} research"));
     assert_eq!(lines[4], format!("marked {delivered} research"));
-    assert!(!out_stdout.contains("created mind"), "{out_stdout}");
-    assert!(!out_stdout.contains(&foreign), "{out_stdout}");
-    assert!(!out_stdout.contains("pump record"), "{out_stdout}");
-
-    // The refusal names the dispatch boundary with the filed handle and the
-    // not-addressed issue with the canonical pump identity.
-    let err = stderr(&out);
-    assert!(
-        err.contains(&format!("dispatch of filed need {sent} failed:")),
-        "{err}"
+    assert_eq!(
+        lines[5],
+        format!("pump record {record} for need {delivered}")
     );
-    assert!(
-        err.contains(
-            "no delivered copy of the filed need for mind; the dispatch pump must be a recipient"
-        ),
-        "{err}"
-    );
-    // The foreign same-name recipient was classified remote, not local.
-    assert!(err.contains(&foreign), "{err}");
-    assert!(err.contains("will not leave this checkout"), "{err}");
-
-    // The filed need, its marks and its backlog node are all retained.
-    let listed = listed_for(&root, "hand");
-    assert_eq!(listed.len(), 1, "{listed:?}");
-    assert_eq!(listed[0]["handle"], delivered.as_str());
-    assert_eq!(listed[0]["marks"], serde_json::json!(["research"]));
-    let ready = ok(&vivi(["graph", "ready", "--project", &root]));
-    assert!(
-        ready
-            .lines()
-            .any(|line| line.trim_start().starts_with("ready ") && line.contains(&delivered)),
-        "node missing from graph ready:\n{ready}"
-    );
-
-    // No record opened and no priority database was written.
-    assert!(
-        records(&root).is_empty(),
-        "a refused dispatch opened a record"
-    );
-    let db = project.path().join(".vivi").join("pump").join("pump.db");
-    assert!(!db.exists(), "{:?} exists", db);
+    assert!(!out.contains("created mind"), "{out}");
+    let rows = records(&root);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0]["need"], delivered);
+    assert!(rows[0]["to"].as_str().unwrap().starts_with("mind@"));
+    let priority = ok(&vivi(["pump", "priority", "list", "--project", &root]));
+    assert!(priority.contains(&delivered), "{priority}");
 }
 
 /// A dispatch without any `[pump]` table files the need first, then fails
