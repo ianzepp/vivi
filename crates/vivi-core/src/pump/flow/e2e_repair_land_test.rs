@@ -2,10 +2,15 @@
 //! outcome edge out of the rung and merge steps of attempts 1 and 2 in
 //! `flows/repair.mmd`, each driven only by finishing the pool job and ticking.
 
+use std::sync::Arc;
+
 use crate::pump::config::{PumpConfig, RungsConfig};
-use crate::pump::flow::e2e_rig::{Rig, agent_receipt, env_receipt, push_receipt, rig};
+use crate::pump::flow::e2e_rig::{
+    Rig, agent_receipt, env_receipt, filed_repair_rig, push_receipt, rig,
+};
 use crate::pump::flow::index::StepState;
 use crate::pump::flow::mail::{MailReader, NeedStatus};
+use crate::pump::flow::repair;
 use crate::pump::flow::slice_dispatch::SliceMail;
 use crate::pump::flow::tick::OPERATOR_HOLD;
 use crate::pump::jobs::JobStatus;
@@ -21,6 +26,10 @@ const CAND1: &str = "2222222222222222222222222222222222222222";
 const CAND2: &str = "3333333333333333333333333333333333333333";
 const MERGED: &str = "5555555555555555555555555555555555555555";
 const BUILT: &str = "+++\nanswer = \"built\"\n+++\nfixed";
+const ORIGINAL_TESTED: &str = "abcdef0123456789";
+const NEW_MAIN: &str = "fedcba9876543210";
+const ORIGINAL_RED: &str = "error: ORIGINAL_EARLY_OFFENDER failed\n    Running tests\ntest hundreds_of_checks ... ok\nagent exit 101 in 9s\n";
+const RUNG_RED: &str = "error: RUNG_EARLY_OFFENDER failed\n    Running tests\ntest hundreds_of_other_checks ... ok\nagent exit 101 in 9s\n";
 
 fn config() -> PumpConfig {
     let mut cfg = PumpConfig::default();
@@ -162,6 +171,103 @@ fn kinds(rig: &Rig) -> Vec<String> {
         .collect();
     kinds.sort();
     kinds
+}
+
+#[test]
+fn prior_rung_early_failure_survives_into_fix2_brief() -> R {
+    let mut cfg = PumpConfig::default();
+    cfg.rungs = RungsConfig {
+        main: Some(String::from("cargo test --saved-main")),
+        timeout: Some(900),
+        pools: vec![String::from("test-planner-pool")],
+        ..RungsConfig::default()
+    };
+    let mut rig = filed_repair_rig(cfg, ORIGINAL_TESTED, ORIGINAL_RED)?;
+    let main_job = rig
+        .jobs
+        .jobs
+        .values()
+        .find(|job| job.kind == "rung")
+        .cloned()
+        .ok_or_else(|| VivariumError::Message("no saved main rung job".into()))?;
+    let main_id = main_job.id.clone();
+    let main_task = main_job.task.clone().unwrap_or_default();
+    assert!(!main_task.is_empty());
+    assert_eq!(main_job.command.as_deref(), Some("cargo test --saved-main"));
+    main_is(&rig, NEW_MAIN);
+    rig.tick_until("fix1", |rig| rig.open_job("fix1").is_some())?;
+    let fix = open(&rig, "fix1")?;
+    let fix_id = fix.id.clone();
+    let fix_task = fix.task.clone().unwrap_or_default();
+    let publish_ref = fix
+        .publish_ref
+        .as_deref()
+        .ok_or_else(|| VivariumError::Message("fix1 has no publish ref".into()))?;
+    let repair_receipt = push_receipt(
+        0,
+        "pushed",
+        &format!("runner publish: pushed {publish_ref} {CAND1} {CAND1}"),
+        "+++\nanswer = \"built\"\n+++\nMODEL_AUTHORED_REPAIR_SUMMARY\nREPORTED_REPAIR_OUTPUT",
+    );
+    rig.finish(&fix_id, JobStatus::Finished, &repair_receipt)?;
+    rig.tick_until("rung1", |rig| rig.open_job("rung1").is_some())?;
+    let rung = open(&rig, "rung1")?;
+    let rung_id = rung.id.clone();
+    let rung_task = rung.task.clone().unwrap_or_default();
+    let rung_command = rung.command.clone().unwrap_or_default();
+    assert!(!rung_command.is_empty());
+    Arc::make_mut(&mut rig.ctx.cfg).rungs.main =
+        Some(String::from("cargo test --changed-current-main"));
+    let many_passes = (0..400)
+        .map(|n| format!("test passing_{n} ... ok"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let rung_receipt = agent_receipt(101, &format!("{RUNG_RED}{many_passes}"));
+    rig.finish(&rung_id, JobStatus::Finished, &rung_receipt)?;
+    rig.tick_until("fix2", |rig| rig.open_job("fix2").is_some())?;
+    let fix2 = open(&rig, "fix2")?;
+    let body = &fix2.body;
+    for text in [
+        "ORIGINAL_EARLY_OFFENDER",
+        ORIGINAL_TESTED,
+        "MODEL_AUTHORED_REPAIR_SUMMARY",
+        "REPORTED_REPAIR_OUTPUT",
+        fix_id.as_str(),
+        fix_task.as_str(),
+        "RUNG_EARLY_OFFENDER",
+        CAND1,
+        rung_command.as_str(),
+        rung_id.as_str(),
+        rung_task.as_str(),
+    ] {
+        assert!(body.contains(text), "fix2 brief missing {text:?}: {body}");
+    }
+    assert!(body.contains(&format!("source job: {main_id}")), "{body}");
+    assert!(body.contains(&format!("source job: {rung_id}")), "{body}");
+    assert!(body.contains("Record tested tip:"), "{body}");
+    assert!(
+        body.contains(&format!("Current main tip: {NEW_MAIN}")),
+        "{body}"
+    );
+    assert!(
+        !body.contains("cargo test --changed-current-main"),
+        "{body}"
+    );
+    let rung_report = body
+        .split_once("Rung verdict: ")
+        .map(|(_, report)| report)
+        .ok_or_else(|| VivariumError::Message("fix2 brief has no rung verdict".into()))?;
+    assert_eq!(repair::parse_tested(rung_report).as_deref(), Some(CAND1));
+    let (_, record) = rig
+        .port
+        .open_record(&rig.need)?
+        .ok_or_else(|| VivariumError::Message("repair record closed before fix2".into()))?;
+    let front = vivi_mail::letter::read::record_of("", &record)
+        .map_err(|e| VivariumError::Message(format!("bad repair record: {e}")))?
+        .front;
+    assert_eq!(front.tested.as_deref(), Some(ORIGINAL_TESTED));
+    assert_ne!(ORIGINAL_TESTED, CAND1);
+    Ok(())
 }
 
 #[test]
