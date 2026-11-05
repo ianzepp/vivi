@@ -1,4 +1,7 @@
-use super::{EnvFailure, EnvKind, TAIL_BYTES, TAIL_LINES, env_failure, parse};
+use super::{
+    EXCERPT_BYTES, EXCERPT_LINES, EXCERPT_TAIL_LINES, EnvFailure, EnvKind, ExcerptMode,
+    FailureExcerpt, TAIL_BYTES, TAIL_LINES, env_failure, failure_excerpt, parse,
+};
 use crate::pump::jobs::{JobOutcome, JobSpec, JobStatus, PoolJob};
 
 fn job(status: JobStatus, receipt: Option<&str>) -> PoolJob {
@@ -308,6 +311,192 @@ fn facts_and_runner_log_never_reach_the_failing_set_or_tail() {
     let result = parse(&job(JobStatus::Finished, Some(&only_log)));
     assert!(result.failing.is_empty());
     assert_eq!(result.tail, "");
+}
+
+fn lines_of(excerpt: &FailureExcerpt) -> Vec<&str> {
+    excerpt.text.lines().collect()
+}
+
+/// How many excerpt lines are exactly `line`: source lines are deduplicated
+/// by position, so identical source text can count twice.
+fn count_line(excerpt: &FailureExcerpt, line: &str) -> usize {
+    excerpt.text.lines().filter(|found| *found == line).count()
+}
+
+#[test]
+fn failure_marker_coverage() {
+    let receipt = [
+        "filler one",
+        "error: bad config value",
+        "filler two",
+        "test pump::x::y ... FAILED",
+        "filler three",
+        "thread panicked at src/lib.rs:9:9: boom",
+        "filler four",
+        "failures:",
+        "filler five",
+        "offender pump::x::y",
+        "filler six",
+        "test result: FAILED. 1 test run",
+        "filler seven",
+        "agent exit 101 in 8s",
+        "filler eight",
+        "exit status 128",
+        "filler nine",
+    ];
+    let excerpt = failure_excerpt(&posted("101", &receipt.join("\n"), "", ""));
+    assert_eq!(excerpt.mode, ExcerptMode::Markers);
+    assert_eq!(excerpt.source_lines, receipt.len());
+    assert_eq!(excerpt.kept_lines, receipt.len());
+    assert_eq!(excerpt.omitted_lines, 0);
+    assert!(!excerpt.truncated);
+    // Close markers merge their context into one window covering everything,
+    // in source order.
+    let lines = lines_of(&excerpt);
+    assert_eq!(lines, receipt.to_vec());
+    // A zero exit alone is never a marker: markerless content falls back to
+    // the tail.
+    let zero = posted("0", "all quiet\nexit code 0\nagent exit 0 in 8s\n", "", "");
+    let excerpt = failure_excerpt(&zero);
+    assert_eq!(excerpt.mode, ExcerptMode::Tail);
+    assert_eq!(excerpt.text, "all quiet\nexit code 0\nagent exit 0 in 8s");
+    // A reply with no receipt or stderr content exposes the empty state.
+    let excerpt = failure_excerpt(&posted("1", "", "", "log only\n"));
+    assert_eq!(excerpt.mode, ExcerptMode::Empty);
+    assert_eq!(excerpt.text, "");
+    assert_eq!(excerpt.source_lines, 0);
+    assert_eq!(excerpt.kept_lines, 0);
+    assert_eq!(excerpt.omitted_lines, 0);
+    assert!(!excerpt.truncated);
+}
+
+#[test]
+fn overlapping_context_once() {
+    // Two markers two lines apart overlap into one window; shared context
+    // lines appear once.
+    let receipt = ["lead", "error one", "middle shared", "error two", "trail"];
+    let excerpt = failure_excerpt(&posted("1", &receipt.join("\n"), "", ""));
+    assert_eq!(excerpt.mode, ExcerptMode::Markers);
+    assert_eq!(excerpt.kept_lines, 5);
+    assert_eq!(excerpt.omitted_lines, 0);
+    for line in receipt {
+        assert_eq!(count_line(&excerpt, line), 1);
+    }
+
+    // Separated windows keep both sides in source order, name the omitted
+    // stretch between them exactly once, and deduplicate by source position,
+    // not text: identical marker lines at distinct positions both survive.
+    let receipt = [
+        "error twin",
+        "gap1",
+        "gap2",
+        "gap3",
+        "gap4",
+        "gap5",
+        "gap6",
+        "gap7",
+        "error twin",
+        "tail",
+    ];
+    let excerpt = failure_excerpt(&posted("1", &receipt.join("\n"), "", ""));
+    assert_eq!(count_line(&excerpt, "error twin"), 2);
+    assert_eq!(count_line(&excerpt, "gap4"), 0);
+    assert_eq!(excerpt.source_lines, 10);
+    assert_eq!(excerpt.kept_lines, 9);
+    assert_eq!(excerpt.omitted_lines, 1);
+    assert!(!excerpt.truncated);
+    let lines = lines_of(&excerpt);
+    assert_eq!(lines[0], "error twin");
+    assert_eq!(lines[5], "gap5");
+    assert_eq!(lines[8], "error twin");
+    assert_eq!(lines[9], "tail");
+    let named = lines.iter().filter(|l| !receipt.contains(l)).count();
+    assert_eq!(named, 1);
+
+    // Touching windows (marker exactly seven lines apart) merge with no gap
+    // between them.
+    let receipt: String = (0..9)
+        .map(|i| {
+            if i == 1 || i == 8 {
+                "error pad".to_owned()
+            } else {
+                format!("pad{i}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let excerpt = failure_excerpt(&posted("1", &receipt, "", ""));
+    assert_eq!(excerpt.kept_lines, 9);
+    assert_eq!(excerpt.omitted_lines, 0);
+    assert_eq!(count_line(&excerpt, "pad5"), 1);
+}
+
+#[test]
+fn markerless_last_forty() {
+    let receipt: Vec<String> = (0..50).map(|i| format!("calm {i}")).collect();
+    let excerpt = failure_excerpt(&posted("0", &receipt.join("\n"), "", ""));
+    assert_eq!(excerpt.mode, ExcerptMode::Tail);
+    assert_eq!(excerpt.source_lines, 50);
+    assert_eq!(excerpt.kept_lines, EXCERPT_TAIL_LINES);
+    assert_eq!(excerpt.omitted_lines, 10);
+    assert!(excerpt.truncated);
+    let lines = lines_of(&excerpt);
+    assert_eq!(lines.len(), EXCERPT_TAIL_LINES);
+    assert_eq!(lines.first(), Some(&"calm 10"));
+    assert_eq!(lines.last(), Some(&"calm 49"));
+    // Fewer lines than the fallback keeps everything.
+    let excerpt = failure_excerpt(&posted("0", "calm a\ncalm b\n", "", ""));
+    assert_eq!(excerpt.mode, ExcerptMode::Tail);
+    assert_eq!(excerpt.text, "calm a\ncalm b");
+    assert_eq!(excerpt.kept_lines, 2);
+    assert_eq!(excerpt.omitted_lines, 0);
+    assert!(!excerpt.truncated);
+}
+
+#[test]
+fn excerpt_limits_and_utf8() {
+    // The line cap keeps the earliest evidence in source order.
+    let receipt: Vec<String> = (0..200)
+        .map(|i| {
+            if i % 2 == 1 {
+                format!("error {i}")
+            } else {
+                format!("calm {i}")
+            }
+        })
+        .collect();
+    let excerpt = failure_excerpt(&posted("1", &receipt.join("\n"), "", ""));
+    assert_eq!(excerpt.mode, ExcerptMode::Markers);
+    assert_eq!(excerpt.source_lines, 200);
+    assert_eq!(excerpt.kept_lines, EXCERPT_LINES);
+    assert_eq!(excerpt.omitted_lines, 200 - EXCERPT_LINES);
+    assert!(excerpt.truncated);
+    assert_eq!(lines_of(&excerpt), receipt[..EXCERPT_LINES].to_vec());
+
+    // Wide marked lines force the byte cap to bind inside a line, cut at a
+    // UTF-8 boundary: the last kept character survives whole.
+    let receipt: Vec<String> = (0..200)
+        .map(|i| format!("error {i} {}", "é".repeat(200)))
+        .collect();
+    let excerpt = failure_excerpt(&posted("1", &receipt.join("\n"), "", ""));
+    assert!(excerpt.text.len() <= EXCERPT_BYTES);
+    assert!(excerpt.truncated);
+    assert!(excerpt.kept_lines < EXCERPT_LINES);
+    assert_eq!(excerpt.kept_lines + excerpt.omitted_lines, 200);
+    assert!(excerpt.text.ends_with('é'));
+
+    // The markerless fallback is byte-capped the same way.
+    let receipt: String = (0..80)
+        .map(|_| "é".repeat(300))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let excerpt = failure_excerpt(&posted("0", &receipt, "", ""));
+    assert_eq!(excerpt.mode, ExcerptMode::Tail);
+    assert!(excerpt.text.len() <= EXCERPT_BYTES);
+    assert!(excerpt.truncated);
+    assert!(excerpt.kept_lines < EXCERPT_TAIL_LINES);
+    assert_eq!(excerpt.kept_lines + excerpt.omitted_lines, 80);
+    assert!(excerpt.text.ends_with('é'));
 }
 
 fn with_detail(text: &str, detail: &str) -> PoolJob {
