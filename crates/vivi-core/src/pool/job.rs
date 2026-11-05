@@ -328,6 +328,13 @@ pub struct ExtraCheckout {
     pub token: Secret,
 }
 
+/// A branch tip that must match when the runner publishes the job's result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublicationAssertion {
+    pub reference: String,
+    pub sha: String,
+}
+
 /// Everything about a job that is known before a slot is chosen.
 #[derive(Debug, Clone)]
 pub struct JobPlan {
@@ -364,6 +371,8 @@ pub struct JobPlan {
     /// Exact commit the runner must publish (promotion jobs only).
     pub publish_expect: Option<String>,
     pub publish_contains: Option<String>,
+    /// Branch tips that must still match at publication time.
+    pub publish_if: Vec<PublicationAssertion>,
     pub delete_ref: Option<String>,
     pub delete_expect: Option<String>,
     /// Remote address for privileged publication when the pool itself has no remote.
@@ -468,6 +477,14 @@ pub fn build_bundle(spec: &JobPlan, slot: &str, token: &Secret) -> Bundle {
     if !spec.facts.is_empty() {
         let list = spec.facts.join("\n") + "\n";
         files.push(file("facts.cmd", &list, 0o600));
+    }
+    if !spec.publish_if.is_empty() {
+        let manifest = spec
+            .publish_if
+            .iter()
+            .map(|assertion| format!("{}\t{}\n", assertion.reference, assertion.sha))
+            .collect::<String>();
+        files.push(file("publish-if.list", &manifest, 0o600));
     }
     if let Some(list) = with_list(&spec.with) {
         files.push(file("with.list", &list, 0o600));

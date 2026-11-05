@@ -407,6 +407,7 @@ fn base_flags(
         publish_ref: command.publish_ref.clone(),
         publish_expect: command.publish_expect.clone(),
         publish_contains: command.publish_contains.clone(),
+        publish_if: command.publish_if.clone(),
         delete_ref: command.delete_ref.clone(),
         delete_expect: command.delete_expect.clone(),
         with: command.with.clone(),

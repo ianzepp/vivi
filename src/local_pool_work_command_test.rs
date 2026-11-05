@@ -3,6 +3,41 @@
 //! is launched.
 
 use super::*;
+use clap::Parser;
+use vivi_core::cli::{Cli, Command, PoolSubcommand};
+
+#[test]
+fn dispatch_parses_repeatable_publication_assertions() {
+    let sha_a = "a".repeat(40);
+    let sha_b = "b".repeat(64);
+    let cli = Cli::try_parse_from([
+        "vivi",
+        "pool",
+        "dispatch",
+        "task-1",
+        "--publish-ref",
+        "refs/heads/publish",
+        "--publish-if",
+        &format!("refs/heads/main={sha_a}"),
+        "--publish-if",
+        &format!("refs/heads/release={sha_b}"),
+    ])
+    .unwrap();
+    let Command::Pool {
+        command: PoolSubcommand::Dispatch(command),
+    } = cli.command
+    else {
+        panic!("expected pool dispatch");
+    };
+    assert_eq!(
+        command.publish_if,
+        vec![
+            format!("refs/heads/main={sha_a}"),
+            format!("refs/heads/release={sha_b}")
+        ]
+    );
+}
+
 use vivi_core::pool::config::PoolCommitter;
 
 /// A repository with `main` and `review/aaa`; returns the directory and the
@@ -60,6 +95,7 @@ fn plan_with(names: &[&str]) -> job::JobPlan {
         publish_ref: None,
         publish_expect: None,
         publish_contains: None,
+        publish_if: Vec::new(),
         delete_ref: None,
         delete_expect: None,
         publish_remote: None,

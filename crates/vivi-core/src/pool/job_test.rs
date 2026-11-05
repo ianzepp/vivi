@@ -15,6 +15,49 @@ fn committer() -> PoolCommitter {
 }
 
 #[test]
+fn publication_assertions_round_trip_in_a_runner_only_manifest() {
+    let mut p = plan();
+    p.publish_if = vec![
+        PublicationAssertion {
+            reference: "refs/heads/main".into(),
+            sha: "a".repeat(40),
+        },
+        PublicationAssertion {
+            reference: "refs/heads/release/next".into(),
+            sha: "b".repeat(64),
+        },
+    ];
+    let bundle = build_bundle(&p, "s", &Secret::new(SECRET.into()));
+    let expected = format!(
+        "refs/heads/main\t{}\nrefs/heads/release/next\t{}\n",
+        "a".repeat(40),
+        "b".repeat(64)
+    );
+    assert_eq!(text(&bundle, "publish-if.list"), expected);
+    assert!(bundle.agent_visible().iter().all(|file| {
+        file.name != "publish-if.list"
+            && !String::from_utf8_lossy(&file.content).contains("refs/heads/main")
+    }));
+
+    let archive = pack(&bundle).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let tgz = dir.path().join("job.tgz");
+    std::fs::write(&tgz, archive).unwrap();
+    let out = Command::new("tar")
+        .args(["-xzf"])
+        .arg(&tgz)
+        .arg("-C")
+        .arg(dir.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("job/publish-if.list")).unwrap(),
+        expected
+    );
+}
+
+#[test]
 fn privileged_publish_controls_are_runner_only_job_parameters() {
     let mut p = plan();
     p.publish_ref = Some("refs/heads/next".into());
@@ -58,6 +101,7 @@ fn plan() -> JobPlan {
         publish_ref: None,
         publish_expect: None,
         publish_contains: None,
+        publish_if: Vec::new(),
         delete_ref: None,
         delete_expect: None,
         publish_remote: None,

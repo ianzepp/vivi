@@ -304,6 +304,7 @@ impl<'a> World<'a> {
             publish_ref: None,
             publish_expect: None,
             publish_contains: None,
+            publish_if: Vec::new(),
             delete_ref: None,
             delete_expect: None,
             with: Vec::new(),

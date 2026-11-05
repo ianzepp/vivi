@@ -76,6 +76,7 @@ fn flags(model: &str) -> DispatchFlags {
         publish_ref: None,
         publish_expect: None,
         publish_contains: None,
+        publish_if: Vec::new(),
         delete_ref: None,
         delete_expect: None,
         with: Vec::new(),
@@ -946,6 +947,46 @@ github_repo = "faberlang/radix"
         "radix",
     );
     assert!(result.err().unwrap().to_string().contains("does not match"));
+}
+
+#[test]
+fn publication_assertions_are_validated_and_carried_into_the_plan() {
+    let first = "a".repeat(40);
+    let second = "b".repeat(64);
+    let mut guarded = flags("m/ok");
+    guarded.publish_ref = Some("refs/heads/publish".into());
+    guarded.publish_if = vec![
+        format!("refs/heads/main={first}"),
+        format!("refs/heads/release/next={second}"),
+    ];
+    let planned = plan(&guarded).unwrap();
+    assert_eq!(planned.publish_if.len(), 2);
+    assert_eq!(planned.publish_if[0].reference, "refs/heads/main");
+    assert_eq!(planned.publish_if[0].sha, first);
+    assert_eq!(planned.publish_if[1].reference, "refs/heads/release/next");
+    assert_eq!(planned.publish_if[1].sha, second);
+
+    let mut missing_publication = flags("m/ok");
+    missing_publication.publish_if = vec![format!("refs/heads/main={}", "a".repeat(40))];
+    assert!(plan(&missing_publication).is_err());
+
+    let mut read_only = missing_publication.clone();
+    read_only.publish_ref = Some("refs/heads/publish".into());
+    read_only.read_only = true;
+    assert!(plan(&read_only).is_err());
+
+    let mut invalid = flags("m/ok");
+    invalid.publish_ref = Some("refs/heads/publish".into());
+    for assertion in [
+        format!("main={}", "a".repeat(40)),
+        format!("refs/tags/v1={}", "a".repeat(40)),
+        "refs/heads/main=abc".to_string(),
+        format!("refs/heads/main={}=tail", "a".repeat(40)),
+        "refs/heads/main".to_string(),
+    ] {
+        invalid.publish_if = vec![assertion.clone()];
+        assert!(plan(&invalid).is_err(), "{assertion}");
+    }
 }
 
 #[test]
