@@ -71,11 +71,7 @@ impl Mailspace {
         }
         let from = self.resolve_identity(&request.from)?;
         let (recipients, remote) = self.split_recipients(&request.to, &request.cc)?;
-        if recipients.is_empty() && remote.is_empty() {
-            return Err(VivariumError::Message(
-                "delivery needs at least one To or Cc recipient".into(),
-            ));
-        }
+        // A recipientless send remains as the author's sent copy.
         let storage = self.storage()?;
         let reply_parent = request
             .reply_to
@@ -459,7 +455,7 @@ impl Mailspace {
         };
         let mut messages = Vec::new();
         for row in rows {
-            if self.remote_recipients(&row).is_empty() {
+            if self.remote_recipients(&row).is_empty() && !super::holding::is_unaddressed(&row) {
                 continue;
             }
             let data = storage.read_message(&row.message_id)?;
@@ -504,6 +500,17 @@ impl Mailspace {
         blocking: Option<&str>,
     ) -> Result<Vec<(StoredMessageView, Vec<String>)>, VivariumError> {
         let tasks = self.list_kind(Some(identity), "tasks", "task")?;
+        let outbound = self.list_outbound_work(Some(identity), "task")?;
+        let mut seen = tasks
+            .iter()
+            .map(|task| task.message_id.clone())
+            .collect::<HashSet<_>>();
+        let mut tasks = tasks;
+        tasks.extend(
+            outbound
+                .into_iter()
+                .filter(|task| seen.insert(task.message_id.clone())),
+        );
         let mut result = Vec::new();
         for task in tasks {
             let deps = self.task_depends_on(&task.message_id)?;

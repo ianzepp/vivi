@@ -67,6 +67,100 @@ fn readiness(mailspace: &Mailspace, item: &str) -> String {
 }
 
 #[test]
+fn unaddressed_work_is_local_and_ready() {
+    let (_tmp, mailspace) = space();
+    let send_unaddressed = |kind: &str, subject: &str, deps: Vec<String>| {
+        mailspace
+            .send(SendRequest {
+                from: "mind".into(),
+                to: Vec::new(),
+                cc: Vec::new(),
+                bcc: Vec::new(),
+                subject: subject.into(),
+                body: work_body(kind, &deps),
+                role: format!("{kind}s"),
+                kind: Some(kind.into()),
+                reply_to: None,
+            })
+            .unwrap()
+    };
+    let need = send_unaddressed("need", "local need", Vec::new()).sent;
+    let task = send_unaddressed("task", "local task", Vec::new()).sent;
+    let dependent = send_unaddressed("task", "dependent task", vec![need.clone()]).sent;
+    let want = send_unaddressed("want", "local want", Vec::new()).sent;
+
+    let storage = mailspace.storage().unwrap();
+    let view = storage
+        .list_messages()
+        .unwrap()
+        .into_iter()
+        .find(|view| view.handle == task)
+        .unwrap();
+    assert!(is_unaddressed(&view));
+    drop(storage);
+    assert_eq!(readiness(&mailspace, &need), "ready");
+    assert_eq!(readiness(&mailspace, &task), "ready");
+    assert_eq!(readiness(&mailspace, &dependent), "blocked");
+    assert_eq!(readiness(&mailspace, &want), "ready");
+    let manifest = mailspace.step_shadow().unwrap();
+    assert!(
+        !manifest.exceptions.iter().any(|exception| {
+            [need.as_str(), task.as_str(), dependent.as_str()].contains(&exception.item.as_str())
+                && exception.reason == "awaiting_remote"
+        }),
+        "{manifest:?}"
+    );
+    assert!(
+        manifest
+            .dispatches
+            .iter()
+            .any(|dispatch| dispatch.item == need),
+        "{manifest:?}"
+    );
+    assert!(
+        manifest
+            .dispatches
+            .iter()
+            .any(|dispatch| dispatch.item == task),
+        "{manifest:?}"
+    );
+    assert!(
+        mailspace
+            .list_outbound_work(Some("mind"), "need")
+            .unwrap()
+            .iter()
+            .any(|item| item.handle == need)
+    );
+    assert!(
+        mailspace
+            .list_outbound_work(Some("mind"), "task")
+            .unwrap()
+            .iter()
+            .any(|item| item.handle == task)
+    );
+    assert!(
+        mailspace
+            .list_outbound_work(Some("mind"), "task")
+            .unwrap()
+            .iter()
+            .any(|item| item.handle == dependent)
+    );
+    assert!(
+        mailspace
+            .list_outbound_work(Some("mind"), "want")
+            .unwrap()
+            .iter()
+            .any(|item| item.handle == want)
+    );
+    let task_rows = mailspace.list_tasks_with_deps("mind", false, None).unwrap();
+    assert!(
+        task_rows
+            .iter()
+            .any(|(item, deps)| item.handle == dependent && deps == std::slice::from_ref(&need))
+    );
+}
+
+#[test]
 fn a_sent_copy_of_remote_work_is_tracked_and_never_dispatched() {
     let (_tmp, mailspace) = space();
     let mut sent = Vec::new();

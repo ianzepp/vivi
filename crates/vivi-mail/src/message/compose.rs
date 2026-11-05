@@ -35,8 +35,7 @@ pub struct FileAttachment {
 /// Build an email message from a compose draft.
 ///
 /// # Errors
-/// Returns an error if the draft has no recipients, or if the generated
-/// message fails header validation.
+/// Returns an error if the generated message fails header validation.
 pub fn build_compose_draft(draft: &ComposeDraft) -> Result<String, VivariumError> {
     build_compose_draft_with_attachments(draft, &[])
 }
@@ -44,17 +43,11 @@ pub fn build_compose_draft(draft: &ComposeDraft) -> Result<String, VivariumError
 /// Build an email message from a compose draft with file attachments.
 ///
 /// # Errors
-/// Returns an error if the draft has no recipients, or if the generated
-/// message fails header validation.
+/// Returns an error if the generated message fails header validation.
 pub fn build_compose_draft_with_attachments(
     draft: &ComposeDraft,
     attachments: &[FileAttachment],
 ) -> Result<String, VivariumError> {
-    if draft.to.is_empty() && draft.cc.is_empty() && draft.bcc.is_empty() {
-        return Err(VivariumError::Message(
-            "draft needs at least one To, Cc, or Bcc recipient".into(),
-        ));
-    }
     let mut builder = mail_builder::MessageBuilder::new()
         .message_id(next_message_id(&draft.from))
         .from(draft.from.clone())
@@ -135,26 +128,16 @@ pub fn build_reply_template(original: &[u8], from: &str) -> Result<String, Vivar
     )
 }
 
-/// Validate that a raw message has required headers (From and at least one
-/// recipient).
+/// Validate that a raw message has a parseable From header.
 ///
 /// # Errors
-/// Returns an error if the message cannot be parsed, has no From header, or
-/// has no To, Cc, or Bcc recipient.
+/// Returns an error if the message cannot be parsed or has no From header.
 pub fn validate_message_headers(data: &[u8]) -> Result<(), VivariumError> {
     let parsed = mail_parser::MessageParser::default()
         .parse(data)
         .ok_or_else(|| VivariumError::Parse("failed to parse message".into()))?;
     if parsed.from().and_then(|a| a.first()).is_none() {
         return Err(VivariumError::Message("message has no From header".into()));
-    }
-    let has_recipient = parsed.to().is_some_and(|a| a.first().is_some())
-        || parsed.cc().is_some_and(|a| a.first().is_some())
-        || parsed.bcc().is_some_and(|a| a.first().is_some());
-    if !has_recipient {
-        return Err(VivariumError::Message(
-            "message has no To, Cc, or Bcc recipient".into(),
-        ));
     }
     Ok(())
 }

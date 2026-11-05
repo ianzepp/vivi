@@ -54,6 +54,62 @@ fn letter(from: &str, to: &str) -> String {
 }
 
 #[test]
+fn unaddressed_send_stores_one_author_copy() {
+    let (_tmp, mailspace) = space(false);
+    let before = rows(&mailspace).len();
+    let result = mailspace
+        .send(SendRequest {
+            from: "mind".into(),
+            to: Vec::new(),
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: "author-only task".into(),
+            body: body_for("task", "Keep this content."),
+            role: "tasks".into(),
+            kind: Some("task".into()),
+            reply_to: None,
+        })
+        .unwrap();
+
+    assert!(result.delivered.is_empty());
+    assert!(result.remote.is_empty());
+    let stored = rows(&mailspace);
+    assert_eq!(stored.len(), before + 1, "{stored:?}");
+    let row = stored.last().unwrap();
+    assert_eq!(row.local_role, "sent");
+    assert_eq!(row.account, "mind");
+    assert_eq!(row.handle, result.sent);
+    let data = mailspace
+        .storage()
+        .unwrap()
+        .read_message(&row.message_id)
+        .unwrap();
+    let parsed = mail_parser::MessageParser::default().parse(&data).unwrap();
+    assert_eq!(
+        parsed.from().unwrap().first().unwrap().address(),
+        Some(mailspace.address_for("mind").as_str())
+    );
+    assert_eq!(parsed.subject(), Some("author-only task"));
+    assert!(String::from_utf8_lossy(&data).contains("Keep this content."));
+    assert!(mailspace.backlog_item_tracked(&result.sent).unwrap());
+    let events = mailspace
+        .storage()
+        .unwrap()
+        .list_mailspace_events(&row.message_id)
+        .unwrap();
+    assert!(
+        events
+            .iter()
+            .any(|event| event.event_type == "sent_copy_created"),
+        "{events:?}"
+    );
+    assert!(
+        !events.iter().any(|event| event.event_type == "delivered"),
+        "{events:?}"
+    );
+}
+
+#[test]
 fn a_letter_over_the_cap_is_refused_at_send_when_sync_is_configured() {
     let (_tmp, mailspace) = space(true);
     let body = "x".repeat(70_000);
