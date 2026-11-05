@@ -15,13 +15,14 @@ pub(super) fn raw_delivery_requests(
     recipients: &[String],
     role: &str,
     data_len: usize,
+    read_state: bool,
 ) -> Vec<MessageIngestRequest> {
     recipients
         .iter()
         .map(|recipient| MessageIngestRequest {
             account: recipient.clone(),
             local_role: role.to_string(),
-            read_state: false,
+            read_state,
             starred: false,
             message_id_hint: None,
             presented_id: None,

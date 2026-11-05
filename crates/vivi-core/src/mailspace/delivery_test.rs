@@ -294,6 +294,67 @@ fn deliver_refuses_an_oversize_letter_only_when_sync_is_configured() {
 }
 
 #[test]
+fn unaddressed_raw_delivery_keeps_exact_bytes() {
+    let (_tmp, mailspace) = space(false);
+    let raw = format!(
+        "From: mind@{}.local\r\nSubject: no audience\r\nMessage-ID: <none@audit.local>\r\n\r\nbody\r\n",
+        mailspace.address_prefix()
+    );
+    let result = mailspace.deliver_raw(raw.as_bytes(), "inbox").unwrap();
+    assert!(result.delivered.is_empty());
+    assert!(result.remote.is_empty());
+    let handle = result.sent.unwrap();
+    let stored = rows(&mailspace);
+    assert_eq!(stored.len(), 1);
+    assert_eq!(stored[0].local_role, "sent");
+    assert_eq!(stored[0].account, "mind");
+    assert!(stored[0].read_state);
+    assert_eq!(stored[0].handle, handle);
+    assert_eq!(
+        mailspace
+            .storage()
+            .unwrap()
+            .read_message(&stored[0].message_id)
+            .unwrap(),
+        raw.as_bytes()
+    );
+}
+
+#[test]
+fn unaddressed_raw_delivery_does_not_notify() {
+    let (_tmp, mailspace) = space(false);
+    let raw = format!(
+        "From: mind@{}.local\r\nSubject: no audience\r\n\r\nbody",
+        mailspace.address_prefix()
+    );
+    let result = mailspace.deliver_raw(raw.as_bytes(), "inbox").unwrap();
+    let row = rows(&mailspace).remove(0);
+    assert_eq!(result.sent.as_deref(), Some(row.handle.as_str()));
+    assert!(result.delivered.is_empty());
+    let events = mailspace
+        .storage()
+        .unwrap()
+        .list_mailspace_events(&row.message_id)
+        .unwrap();
+    assert!(
+        events
+            .iter()
+            .any(|event| event.event_type == "sent_copy_created"),
+        "{events:?}"
+    );
+    assert!(
+        !events.iter().any(|event| event.event_type == "delivered"),
+        "{events:?}"
+    );
+    for from in ["stranger@example.com", "mind@3f9a1c7e.local"] {
+        let bad = format!("From: {from}\r\nSubject: bad\r\n\r\nbody");
+        let before = rows(&mailspace).len();
+        assert!(mailspace.deliver_raw(bad.as_bytes(), "inbox").is_err());
+        assert_eq!(rows(&mailspace).len(), before);
+    }
+}
+
+#[test]
 fn deliver_classifies_local_and_remote_recipients_like_send() {
     let (_tmp, mailspace) = space(true);
     let raw = format!(
