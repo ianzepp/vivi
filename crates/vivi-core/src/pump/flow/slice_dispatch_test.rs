@@ -272,6 +272,28 @@ fn the_contract_examples_parse_as_hand_envelopes() {
     assert!(text.contains(EXAMPLE_BUILT) && text.contains(EXAMPLE_BLOCKED));
 }
 
+/// The hub's first need on vivi 23: a hand wrote `result = "pass (24 tests
+/// OK)"`, the parser accepts only the bare words, and a whole envelope-fix job
+/// followed. The contract names every value the parser takes, each of them
+/// parses, and a decorated one is refused.
+#[test]
+fn the_contract_names_the_check_results_the_parser_accepts() {
+    let text = contract();
+    let envelope = |result: &str| {
+        format!(
+            "+++\nanswer = \"built\"\n\n[[check]]\ncmd = \"t\"\nresult = \"{result}\"\nseconds = 1\n+++\nbody\n"
+        )
+    };
+    for result in ["pass", "fail", "skipped"] {
+        assert!(
+            text.contains(&format!("`{result}`")),
+            "the contract names {result}"
+        );
+        parse::<Hand>(&envelope(result)).unwrap_or_else(|e| panic!("{result}: {e}"));
+    }
+    assert!(parse::<Hand>(&envelope("pass (24 tests OK)")).is_err());
+}
+
 // ---- retry ----------------------------------------------------------------
 
 fn failed_job(id: &str) -> PoolJob {
