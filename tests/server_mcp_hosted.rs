@@ -775,13 +775,15 @@ async fn reads_reflect_what_the_library_wrote() {
     let key = fx.key(Some("mind"));
 
     // list: by kind, to, marks, status; folders and marks as the CLI shows.
-    let needs = fx.call(&key, "list", json!({"kind": "need"})).await;
+    let needs = fx
+        .call(&key, "list", json!({"kind": "need", "for": "mind"}))
+        .await;
     let items = needs["items"].as_array().unwrap();
     assert_eq!(items.len(), 1, "mind holds one need: {needs}");
     assert_eq!(items[0]["handle"], first);
     assert_eq!(items[0]["marks"], json!(["urgent"]));
     assert_eq!(items[0]["subject"], "first need");
-    let work = fx.call(&key, "list", json!({})).await;
+    let work = fx.call(&key, "list", json!({"for": "mind"})).await;
     assert_eq!(work["items"].as_array().unwrap().len(), 2, "need + task");
     let to_hand = fx
         .call(
@@ -790,8 +792,10 @@ async fn reads_reflect_what_the_library_wrote() {
             json!({"kind": "need", "status": "all", "to": "hand"}),
         )
         .await;
-    assert!(to_hand["items"].as_array().unwrap().is_empty(), "{to_hand}");
-    let task = fx.call(&key, "list", json!({"kind": "task"})).await;
+    assert_eq!(to_hand["items"].as_array().unwrap().len(), 1, "{to_hand}");
+    let task = fx
+        .call(&key, "list", json!({"kind": "task", "for": "mind"}))
+        .await;
     assert_eq!(task["items"][0]["depends_on"], json!([first.clone()]));
     let memos = fx.call(&key, "list", json!({"kind": "memo"})).await;
     assert_eq!(memos["items"][0]["body"], "the milk");
@@ -893,7 +897,9 @@ async fn reads_reflect_what_the_library_wrote() {
     // And a change made after: the next read sees it.
     ms.move_item_outcome("mind", &first, "done", None, "need done", None)
         .unwrap();
-    let after = fx.call(&key, "list", json!({"kind": "need"})).await;
+    let after = fx
+        .call(&key, "list", json!({"kind": "need", "for": "mind"}))
+        .await;
     assert!(after["items"].as_array().unwrap().is_empty(), "{after}");
 }
 
@@ -1089,7 +1095,11 @@ async fn the_operator_closes_a_need_it_sent_and_lists_every_role() {
     // Scoped to the operator's own folders the need is mind's, not listed;
     // `for: all` lists it as `vivi need list` without `--for` does.
     let own = fx
-        .call(&operator, "list", json!({"kind": "need", "status": "all"}))
+        .call(
+            &operator,
+            "list",
+            json!({"kind": "need", "status": "all", "for": "operator"}),
+        )
         .await;
     assert!(own["items"].as_array().unwrap().is_empty(), "{own}");
     let all = fx
