@@ -76,6 +76,8 @@ pub struct JobSpec {
     pub publish_expect: Option<String>,
     /// Commit the candidate and the published target must both include.
     pub publish_contains: Option<String>,
+    /// Additional publication assertions passed to the pool runner.
+    pub publish_if: Vec<String>,
     /// Owned need branch the privileged runner deletes, only while its tip
     /// still equals `delete_expect`.
     pub delete_ref: Option<String>,
@@ -129,6 +131,7 @@ impl JobSpec {
             publish_ref: None,
             publish_expect: None,
             publish_contains: None,
+            publish_if: Vec::new(),
             delete_ref: None,
             delete_expect: None,
             budget: 0,
@@ -213,6 +216,8 @@ pub struct PoolJob {
     pub publish_expect: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub publish_contains: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub publish_if: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delete_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -268,6 +273,7 @@ impl From<JobSpec> for PoolJob {
             publish_ref: spec.publish_ref,
             publish_expect: spec.publish_expect,
             publish_contains: spec.publish_contains,
+            publish_if: spec.publish_if,
             delete_ref: spec.delete_ref,
             delete_expect: spec.delete_expect,
             budget: spec.budget,
@@ -409,6 +415,7 @@ fn same_spec(job: &PoolJob, spec: &JobSpec) -> bool {
         && job.publish_ref == spec.publish_ref
         && job.publish_expect == spec.publish_expect
         && job.publish_contains == spec.publish_contains
+        && job.publish_if == spec.publish_if
         && job.delete_ref == spec.delete_ref
         && job.delete_expect == spec.delete_expect
         && job.budget == spec.budget

@@ -38,6 +38,7 @@ fn dispatched_job(id: &str) -> PoolJob {
     spec.publish_ref = Some("refs/heads/publish".into());
     spec.publish_expect = Some("expect-sha".into());
     spec.publish_contains = Some("contain-sha".into());
+    spec.publish_if = vec!["refs/heads/feature/one".into(), "refs/heads/release".into()];
     spec.delete_ref = Some("refs/heads/delete".into());
     spec.delete_expect = Some("delete-sha".into());
     spec.budget = 900;
@@ -89,6 +90,7 @@ fn rerun_spec_copies_every_execution_input() {
         publish_ref: Some("refs/heads/publish".into()),
         publish_expect: Some("expect-sha".into()),
         publish_contains: Some("contain-sha".into()),
+        publish_if: vec!["refs/heads/feature/one".into(), "refs/heads/release".into()],
         delete_ref: Some("refs/heads/delete".into()),
         delete_expect: Some("delete-sha".into()),
         budget: 900,

@@ -512,6 +512,9 @@ pub(super) fn pool_command(job: &PoolJob, pool: &str, task: &str) -> String {
 }
 
 fn append_runner_arguments(args: &mut Vec<String>, job: &PoolJob) {
+    for assertion in &job.publish_if {
+        args.push(format!("--publish-if {}", shell_quote(assertion)));
+    }
     for (flag, value) in [
         ("--publish-ref", &job.publish_ref),
         ("--publish-expect", &job.publish_expect),

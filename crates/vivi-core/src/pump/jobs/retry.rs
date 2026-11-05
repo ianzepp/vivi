@@ -36,6 +36,7 @@ impl PoolJob {
             publish_ref: self.publish_ref.clone(),
             publish_expect: self.publish_expect.clone(),
             publish_contains: self.publish_contains.clone(),
+            publish_if: self.publish_if.clone(),
             delete_ref: self.delete_ref.clone(),
             delete_expect: self.delete_expect.clone(),
             budget: self.budget,

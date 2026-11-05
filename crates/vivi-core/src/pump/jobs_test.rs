@@ -51,10 +51,18 @@ fn enqueue_refuses_a_read_only_job_without_a_start_ref() {
 #[test]
 fn enqueue_is_idempotent_but_rejects_reusing_an_id_for_other_work() {
     let mut store = Store::default();
-    let job = spec("plan-board-1");
+    let mut job = spec("plan-board-1");
+    job.publish_if = vec!["refs/heads/feature/one".into(), "refs/heads/release".into()];
     enqueue(&mut store, job.clone()).unwrap();
-    enqueue(&mut store, job).unwrap();
+    enqueue(&mut store, job.clone()).unwrap();
     assert_eq!(store.jobs.len(), 1);
+    let encoded = serde_json::to_vec(&store.jobs["plan-board-1"]).unwrap();
+    let decoded: PoolJob = serde_json::from_slice(&encoded).unwrap();
+    assert_eq!(decoded.publish_if, job.publish_if);
+
+    let mut changed = spec("plan-board-1");
+    changed.publish_if = vec!["refs/heads/other".into()];
+    assert!(enqueue(&mut store, changed).is_err());
 
     let mut changed = spec("plan-board-1");
     changed.body = String::from("different plan");
@@ -418,6 +426,10 @@ fn pool_command_carries_repository_and_write_context() {
     job.with = vec![String::from("unit/u1-a1")];
     job.model = Some(String::from("model/a"));
     job.allow_default_branch = true;
+    job.publish_if = vec![
+        "refs/heads/feature/one".into(),
+        "refs/heads/release/with space".into(),
+    ];
     job.publish_ref = Some(String::from("refs/heads/next"));
     job.publish_expect = Some(String::from("a".repeat(40)));
     let command = pool_command(&job, "local", "a1b2c3d4");
@@ -433,6 +445,8 @@ fn pool_command_carries_repository_and_write_context() {
     assert!(!command.contains("--read-only"));
     assert!(command.contains("--publish-ref refs/heads/next"));
     assert!(command.contains(&format!("--publish-expect {}", "a".repeat(40))));
+    assert!(command.contains("--publish-if refs/heads/feature/one"));
+    assert!(command.contains("--publish-if 'refs/heads/release/with space'"));
 }
 
 #[test]
