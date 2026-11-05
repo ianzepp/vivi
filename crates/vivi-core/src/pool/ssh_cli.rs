@@ -29,6 +29,10 @@ pub(crate) const PERSIST_SECS: &str = "60";
 /// random suffix while binding).
 const MAX_CONTROL_DIR: usize = 60;
 
+/// How much more of the socket path a shared socket's `%C` name takes than a
+/// private socket's `m`, plus the directory's own `vivi-ssh-<uid>` name.
+const SHARED_NAME_ROOM: usize = 40 + 20;
+
 /// Numbers the socket directories of the runners of one process.
 static NEXT_DIR: AtomicUsize = AtomicUsize::new(0);
 
@@ -160,14 +164,18 @@ pub(crate) fn control_options(control_path: &std::path::Path) -> [String; 6] {
 }
 
 /// The control socket directory every vivi process of this user shares:
-/// `vivi-ssh-<uid>` in the temporary directory (or `/tmp` when that path is
-/// too long for a socket), made mode 0700. None unless it is a real directory
+/// `vivi-ssh-<uid>` in the temporary directory (or `/tmp` when that path
+/// leaves too little room for a socket), made mode 0700. None unless it is a real directory
 /// owned by this user with no access for anyone else: a socket there lets its
 /// user run commands as this user on the remote host.
 #[must_use]
 pub(crate) fn shared_control_dir() -> Option<PathBuf> {
+    // A shared socket is named `%C` (40 hex characters) where a private one
+    // is `m`, so its directory gets that much less room: macOS's per-user
+    // temporary directory is already too long, and there ssh quietly
+    // connects without sharing.
     let mut base = std::env::temp_dir();
-    if base.as_os_str().len() > MAX_CONTROL_DIR {
+    if base.as_os_str().len() > MAX_CONTROL_DIR - SHARED_NAME_ROOM {
         base = PathBuf::from("/tmp");
     }
     // SAFETY: geteuid has no preconditions and cannot fail.

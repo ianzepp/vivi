@@ -116,3 +116,18 @@ fn a_socket_directory_others_can_enter_or_a_symlink_is_never_shared() {
     std::os::unix::fs::symlink(&private, &link).unwrap();
     assert!(!private_to(&link, uid), "a symlink");
 }
+
+/// A Unix socket path is limited to about 104 bytes, and ssh adds a random
+/// suffix of about 17 while it binds. On macOS the per-user temporary
+/// directory is long enough that a `%C` socket there did not fit, and ssh
+/// connected without sharing (seen on the laptop's local pump).
+#[test]
+fn a_shared_socket_path_fits_the_unix_limit() {
+    let dir = shared_control_dir().expect("the shared directory");
+    let socket = dir.join("0123456789abcdef0123456789abcdef01234567");
+    assert!(
+        socket.as_os_str().len() + 17 < 104,
+        "{} is too long for a socket",
+        socket.display()
+    );
+}
