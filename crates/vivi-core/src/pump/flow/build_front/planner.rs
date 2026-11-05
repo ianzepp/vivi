@@ -69,11 +69,12 @@ fn brief(cx: &StartCx<'_>, step: &StepRow) -> Result<String, VivariumError> {
 }
 
 /// The front-matter facts of the need as brief lines: one `done_when:` line
-/// per entry, `target:` and `depends_on:` when set.
+/// per entry, `target:` when set, and `depends_on:` from the effective
+/// prerequisites.
 ///
 /// # Errors
 /// Returns [`VivariumError`] naming the need when its body cannot be read or
-/// is not a valid need letter.
+/// is not a valid need letter, or when its prerequisites cannot be read.
 fn front_lines(cx: &StartCx<'_>, need: &str) -> Result<String, VivariumError> {
     let body = cx.mail.task_body(need)?;
     let envelope = vivi_mail::letter::read::need_of(need, &body)
@@ -87,8 +88,9 @@ fn front_lines(cx: &StartCx<'_>, need: &str) -> Result<String, VivariumError> {
     if let Some(target) = front.target {
         lines.push(format!("target: {target}\n"));
     }
-    if !front.depends_on.is_empty() {
-        lines.push(format!("depends_on: {}\n", front.depends_on.join(", ")));
+    let prerequisites = cx.mail.need_prerequisites(need)?;
+    if !prerequisites.is_empty() {
+        lines.push(format!("depends_on: {}\n", prerequisites.join(", ")));
     }
     Ok(lines.concat())
 }

@@ -2,14 +2,16 @@
 
 use tempfile::{TempDir, tempdir};
 
+use crate::mailspace::SendRequest;
 use crate::mailspace::shipped::PUMP_PLANNER_ROLE;
 use crate::pump::config::PumpConfig;
+use crate::pump::fixture::project;
 use crate::pump::flow::def::{FlowKind, FlowNode, NodeClass};
 use crate::pump::flow::fake_mail::FakeMail;
 use crate::pump::flow::handlers::shipped;
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::load::load;
-use crate::pump::flow::mail::MailWriter;
+use crate::pump::flow::mail::{MailReader, MailWriter, MailspacePort};
 use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
 use crate::pump::flow::step_inputs::POOL_RESULT_MARKER;
 use crate::pump::host::{Ctx, test_ctx};
@@ -137,12 +139,147 @@ fn plan_brief_shows_done_when_target_and_depends_on_above_the_thread() -> R {
     front.depends_on = vec![String::from("a1"), String::from("b2")];
     let body = vivi_mail::letter::fixture::need_body_with(&front, "prose");
     let need = rig.mail.send_step("pump", "pump", "the need", &body, &[])?;
-    rig.run.need = need;
+    rig.run.need = need.clone();
+    rig.mail.set_prerequisites(&need, &["a1", "b2"]);
 
     let spec = start(&rig, "plan")?;
 
     let lines = "done_when: first thing\ndone_when: second thing\ntarget: default\ndepends_on: a1, b2\nthread:";
     assert!(spec.body.contains(lines), "{}", spec.body);
+    Ok(())
+}
+
+#[test]
+fn plan_brief_shows_a_dependency_added_after_the_send() -> R {
+    let mut rig = rig(true, 1)?;
+    let front = vivi_mail::letter::work::NeedFront::new(vec![String::from("it works")]);
+    let body = vivi_mail::letter::fixture::need_body_with(&front, "prose");
+    let need = rig.mail.send_step("pump", "pump", "the need", &body, &[])?;
+    rig.run.need = need.clone();
+    rig.mail.set_prerequisites(&need, &["b2"]);
+
+    let spec = start(&rig, "plan")?;
+
+    assert!(
+        spec.body.contains("depends_on: b2\nthread:"),
+        "{}",
+        spec.body
+    );
+    Ok(())
+}
+
+#[test]
+fn plan_brief_omits_a_root_dependency_removed_after_the_send() -> R {
+    let mut rig = rig(true, 1)?;
+    let mut front = vivi_mail::letter::work::NeedFront::new(vec![String::from("it works")]);
+    front.depends_on = vec![String::from("a1")];
+    let body = vivi_mail::letter::fixture::need_body_with(&front, "prose");
+    let need = rig.mail.send_step("pump", "pump", "the need", &body, &[])?;
+    rig.run.need = need.clone();
+    rig.mail.set_prerequisites(&need, &["b2"]);
+
+    let spec = start(&rig, "plan")?;
+
+    assert!(
+        spec.body.contains("depends_on: b2\nthread:"),
+        "{}",
+        spec.body
+    );
+    assert!(!spec.body.contains("a1"), "{}", spec.body);
+    Ok(())
+}
+
+#[test]
+fn plan_brief_omits_the_dependency_line_when_the_effective_list_is_empty() -> R {
+    let mut rig = rig(true, 1)?;
+    let mut front = vivi_mail::letter::work::NeedFront::new(vec![String::from("it works")]);
+    front.depends_on = vec![String::from("a1")];
+    let body = vivi_mail::letter::fixture::need_body_with(&front, "prose");
+    let need = rig.mail.send_step("pump", "pump", "the need", &body, &[])?;
+    rig.run.need = need;
+
+    let spec = start(&rig, "plan")?;
+
+    assert!(!spec.body.contains("depends_on:"), "{}", spec.body);
+    Ok(())
+}
+
+#[test]
+fn an_invalid_root_need_still_fails_with_effective_prerequisites() -> R {
+    let mut rig = rig(true, 1)?;
+    let need = rig
+        .mail
+        .send_step("pump", "pump", "the need", "Build the widget", &[])?;
+    rig.run.need = need.clone();
+    rig.mail.set_prerequisites(&need, &["a1"]);
+
+    let Err(err) = start(&rig, "plan") else {
+        return Err(VivariumError::Other(String::from("brief did not fail")));
+    };
+
+    assert!(err.to_string().contains("front matter"), "{err}");
+    Ok(())
+}
+
+#[test]
+fn a_real_mailspace_renders_the_effective_dependencies() -> R {
+    let project = project();
+    let dropped = project.need("dropped need");
+    let kept = project.need("kept need");
+    let front = vivi_mail::letter::work::NeedFront {
+        depends_on: vec![dropped.clone()],
+        ..vivi_mail::letter::work::NeedFront::new(vec![String::from("it works")])
+    };
+    let body = vivi_mail::letter::fixture::need_body_with(&front, "prose");
+    let sent = project
+        .mailspace
+        .send(SendRequest {
+            from: "operator".into(),
+            to: vec!["mind".into()],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: String::from("root need"),
+            body,
+            role: "needs".into(),
+            kind: Some("need".into()),
+            reply_to: None,
+        })?
+        .sent;
+    project.mailspace.set_dependencies(
+        "operator",
+        &sent,
+        "need",
+        std::slice::from_ref(&kept),
+        std::slice::from_ref(&dropped),
+    )?;
+    let port = MailspacePort {
+        mailspace: crate::pump::record::PumpMailspace::new(project.mailspace.clone()),
+        pump_identity: "mind".into(),
+    };
+    let def = load(FlowKind::Build)?;
+    let (ctx, _host) = test_ctx(project.root(), PumpConfig::default());
+    let store = PumpStore::open(&project.root().join(DB_FILENAME))?;
+    let run = RunRow {
+        need: sent.clone(),
+        run: 1,
+        flow: "build".into(),
+        flow_version: 2,
+        kind: "build".into(),
+        entry: "plan".into(),
+        state: "live".into(),
+    };
+    let cx = StartCx {
+        ctx: &ctx,
+        store: &store,
+        mail: &port,
+        run: &run,
+        def: &def,
+    };
+
+    let lines = super::front_lines(&cx, &sent)?;
+
+    assert!(lines.contains(&format!("depends_on: {kept}\n")), "{lines}");
+    assert!(!lines.contains(&dropped), "{lines}");
     Ok(())
 }
 
