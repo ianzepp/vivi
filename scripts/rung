@@ -15,7 +15,7 @@ case "${1:-}" in
     ;;
   need)
     cargo fmt --check
-    twice cargo test --lib --quiet
+    twice cargo test --workspace --lib --quiet
     cargo test --test hygiene --quiet
     ;;
   main)
