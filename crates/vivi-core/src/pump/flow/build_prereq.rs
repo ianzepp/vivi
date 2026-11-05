@@ -64,7 +64,6 @@ pub(crate) fn assess<M: MailReader>(
             blockers: Vec::new(),
         });
     };
-    let blockers = read_blockers(ctx, store, mail, need, &record)?;
     if kind != FlowKind::Build {
         store.remove_build_wait(need)?;
         return Ok(Assessment {
@@ -73,6 +72,7 @@ pub(crate) fn assess<M: MailReader>(
             blockers: Vec::new(),
         });
     }
+    let blockers = read_blockers(ctx, store, mail, need, &record)?;
     for blocker in &blockers {
         diagnose(ctx, store, need, &record, blocker)?;
     }

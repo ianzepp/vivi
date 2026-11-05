@@ -264,6 +264,35 @@ fn a_read_error_fails_closed_and_keeps_the_previous_wait() -> R {
 }
 
 #[test]
+fn non_build_kinds_skip_a_failing_prerequisite_read() -> R {
+    for (record_kind, marks, expected) in [
+        ("research", &[][..], FlowKind::Research),
+        ("release", &[][..], FlowKind::Release),
+        ("", &["repair"][..], FlowKind::Repair),
+    ] {
+        let mut rig = rig()?;
+        rig.record(record_kind)?;
+        rig.mail.set_marks(NEED, marks);
+        rig.store.upsert_build_wait(&BuildWait {
+            need: NEED.into(),
+            record: "stale-record".into(),
+            prerequisites: Vec::new(),
+            observed_at: 1,
+        })?;
+
+        let got = assess(&rig.ctx, &rig.store, &Failing(&rig.mail), NEED)?;
+        assert_eq!(got.kind, expected);
+        assert!(got.eligible);
+        assert!(got.blockers.is_empty());
+        assert!(rig.store.build_waits()?.is_empty());
+        assert_eq!(rig.count(PREREQ_HELD)?, 0);
+        assert_eq!(rig.count(PREREQ_UNLANDED)?, 0);
+        assert_eq!(rig.count(PREREQ_UNREADABLE)?, 0);
+    }
+    Ok(())
+}
+
+#[test]
 fn the_record_kind_wins_over_the_marks() -> R {
     let mut rig = rig()?;
     rig.record("build")?;
