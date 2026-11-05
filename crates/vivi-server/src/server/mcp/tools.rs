@@ -24,6 +24,10 @@ use super::letters::{
 };
 use super::live::string_list;
 
+mod addressing;
+
+pub(in crate::server::mcp) use addressing::parse_to;
+
 const LIST_DEFAULT: usize = 50;
 const LIST_MAX: usize = 100;
 const THREAD_DEFAULT: usize = 20;
@@ -843,41 +847,6 @@ fn save_memo(
         "message_id": traveling_id,
         "subject": subject,
     }))
-}
-
-pub(super) fn parse_to(arguments: &Value) -> Result<Vec<String>, ToolError> {
-    match arguments.get("to") {
-        Some(Value::String(raw)) => {
-            let list: Vec<String> = raw
-                .split(',')
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(str::to_owned)
-                .collect();
-            if list.is_empty() {
-                Err(ToolError::new("to must name at least one address"))
-            } else {
-                Ok(list)
-            }
-        }
-        Some(Value::Array(items)) => {
-            let list: Result<Vec<_>, _> = items
-                .iter()
-                .map(|item| {
-                    item.as_str()
-                        .map(str::to_owned)
-                        .ok_or_else(|| ToolError::new("to must be strings"))
-                })
-                .collect();
-            let list = list?;
-            if list.is_empty() {
-                Err(ToolError::new("to must name at least one address"))
-            } else {
-                Ok(list)
-            }
-        }
-        _ => Err(ToolError::new("to is required")),
-    }
 }
 
 pub(super) fn parse_depends(arguments: &Value) -> Result<Vec<String>, ToolError> {
