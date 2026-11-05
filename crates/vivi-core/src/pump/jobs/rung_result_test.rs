@@ -175,6 +175,12 @@ fn an_unsectioned_reply_is_still_read_whole() {
     let ids: Vec<String> = result.failing.into_iter().collect();
     assert_eq!(ids, ["alpha::a::one"]);
     assert!(result.tail.contains("test a::one ... FAILED"));
+    // The unsectioned reply is read whole for the excerpt too.
+    assert_eq!(result.excerpt.mode, ExcerptMode::Markers);
+    assert_eq!(result.excerpt.source_lines, 2);
+    assert_eq!(result.excerpt.kept_lines, 2);
+    assert_eq!(result.excerpt.omitted_lines, 0);
+    assert!(!result.excerpt.truncated);
 }
 
 #[test]
@@ -311,6 +317,109 @@ fn facts_and_runner_log_never_reach_the_failing_set_or_tail() {
     let result = parse(&job(JobStatus::Finished, Some(&only_log)));
     assert!(result.failing.is_empty());
     assert_eq!(result.tail, "");
+}
+
+#[test]
+fn error_above_passing_tail() {
+    // A tracked-file-size error with its offender context, followed by
+    // hundreds of unrelated passing lines: the error survives in the excerpt
+    // even though the 60-line tail holds nothing but passing output.
+    let error_line = "error: crates/vivi-core/src/pump/flow.rs has 1200 lines, budget is 1000";
+    let offender_line = "offender crates/vivi-core/src/pump/flow.rs";
+    let mut receipt: Vec<String> = vec![
+        "hygiene scan".into(),
+        error_line.into(),
+        "hygiene scan continued".into(),
+        offender_line.into(),
+        "hygiene scan done".into(),
+    ];
+    receipt.extend((0..300).map(|i| format!("test pump::m::case{i} ... ok")));
+    let text = posted("101", &receipt.join("\n"), "", "");
+    let result = parse(&job(JobStatus::Finished, Some(&text)));
+    assert!(!result.pass);
+    // Canonical ids unchanged: passing lines name no failing test.
+    assert!(result.failing.is_empty());
+    // The tail keeps only the last 60 passing lines.
+    assert!(!result.tail.contains("budget"));
+    assert!(!result.tail.contains("offender"));
+    assert_eq!(result.tail.lines().count(), TAIL_LINES);
+    assert_eq!(
+        result.tail.lines().last(),
+        Some("test pump::m::case299 ... ok")
+    );
+    // The excerpt keeps the merged error and offender windows whole.
+    let excerpt = &result.excerpt;
+    assert_eq!(excerpt.mode, ExcerptMode::Markers);
+    assert_eq!(excerpt.source_lines, receipt.len());
+    assert_eq!(excerpt.kept_lines, 7);
+    assert_eq!(excerpt.omitted_lines, receipt.len() - 7);
+    assert!(!excerpt.truncated);
+    let lines = lines_of(excerpt);
+    assert_eq!(lines.len(), 7);
+    assert_eq!(lines[0], "hygiene scan");
+    assert_eq!(lines[1], error_line);
+    assert_eq!(lines[3], offender_line);
+    assert_eq!(lines[4], "hygiene scan done");
+    assert_eq!(lines.last(), Some(&"test pump::m::case1 ... ok"));
+}
+
+#[test]
+fn selected_sections_only() {
+    // Fact output and the runner log never contribute excerpt evidence; the
+    // receipt and stderr sections do.
+    let text = posted_fact(
+        "101",
+        "cargo nextest run",
+        "error: phony fact failure\noffender from-facts",
+        "test a::one ... FAILED\n",
+        "calm stderr line\n",
+        "runner error: log failure\n",
+    );
+    let result = parse(&job(JobStatus::Finished, Some(&text)));
+    let excerpt = &result.excerpt;
+    assert_eq!(excerpt.mode, ExcerptMode::Markers);
+    assert_eq!(count_line(excerpt, "test a::one ... FAILED"), 1);
+    assert!(!excerpt.text.contains("phony"));
+    assert!(!excerpt.text.contains("from-facts"));
+    assert!(!excerpt.text.contains("runner error"));
+    assert_eq!(result.failing.into_iter().collect::<Vec<_>>(), ["a::one"]);
+    assert!(result.tail.contains("test a::one ... FAILED"));
+
+    // A sectioned reply whose only sections are excluded selects nothing.
+    let only_log = posted("101", "", "", "runner error: log failure\n");
+    let result = parse(&job(JobStatus::Finished, Some(&only_log)));
+    let excerpt = &result.excerpt;
+    assert_eq!(excerpt.mode, ExcerptMode::Empty);
+    assert_eq!(excerpt.text, "");
+    assert_eq!(excerpt.source_lines, 0);
+    assert_eq!(excerpt.kept_lines, 0);
+    assert_eq!(excerpt.omitted_lines, 0);
+    assert!(!excerpt.truncated);
+    assert!(result.failing.is_empty());
+    assert_eq!(result.tail, "");
+
+    // Unknown and backward headings inside the receipt or stderr stay
+    // content: the selection is not truncated at them.
+    let receipt = "alpha-receipt\n\n--- document note\nbeta-after-unknown\n\n--- receipt\ngamma-after-backward\n";
+    let stderr = "delta-stderr\n\n--- stderr tail\nepsilon-after-backward\n";
+    let text = posted("1", receipt, stderr, "zeta-log\n");
+    let result = parse(&job(JobStatus::Finished, Some(&text)));
+    let excerpt = &result.excerpt;
+    for line in [
+        "alpha-receipt",
+        "beta-after-unknown",
+        "gamma-after-backward",
+        "delta-stderr",
+        "epsilon-after-backward",
+    ] {
+        assert!(excerpt.text.contains(line), "excerpt lost {line}");
+    }
+    assert!(!excerpt.text.contains("zeta-log"));
+    assert_eq!(excerpt.kept_lines, excerpt.source_lines);
+    assert_eq!(excerpt.omitted_lines, 0);
+    assert!(!excerpt.truncated);
+    assert!(result.failing.is_empty());
+    assert!(result.tail.contains("gamma-after-backward"));
 }
 
 fn lines_of(excerpt: &FailureExcerpt) -> Vec<&str> {

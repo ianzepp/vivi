@@ -24,6 +24,12 @@ pub struct RungResult {
     /// the posted reply, capped by lines and bytes. A reply with no sections
     /// is tailed whole.
     pub tail: String,
+    /// A bounded excerpt of the failure evidence, selected whole from the
+    /// complete collected reply before any limit: context windows around
+    /// failure markers in the receipt and stderr sections, or the final
+    /// lines of those sections when no marker matches. Evidence for a
+    /// reader; never a parse input.
+    pub excerpt: FailureExcerpt,
     /// Canonical ids of the tests the output named as failing, read from
     /// cargo's own output and never from model text: `<binary>::<test path>`,
     /// or just `<test path>` when the binary is unknown. The binary is the
@@ -55,6 +61,7 @@ pub fn parse(job: &PoolJob) -> RungResult {
         pass: exit == Some(0),
         exit,
         tail,
+        excerpt: failure_excerpt(receipt),
         failing: failing_ids(&text),
     }
 }
