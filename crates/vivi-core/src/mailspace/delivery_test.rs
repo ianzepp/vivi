@@ -808,3 +808,50 @@ fn a_cc_only_send_delivers_to_the_cc_and_keeps_the_author_copy() {
         "{events:?}"
     );
 }
+
+#[test]
+fn raw_unaddressed_letter_uses_local_author_copy() {
+    let (_tmp, mailspace) = space(false);
+    let domain = mailspace.address_domain();
+    let raw = format!(
+        "From: mind@{domain}\r\nSubject: raw\r\nMessage-ID: <raw@audit.local>\r\n\
+         Date: Sun, 11 Oct 2026 12:00:00 +0000\r\n\r\nbody\r\n"
+    );
+
+    let result = mailspace.deliver_raw(raw.as_bytes(), "inbox").unwrap();
+
+    assert!(result.delivered.is_empty(), "{result:?}");
+    assert!(result.remote.is_empty(), "{result:?}");
+    let handle = result.sent.expect("one author copy");
+    let author_rows = rows(&mailspace);
+    assert_eq!(author_rows.len(), 1, "one author copy: {author_rows:?}");
+    assert_eq!(author_rows[0].handle, handle);
+    assert_eq!(author_rows[0].local_role, "sent");
+    assert_eq!(author_rows[0].account, "mind");
+    assert!(author_rows[0].read_state, "the author's own copy is read");
+    assert_eq!(
+        stored_letter(&mailspace, &handle),
+        raw,
+        "kept byte for byte"
+    );
+
+    let storage = mailspace.storage().unwrap();
+    let id = storage.resolve_message_token(&handle).unwrap();
+    let events = storage.list_mailspace_events(&id).unwrap();
+    assert!(
+        events
+            .iter()
+            .any(|event| event.event_type == "sent_copy_created"),
+        "the author storage event stays: {events:?}"
+    );
+    assert!(
+        events.iter().all(|event| event.event_type != "delivered"),
+        "nobody was delivered to: {events:?}"
+    );
+
+    let (_tmp2, guest) = space(false);
+    let stranger = raw.replace(&format!("mind@{domain}"), "stranger@example.com");
+    let error = guest.deliver_raw(stranger.as_bytes(), "inbox").unwrap_err();
+    assert!(error.to_string().contains("needs a From"), "{error}");
+    assert!(rows(&guest).is_empty());
+}
