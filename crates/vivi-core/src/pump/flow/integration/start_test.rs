@@ -16,6 +16,8 @@ use crate::pump::jobs::JobSpec;
 use crate::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
 use crate::routing::{RoleRouting, RoutedRole};
 use vivi_error::VivariumError;
+use vivi_mail::letter::review::{Merge, MergeAnswer};
+use vivi_mail::letter::roles::{CheckResult, RoleKind, parse_role_reply};
 
 const NEED: &str = "n1";
 const MAIN: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -189,6 +191,42 @@ fn sync_asks_the_merge_role_to_merge_main_into_the_need_branch() {
     let tail = branch.strip_prefix("pump/merge-main/").unwrap();
     assert!(!tail.contains('/'), "{branch}");
     assert!(tail.ends_with("-sync"), "{branch}");
+}
+
+#[test]
+fn sync_appends_the_shared_merge_footer_after_context_and_its_example_parses() {
+    let rig = rig(Some(BASE)).unwrap();
+    let spec = start(&rig, &SyncStart, "sync1").unwrap();
+    let footer = crate::pump::envelope::format::role(RoleKind::Merge);
+    assert!(spec.body.ends_with(&footer), "{}", spec.body);
+
+    let contextual = spec.body.strip_suffix(&footer).unwrap();
+    assert!(
+        contextual.contains(&format!("Merge main ({MAIN})")),
+        "{contextual}"
+    );
+    assert!(
+        contextual.contains(&format!("need branch at {BASE}")),
+        "{contextual}"
+    );
+    assert!(contextual.contains("resolve any conflicts"), "{contextual}");
+    assert!(
+        contextual.contains("publish the result to the need branch"),
+        "{contextual}"
+    );
+
+    let example = footer
+        .split_once("Example (illustrative only):\n")
+        .expect("shared footer has an example")
+        .1;
+    let parsed = parse_role_reply::<Merge>(example).expect("shared merge example parses");
+    assert_eq!(parsed.front.answer, MergeAnswer::Conflict);
+    assert_eq!(parsed.front.conflicts, vec!["crates/example/src/lib.rs"]);
+    assert!(!parsed.front.design_change);
+    assert_eq!(parsed.front.check.len(), 1);
+    assert_eq!(parsed.front.check[0].cmd, "illustrative check not run");
+    assert_eq!(parsed.front.check[0].result, CheckResult::Skipped);
+    assert_eq!(parsed.front.check[0].seconds, 0.0);
 }
 
 #[test]
