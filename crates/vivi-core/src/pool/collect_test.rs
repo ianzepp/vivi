@@ -249,6 +249,17 @@ fn collected_from_files_keeps_the_head_of_the_receipt_and_the_tails_of_the_logs(
     let got = collected_from_files(&files).unwrap();
     assert_eq!(got.receipt.len(), RECEIPT_BYTES + 1);
     assert_eq!(got.stderr.len(), TAIL_BYTES + 1);
+    assert_eq!(got.result.get("capture_receipt_complete"), "false");
+    assert_eq!(
+        got.result.get("capture_receipt_original_bytes"),
+        (RECEIPT_BYTES + 10).to_string()
+    );
+    assert_eq!(
+        got.result.get("capture_receipt_captured_bytes"),
+        RECEIPT_BYTES.to_string()
+    );
+    assert_eq!(got.result.get("capture_stderr_complete"), "false");
+    assert_eq!(got.result.get("capture_log_complete"), "unknown");
     assert!(got.stderr.ends_with("END\n"));
     assert!(collected_from_files(&BTreeMap::new()).is_none());
     files.insert(RESULT_PATHS[0].to_string(), b"state=done\n".to_vec());
@@ -258,6 +269,62 @@ fn collected_from_files_keeps_the_head_of_the_receipt_and_the_tails_of_the_logs(
     );
 }
 
+#[test]
+fn live_script_metadata_matches_direct_file_capture() {
+    let output = format!(
+        "@@vivi-pool result\njob=j\ncapture_receipt_original_bytes=3\ncapture_receipt_captured_bytes=3\ncapture_receipt_complete=true\ncapture_stderr_original_bytes=5\ncapture_stderr_captured_bytes=5\ncapture_stderr_complete=true\ncapture_log_original_bytes=3\ncapture_log_captured_bytes=3\ncapture_log_complete=true\n@@vivi-pool receipt\nabc\n@@vivi-pool stderr\nerror\n@@vivi-pool log\nlog\n"
+    );
+    let live = parse_collected(&output).unwrap();
+    let files = BTreeMap::from([
+        (RESULT_PATHS[0].to_string(), b"job=j\n".to_vec()),
+        (RESULT_PATHS[1].to_string(), b"abc".to_vec()),
+        (RESULT_PATHS[2].to_string(), b"error".to_vec()),
+        (RESULT_PATHS[3].to_string(), b"log".to_vec()),
+    ]);
+    let direct = collected_from_files(&files).unwrap();
+    for name in ["receipt", "stderr", "log"] {
+        for field in ["original_bytes", "captured_bytes", "complete"] {
+            let key = format!("capture_{name}_{field}");
+            assert_eq!(live.result.get(&key), direct.result.get(&key), "{key}");
+        }
+    }
+}
+
+#[test]
+fn capture_completeness_requires_consistent_sizes_and_entire_stream_fit() {
+    let result = JobResult::parse(
+        "capture_receipt_original_bytes=4\ncapture_receipt_captured_bytes=4\ncapture_receipt_complete=true\n",
+    );
+    assert!(
+        result
+            .summary()
+            .contains("runner capture receipt: 4/4 bytes complete")
+    );
+    for malformed in [
+        "capture_receipt_original_bytes=x\\ncapture_receipt_captured_bytes=4\\ncapture_receipt_complete=true",
+        "capture_receipt_original_bytes=5\\ncapture_receipt_captured_bytes=4\\ncapture_receipt_complete=true",
+        "capture_receipt_original_bytes=4\\ncapture_receipt_captured_bytes=3\\ncapture_receipt_complete=true",
+        "capture_receipt_original_bytes=4\\ncapture_receipt_captured_bytes=4\\ncapture_receipt_complete=maybe",
+    ] {
+        let parsed = JobResult::parse(&malformed.replace("\\n", "\n"));
+        assert!(parsed.summary().contains("runner capture receipt: unknown"));
+    }
+    let legacy = JobResult::parse("agent_out_state=complete\\nagent_out_bytes=3\\n");
+    assert!(legacy.summary().contains("runner capture receipt: unknown"));
+}
+
+#[test]
+fn capture_limits_include_exact_boundary_and_report_overflow() {
+    let mut files = BTreeMap::from([(RESULT_PATHS[0].into(), b"job=j\n".to_vec())]);
+    files.insert(RESULT_PATHS[1].into(), vec![b'a'; RECEIPT_BYTES]);
+    files.insert(RESULT_PATHS[2].into(), vec![b'e'; TAIL_BYTES]);
+    let exact = collected_from_files(&files).unwrap();
+    assert_eq!(exact.result.get("capture_receipt_complete"), "true");
+    assert_eq!(exact.result.get("capture_stderr_complete"), "true");
+    files.get_mut(RESULT_PATHS[1]).unwrap().push(b'b');
+    let overflow = collected_from_files(&files).unwrap();
+    assert_eq!(overflow.result.get("capture_receipt_complete"), "false");
+}
 #[test]
 fn a_freshly_stopped_slot_is_given_time_to_start() {
     let fake = fake_with("stopped", "");

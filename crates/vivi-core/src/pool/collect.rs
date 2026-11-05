@@ -41,8 +41,24 @@ const SECTION_LOG: &str = "@@vivi-pool log";
 pub const COLLECT_SCRIPT: &str = r#"J="${WORK:-/work}/job"
 [ -f "$J/result" ] || exit 0
 echo '@@vivi-pool result'; cat "$J/result"
+capture_meta() {
+  name="$1" file="$2" limit="$3"
+  if [ -r "$J/$file" ] && size=$(wc -c < "$J/$file"); then
+    size=${size//[[:space:]]/}
+    case "$size" in ''|*[!0-9]*) echo "capture_${name}_complete=unknown"; return ;; esac
+    captured=$size
+    [ "$captured" -le "$limit" ] || captured=$limit
+    complete=false; [ "$captured" -eq "$size" ] && complete=true
+    printf 'capture_%s_original_bytes=%s\ncapture_%s_captured_bytes=%s\ncapture_%s_complete=%s\n' "$name" "$size" "$name" "$captured" "$name" "$complete"
+  else
+    echo "capture_${name}_complete=unknown"
+  fi
+}
+capture_meta receipt agent.out 262144
 echo '@@vivi-pool receipt'; head -c 262144 "$J/agent.out" 2>/dev/null; echo
+capture_meta stderr agent.err 4096
 echo '@@vivi-pool stderr'; tail -c 4096 "$J/agent.err" 2>/dev/null; echo
+capture_meta log run.log 4096
 echo '@@vivi-pool log'; tail -c 4096 "$J/run.log" 2>/dev/null; echo
 "#;
 
@@ -255,9 +271,60 @@ impl JobResult {
                 self.get("publish_sha")
             ));
         }
+        append_capture_summary(&mut summary, self);
         append_runner_guards(&mut summary, self);
         summary
     }
+}
+
+fn append_capture_summary(summary: &mut String, result: &JobResult) {
+    for name in ["receipt", "stderr", "log"] {
+        let original_key = format!("capture_{name}_original_bytes");
+        let captured_key = format!("capture_{name}_captured_bytes");
+        let complete_key = format!("capture_{name}_complete");
+        let description = capture_description(
+            name,
+            result.fields.get(&original_key),
+            result.fields.get(&captured_key),
+            result.fields.get(&complete_key),
+        );
+        summary.push_str(&format!("\nrunner capture {name}: {description}"));
+    }
+}
+
+fn capture_description(
+    name: &str,
+    original: Option<&String>,
+    captured: Option<&String>,
+    complete: Option<&String>,
+) -> String {
+    let (Some(original), Some(captured), Some(complete)) = (original, captured, complete) else {
+        return "unknown".into();
+    };
+    let (Ok(original), Ok(captured)) = (original.parse::<u64>(), captured.parse::<u64>()) else {
+        return "unknown".into();
+    };
+    let expected = if original == captured {
+        "true"
+    } else {
+        "false"
+    };
+    let limit = if name == "receipt" {
+        RECEIPT_BYTES as u64
+    } else {
+        TAIL_BYTES as u64
+    };
+    if captured != original.min(limit) || complete != expected {
+        return "unknown".into();
+    }
+    format!(
+        "{captured}/{original} bytes {}",
+        if complete == "true" {
+            "complete"
+        } else {
+            "truncated"
+        }
+    )
 }
 
 fn append_runner_guards(summary: &mut String, result: &JobResult) {
@@ -339,11 +406,30 @@ pub fn parse_collected(output: &str) -> Option<Collected> {
 #[must_use]
 pub fn collected_from_files(files: &BTreeMap<String, Vec<u8>>) -> Option<Collected> {
     let bytes_of = |path: &str| files.get(path).map_or(&[][..], Vec::as_slice);
-    let result = JobResult::parse(&text_of(bytes_of(RESULT_PATHS[0])));
+    let mut result = JobResult::parse(&text_of(bytes_of(RESULT_PATHS[0])));
     if result.get("job").is_empty() {
         return None;
     }
-    let receipt = bytes_of(RESULT_PATHS[1]);
+    let receipt_bytes = bytes_of(RESULT_PATHS[1]);
+    add_capture_metadata(
+        &mut result,
+        "receipt",
+        files.get(RESULT_PATHS[1]).map(Vec::as_slice),
+        RECEIPT_BYTES,
+    );
+    add_capture_metadata(
+        &mut result,
+        "stderr",
+        files.get(RESULT_PATHS[2]).map(Vec::as_slice),
+        TAIL_BYTES,
+    );
+    add_capture_metadata(
+        &mut result,
+        "log",
+        files.get(RESULT_PATHS[3]).map(Vec::as_slice),
+        TAIL_BYTES,
+    );
+    let receipt = receipt_bytes;
     let tail = |path: &str| {
         let bytes = bytes_of(path);
         text_of(&bytes[bytes.len().saturating_sub(TAIL_BYTES)..])
@@ -354,6 +440,28 @@ pub fn collected_from_files(files: &BTreeMap<String, Vec<u8>>) -> Option<Collect
         stderr: tail(RESULT_PATHS[2]),
         log: tail(RESULT_PATHS[3]),
     })
+}
+
+fn add_capture_metadata(result: &mut JobResult, name: &str, original: Option<&[u8]>, limit: usize) {
+    let Some(original) = original else {
+        result
+            .fields
+            .insert(format!("capture_{name}_complete"), "unknown".into());
+        return;
+    };
+    let captured = original.len().min(limit);
+    result.fields.insert(
+        format!("capture_{name}_original_bytes"),
+        original.len().to_string(),
+    );
+    result.fields.insert(
+        format!("capture_{name}_captured_bytes"),
+        captured.to_string(),
+    );
+    result.fields.insert(
+        format!("capture_{name}_complete"),
+        (original.len() <= limit).to_string(),
+    );
 }
 
 fn text_of(bytes: &[u8]) -> String {
