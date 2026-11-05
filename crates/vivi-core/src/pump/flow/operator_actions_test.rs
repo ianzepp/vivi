@@ -13,7 +13,7 @@ use crate::pump::flow::advance::start::start;
 use crate::pump::flow::fake_mail::{Call, FakeMail};
 use crate::pump::flow::handlers::Registry;
 use crate::pump::flow::index::{StepJobRow, StepRow, StepState};
-use crate::pump::flow::mail::MailWriter;
+use crate::pump::flow::mail::{MailReader, MailWriter};
 use crate::pump::host::{Ctx, FakeHost};
 use crate::pump::jobs::{JobSpec, JobStatus, JobStore, PoolJob, dispatch_pending, enqueue};
 use crate::pump::store::{DB_FILENAME, PumpStore};
@@ -579,5 +579,61 @@ fn a_blocked_replan_waits_and_raises_no_refusal() -> R {
     );
     assert_eq!(runs[0].state, "superseded");
     assert_eq!(rig.exceptions(), alarms, "the queue raises nothing new");
+    Ok(())
+}
+
+/// A build parked `restarting` with one durable intent and a queued wait.
+fn defer_restart(rig: &mut Rig) -> R {
+    rig.store.set_restart_entry(&rig.need, 1, "plan")?;
+    rig.store.set_run_state(&rig.need, 1, "restarting")?;
+    rig.mail.set_prerequisites(&rig.need, &["dep"]);
+    crate::pump::flow::build_prereq::assess(&rig.ctx, &rig.store, &rig.mail, &rig.need)?;
+    assert_eq!(rig.store.build_waits()?.len(), 1, "the wait is queued");
+    Ok(())
+}
+
+fn with_restarts(rig: &mut Rig) {
+    let mut registry = Registry::new();
+    register(&mut registry);
+    crate::pump::flow::advance::restart::register(&mut registry);
+    rig.registry = registry;
+}
+
+#[test]
+fn a_withdraw_during_deferral_withdraws_the_parent_and_drops_its_wait() -> R {
+    let mut rig = rig()?;
+    defer_restart(&mut rig)?;
+    with_restarts(&mut rig);
+    let id = rig.post(&PumpActionRequest::withdraw("stop"))?;
+
+    rig.phase()?;
+
+    assert!(rig.applied(&id)?);
+    assert!(!rig.exceptions().contains(ACTION_REFUSED));
+    let runs = rig.store.runs_of(&rig.need)?;
+    assert_eq!(runs.len(), 1, "no successor is created");
+    assert_eq!(runs[0].state, "withdrawn");
+    let sentinel = rig
+        .store
+        .steps_of(&rig.need, 1)?
+        .into_iter()
+        .filter(|row| row.node == "sentinel")
+        .map(|row| row.task)
+        .next()
+        .expect("sentinel row");
+    assert_eq!(
+        rig.mail.task_state(&sentinel)?.verdict.as_deref(),
+        Some("withdrawn"),
+        "the sentinel closes last with the withdrawal verdict"
+    );
+    assert!(
+        rig.store.build_waits()?.is_empty(),
+        "no stale wait projection is left"
+    );
+    assert_eq!(withdraw_closes(&rig), 1);
+
+    rig.phase()?;
+    assert_eq!(rig.store.runs_of(&rig.need)?.len(), 1);
+    assert_eq!(withdraw_closes(&rig), 1, "the action runs once");
     Ok(())
 }

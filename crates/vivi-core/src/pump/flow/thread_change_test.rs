@@ -2,19 +2,23 @@
 //! member after the run's start post restarts a live or parked run at `plan`,
 //! raises once in a locked run, and a reply by the pump changes nothing.
 
+use std::collections::BTreeMap;
 use std::thread::sleep;
 use std::time::Duration;
 
 use super::{THREAD_CHANGED, THREAD_CHECK_FAILED, ThreadChange};
+use crate::mailspace::SendRequest;
 use crate::pump::fixture::{Project, project};
 use crate::pump::flow::advance::start::start;
-use crate::pump::flow::handlers::TickPhase;
+use crate::pump::flow::handlers::{Registry, TickPhase};
 use crate::pump::flow::index::{StepRow, StepState};
-use crate::pump::flow::mail::{MailWriter, MailspacePort};
+use crate::pump::flow::mail::{MailReader, MailWriter, MailspacePort};
 use crate::pump::host::Ctx;
+use crate::pump::jobs::{JobStore, PoolJob};
 use crate::pump::store::{DB_FILENAME, PumpStore};
 use vivi_error::VivariumError;
-use vivi_mail::letter::fixture::{record_body, step_body};
+use vivi_mail::letter::fixture::{need_body_with, record_body, step_body};
+use vivi_mail::letter::work::NeedFront;
 
 type R = Result<(), VivariumError>;
 
@@ -28,11 +32,58 @@ struct Rig {
     need: String,
 }
 
+#[derive(Default)]
+struct Jobs {
+    jobs: BTreeMap<String, PoolJob>,
+}
+
+impl JobStore for Jobs {
+    fn jobs(&self) -> &BTreeMap<String, PoolJob> {
+        &self.jobs
+    }
+
+    fn jobs_mut(&mut self) -> &mut BTreeMap<String, PoolJob> {
+        &mut self.jobs
+    }
+}
+
 /// A need with an open pump record and a build run started at `plan`.
 fn rig() -> Result<Rig, VivariumError> {
     let p = project();
-    let ctx = p.pump_ctx();
     let need = p.need("change me");
+    rig_for(p, need)
+}
+
+/// A need that depends on `deps`, with the same open record and run.
+fn rig_with_deps(deps: &[&str]) -> Result<Rig, VivariumError> {
+    let p = project();
+    let handles: Vec<String> = deps.iter().map(|subject| p.need(subject)).collect();
+    let front = NeedFront {
+        depends_on: handles,
+        ..NeedFront::new(vec![String::from("it works")])
+    };
+    let need = p
+        .mailspace
+        .send(SendRequest {
+            from: "operator".into(),
+            to: vec![PUMP.into()],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: "change me".into(),
+            body: need_body_with(&front, ""),
+            role: "needs".into(),
+            kind: Some("need".into()),
+            reply_to: None,
+        })
+        .map_err(|error| VivariumError::Other(error.to_string()))?
+        .delivered
+        .remove(0)
+        .handle;
+    rig_for(p, need)
+}
+
+fn rig_for(p: Project, need: String) -> Result<Rig, VivariumError> {
+    let ctx = p.pump_ctx();
     let store = PumpStore::open(&ctx.home.join(DB_FILENAME))?;
     let mut port = MailspacePort {
         mailspace: crate::pump::record::PumpMailspace::new(p.mailspace.clone()),
@@ -97,6 +148,15 @@ impl Rig {
 
     fn exceptions(&self) -> String {
         std::fs::read_to_string(self.ctx.home.join("exceptions.txt")).unwrap_or_default()
+    }
+
+    fn sentinel(&self, run: u32) -> Result<String, VivariumError> {
+        self.store
+            .steps_of(&self.need, run)?
+            .into_iter()
+            .find(|row| row.node == "sentinel")
+            .map(|row| row.task)
+            .ok_or_else(|| VivariumError::Other(format!("no sentinel in r{run}")))
     }
 }
 
@@ -219,5 +279,72 @@ fn a_valid_run_raises_no_check_failure() -> R {
     rig.phase()?;
     assert_eq!(rig.runs()?, [(1, "plan".into(), "live".into())]);
     assert_eq!(rig.exceptions().matches(THREAD_CHECK_FAILED).count(), 0);
+    Ok(())
+}
+
+#[test]
+fn a_parked_thread_change_keeps_plan_and_needs_no_second_reply() -> R {
+    let mut rig = rig_with_deps(&["prerequisite"])?;
+    let dep = rig.port.need_prerequisites(&rig.need)?.remove(0);
+    let old_sentinel = rig.sentinel(1)?;
+    rig.reply_as("operator")?;
+
+    rig.phase()?;
+
+    assert_eq!(rig.runs()?, [(1, "plan".into(), "restarting".into())]);
+    assert_eq!(
+        rig.store.restart_entry(&rig.need, 1)?.as_deref(),
+        Some("plan"),
+        "the accepted change keeps one requested entry"
+    );
+    assert_eq!(
+        rig.port.task_state(&old_sentinel)?.status,
+        crate::pump::flow::mail::TaskStatus::Open,
+        "the old sentinel waits for the new binding"
+    );
+    assert_eq!(rig.store.build_waits()?.len(), 1, "the blocker is queued");
+    assert_eq!(rig.exceptions(), "");
+
+    // No second reply and no second phase pass starts anything while blocked.
+    rig.phase()?;
+    assert_eq!(rig.runs()?, [(1, "plan".into(), "restarting".into())]);
+
+    let reopened = PumpStore::open(&rig.ctx.home.join(DB_FILENAME))?;
+    assert_eq!(
+        reopened.restart_entry(&rig.need, 1)?.as_deref(),
+        Some("plan"),
+        "the requested entry survives a reopened store"
+    );
+
+    // The prerequisite lands: the first eligible admission starts exactly one
+    // successor at the saved entry, with no second operator reply.
+    MailWriter::close_need(&mut rig.port, &dep, "landed")?;
+    let mut jobs = Jobs::default();
+    let mut registry = Registry::new();
+    crate::pump::flow::intake::register(&mut registry);
+    crate::pump::flow::advance::restart::register(&mut registry);
+    crate::pump::flow::tick::tick_with(&rig.ctx, &mut jobs, &reopened, &mut rig.port, &registry)?;
+
+    assert_eq!(
+        rig.runs()?,
+        [
+            (1, "plan".into(), "superseded".into()),
+            (2, "plan".into(), "live".into())
+        ],
+        "exactly one successor at plan"
+    );
+    let new_sentinel = rig.sentinel(2)?;
+    assert_eq!(
+        rig.port.task_state(&old_sentinel)?.verdict.as_deref(),
+        Some("superseded")
+    );
+    assert_eq!(
+        rig.port.task_state(&new_sentinel)?.status,
+        crate::pump::flow::mail::TaskStatus::Open
+    );
+    assert!(rig.store.build_waits()?.is_empty());
+
+    rig.phase()?;
+    assert_eq!(rig.runs()?.len(), 2, "the old reply never restarts again");
     Ok(())
 }
