@@ -8,6 +8,7 @@ use crate::pump::flow::index::StepRow;
 use crate::pump::flow::need_branch;
 use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler, role_job};
 use crate::pump::flow::repair::{self, RepairRecord};
+use crate::pump::flow::repair_collect::context;
 use crate::pump::flow::verify::remote_tip;
 use crate::pump::jobs::JobStore;
 use crate::pump::store::NeedBranchRow;
@@ -102,9 +103,16 @@ fn brief(
     budget_secs: u64,
     attempt: u32,
 ) -> Result<String, VivariumError> {
-    let tested = rec.tested.as_deref().unwrap_or("unknown");
+    let tested = rec.tested.as_deref().unwrap_or("none (unavailable)");
+    // The record's prose is the historical evidence; an empty body is named
+    // unavailable, never filled in from the current run.
+    let context = if rec.context.trim().is_empty() {
+        "none (unavailable)"
+    } else {
+        rec.context.as_str()
+    };
     let mut text = format!(
-        "Repair need: {need}\nTarget: {target}\nTested tip: {tested}\n\
+        "Repair need: {need}\nTarget: {target}\nRecord tested tip: {tested}\n\
          Current main tip: {main_tip}\nPublish to branch: {name}\n\n\
          Failing output:\n{context}\n\n\
          Run the failing tests first.\n\
@@ -113,7 +121,6 @@ fn brief(
          Reply with the repairer envelope (answer built or failed).\n",
         need = cx.run.need,
         target = rec.target,
-        context = rec.context,
         budget_secs = budget_secs,
     );
     if attempt >= 2 {
@@ -153,7 +160,7 @@ fn prior_attempt(cx: &StartCx<'_>) -> Result<String, VivariumError> {
         Some(facts) => text.push_str(&format!("Facts: {}\n", repair::facts_text(&facts))),
         None => text.push_str("Attempt 1 published nothing.\n"),
     }
-    if let Some(rung) = first.iter().find(|s| s.node == repair::rung_node(1)) {
+    if let Some(rung) = first.iter().rev().find(|s| s.node == repair::rung_node(1)) {
         let notes = cx
             .mail
             .notes_from(&rung.task, NoteWord::RepairRung, &cx.ctx.cfg.reply_from)?;
@@ -161,7 +168,32 @@ fn prior_attempt(cx: &StartCx<'_>) -> Result<String, VivariumError> {
             text.push_str(&format!("Rung verdict: {}\n", note.prose.trim()));
         }
     }
+    match stored_account(cx, &steps)? {
+        Some(account) => text.push_str(&format!("Repairer account:\n{account}\n")),
+        None => text.push_str("Repairer account: none (unavailable)\n"),
+    }
     Ok(text)
+}
+
+/// The account attempt 1's repairer left, read from the newest `fix1` step
+/// payload of this run. The collector persisted it when the attempt ended;
+/// no live job store or task-latest-output read happens here, and a missing
+/// payload is explicitly unavailable rather than reconstructed.
+fn stored_account(cx: &StartCx<'_>, steps: &[StepRow]) -> Result<Option<String>, VivariumError> {
+    let Some(step) = steps
+        .iter()
+        .rev()
+        .find(|step| step.node == repair::fix_node(1))
+    else {
+        return Ok(None);
+    };
+    let Some(row) = cx.store.step_payload(&step.task)? else {
+        return Ok(None);
+    };
+    let prior = row.payload.get("prior_context");
+    Ok(prior
+        .filter(|prior| !prior.is_null())
+        .map(|prior| context::render(Some(prior))))
 }
 
 /// Registers this module's handlers.

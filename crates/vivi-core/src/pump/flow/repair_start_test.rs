@@ -430,3 +430,236 @@ fn attempt_two_brief_says_why_attempt_one_changed_nothing() -> R {
     );
     Ok(())
 }
+
+/// A `prior_context` value in the shape `repair_collect::context` captures:
+/// the original job and task, the model-authored summary and the failure
+/// excerpt, each bounded on its own.
+fn prior_context(summary: &str, failure: &str, source: &str, task: &str) -> serde_json::Value {
+    serde_json::json!({
+        "source_job": source,
+        "task": task,
+        "summary": {
+            "authored_by": "model",
+            "text": summary,
+            "bytes": summary.len(),
+            "truncated": summary.contains("[cut at 4096 bytes]"),
+        },
+        "failure": {
+            "mode": "markers",
+            "text": failure,
+            "source_lines": 4,
+            "kept_lines": 2,
+            "omitted_lines": 2,
+            "truncated": false,
+        },
+    })
+}
+
+/// Store a persisted step payload, the way the collector left it.
+fn store_payload(rig: &Rig, run: u32, node: &str, task: &str, payload: serde_json::Value) -> R {
+    rig.store.record_step_payload(&StepPayloadRow {
+        need: NEED.into(),
+        run,
+        node: node.into(),
+        class: "repairer".into(),
+        task: task.into(),
+        payload,
+    })
+}
+
+#[test]
+fn failed_fix_context_without_rung_renders_the_persisted_account() -> R {
+    let mut rig = rig(true, &record())?;
+    let fix = rig.mail.send_step("mind", "mind", "fix1", "b", &[])?;
+    rig.store
+        .insert_step(NEED, &step("fix1", &fix, StepState::Done, Some("failed")))?;
+    let summary = "the flake bit again\n[cut at 4096 bytes]";
+    store_payload(
+        &rig,
+        1,
+        "fix1",
+        &fix,
+        serde_json::json!({
+            "job": "j-orig",
+            "reason": "expected a commit on X from base B; actual: no change",
+            "prior_context": prior_context(summary, "error: boom\nthread panicked", "j-orig", &fix),
+        }),
+    )?;
+    main_tip(&rig.host, MAIN_B);
+    let spec = job(start(&rig, &step("fix2", "t2", StepState::Pending, None))?);
+    let body = &spec.body;
+    // The record's own tested commit and the fresh main stay separate.
+    assert!(body.contains("Record tested tip: 0000"), "{body}");
+    assert!(
+        body.contains(&format!("Current main tip: {MAIN_B}")),
+        "{body}"
+    );
+    // The persisted account names its source, its model-authored summary
+    // (with its own cut intact) and its failure evidence.
+    assert!(
+        body.contains(&format!("original job j-orig on task {fix}")),
+        "{body}"
+    );
+    assert!(body.contains("summary (model-authored):"), "{body}");
+    assert!(body.contains("  the flake bit again\n"), "{body}");
+    assert!(body.contains("  [cut at 4096 bytes]\n"), "{body}");
+    assert!(body.contains("failure:\n  error: boom\n"), "{body}");
+    assert!(body.contains("  thread panicked\n"), "{body}");
+    // The stored reason and job still stand beside the account.
+    assert!(
+        body.contains("expected a commit on X from base B; actual: no change"),
+        "{body}"
+    );
+    assert!(body.contains("(job j-orig)"), "{body}");
+    assert!(!body.contains("Rung verdict"), "{body}");
+    Ok(())
+}
+
+#[test]
+fn prior_context_is_run_local() -> R {
+    let mut rig = rig(true, &record())?;
+    let stale = rig.mail.send_step("mind", "mind", "fix1", "b", &[])?;
+    rig.store
+        .insert_step(NEED, &step("fix1", &stale, StepState::Done, Some("failed")))?;
+    store_payload(
+        &rig,
+        1,
+        "fix1",
+        &stale,
+        serde_json::json!({
+            "prior_context": prior_context(
+                "stale run-one account",
+                "stale failure",
+                "j-stale",
+                &stale,
+            ),
+        }),
+    )?;
+    // The current run has its own fix1 row, with no persisted payload: the
+    // earlier run's account must not stand in for it.
+    let current_fix = rig.mail.send_step("mind", "mind", "fix1", "b", &[])?;
+    rig.store.insert_step(
+        NEED,
+        &StepRow {
+            run: 2,
+            node: "fix1".into(),
+            task: current_fix,
+            state: StepState::Done,
+            verdict: Some("failed".into()),
+        },
+    )?;
+    let current = RunRow { run: 2, ..run() };
+    let fix2 = StepRow {
+        run: 2,
+        node: "fix2".into(),
+        task: "t2".into(),
+        state: StepState::Pending,
+        verdict: None,
+    };
+    main_tip(&rig.host, MAIN_B);
+    let spec = job(start_in(&rig, &current, &fix2)?);
+    assert!(
+        spec.body.contains("Repairer account: none (unavailable)"),
+        "{}",
+        spec.body
+    );
+    assert!(
+        !spec.body.contains("stale run-one account"),
+        "{}",
+        spec.body
+    );
+    assert!(!spec.body.contains("j-stale"), "{}", spec.body);
+    Ok(())
+}
+
+#[test]
+fn the_newest_fix_row_and_newest_rung_supply_the_prior_attempt() -> R {
+    let mut rig = rig(true, &record())?;
+    let old_fix = rig.mail.send_step("mind", "mind", "fix1", "b", &[])?;
+    let new_fix = rig.mail.send_step("mind", "mind", "fix1", "b", &[])?;
+    rig.store.insert_step(
+        NEED,
+        &step("fix1", &old_fix, StepState::Done, Some("failed")),
+    )?;
+    rig.store.insert_step(
+        NEED,
+        &step("fix1", &new_fix, StepState::Done, Some("failed")),
+    )?;
+    store_payload(
+        &rig,
+        1,
+        "fix1",
+        &old_fix,
+        serde_json::json!({
+            "job": "j-old",
+            "reason": "the stale reason",
+            "prior_context": prior_context("stale account", "stale failure", "j-old", &old_fix),
+        }),
+    )?;
+    store_payload(
+        &rig,
+        1,
+        "fix1",
+        &new_fix,
+        serde_json::json!({
+            "job": "j-new",
+            "reason": "the newest reason",
+            "prior_context": prior_context(
+                "the newest account",
+                "the newest failure",
+                "j-new",
+                &new_fix,
+            ),
+        }),
+    )?;
+    let facts = AttemptFacts {
+        branch: repair::branch(NEED, 1, 1),
+        commit: "d".repeat(40),
+        base: MAIN_A.into(),
+    };
+    rig.mail.reply(
+        &new_fix,
+        &note_body(NoteWord::RepairAttempt, None, &repair::facts_text(&facts))?,
+    )?;
+    let old_rung = rig.mail.send_step("mind", "mind", "rung1", "b", &[])?;
+    let new_rung = rig.mail.send_step("mind", "mind", "rung1", "b", &[])?;
+    rig.store.insert_step(
+        NEED,
+        &step("rung1", &old_rung, StepState::Done, Some("fail")),
+    )?;
+    rig.store.insert_step(
+        NEED,
+        &step("rung1", &new_rung, StepState::Done, Some("fail")),
+    )?;
+    rig.mail.reply(
+        &old_rung,
+        &note_body(NoteWord::RepairRung, None, "the oldest rung verdict")?,
+    )?;
+    rig.mail.reply(
+        &new_rung,
+        &note_body(NoteWord::RepairRung, None, "the newest rung verdict")?,
+    )?;
+    main_tip(&rig.host, MAIN_B);
+    let spec = job(start(&rig, &step("fix2", "t2", StepState::Pending, None))?);
+    let body = &spec.body;
+    assert!(body.contains("Record tested tip: 0000"), "{body}");
+    assert!(
+        body.contains(&format!("Current main tip: {MAIN_B}")),
+        "{body}"
+    );
+    assert!(body.contains("original job j-new"), "{body}");
+    assert!(body.contains("  the newest account\n"), "{body}");
+    assert!(body.contains("  the newest failure\n"), "{body}");
+    assert!(!body.contains("stale account"), "{body}");
+    assert!(!body.contains("stale failure"), "{body}");
+    // The newest fix row's facts, reason and the newest rung verdict remain.
+    assert!(body.contains(&"d".repeat(40)), "{body}");
+    assert!(body.contains("the newest reason"), "{body}");
+    assert!(body.contains("(job j-new)"), "{body}");
+    assert!(
+        body.contains("Rung verdict: the newest rung verdict"),
+        "{body}"
+    );
+    assert!(!body.contains("the oldest rung verdict"), "{body}");
+    Ok(())
+}
