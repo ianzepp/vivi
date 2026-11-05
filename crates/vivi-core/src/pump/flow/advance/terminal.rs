@@ -1,7 +1,7 @@
 //! Terminal handling: a `done` node lands the need, a `restart-<entry>` node
 //! starts a new run, and a withdrawal closes what is left of a run.
 
-use crate::pump::flow::advance::restart::restart;
+use crate::pump::flow::advance::restart::{RestartResult, restart};
 use crate::pump::flow::advance::route::Terminal;
 use crate::pump::flow::advance::start::SENTINEL_NODE;
 use crate::pump::flow::def::{FlowDef, NodeClass, VERDICT_WITHDRAWN};
@@ -29,6 +29,9 @@ pub(crate) enum Finished {
     Landed,
     /// A new run was started; the old one was superseded.
     Restarted(RunRow),
+    /// The restart deferred, so no new run has started yet; the restart phase
+    /// finishes it. Not a refusal.
+    RestartQueued,
 }
 
 /// Handle one terminal reached from `outcome`'s step. The finished step was
@@ -66,8 +69,10 @@ pub(crate) fn finish<M: MailWriter + MailReader>(
                         outcome.need, outcome.run
                     ))
                 })?;
-            let row = restart(ctx, store, mail, &old, &entry)?;
-            Ok(Finished::Restarted(row))
+            Ok(match restart(ctx, store, mail, &old, &entry)? {
+                RestartResult::Started(next) => Finished::Restarted(next),
+                RestartResult::Waiting => Finished::RestartQueued,
+            })
         }
         other => Err(VivariumError::Parse(format!(
             "{} flow: node `{}` ({other:?}) is not a terminal",
