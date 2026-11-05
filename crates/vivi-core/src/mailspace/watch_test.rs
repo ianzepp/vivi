@@ -1,6 +1,47 @@
 use super::*;
 
 #[test]
+fn an_unaddressed_raw_letter_does_not_match_delivery_watchers() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut mailspace = Mailspace::init(Some(tmp.path())).unwrap();
+    mailspace.add_identity("mind").unwrap();
+    mailspace.add_identity("hand").unwrap();
+    let raw = format!(
+        "From: mind@{}\r\nSubject: only\r\nMessage-ID: <only@x.test>\r\n\
+         Date: Sun, 11 Oct 2026 12:00:00 +0000\r\n\r\nbody\r\n",
+        mailspace.address_domain()
+    );
+    let result = mailspace.deliver_raw(raw.as_bytes(), "inbox").unwrap();
+    let storage = mailspace.storage().unwrap();
+    let id = storage
+        .resolve_message_token(result.sent.as_deref().unwrap())
+        .unwrap();
+    let events = storage.list_mailspace_events(&id).unwrap();
+    for identity in ["mind", "hand"] {
+        let filters = WatchFilters {
+            identity: [identity.to_string()].into_iter().collect(),
+            kinds: ["mail".to_string()].into_iter().collect(),
+            events: ["delivered".to_string()].into_iter().collect(),
+            statuses: None,
+            match_from: None,
+            subject_prefix: None,
+            content_id: None,
+        };
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches_event(&storage, event, &filters).unwrap()),
+            "recipient-delivery watcher for {identity} matched {events:?}"
+        );
+    }
+    assert!(
+        events
+            .iter()
+            .any(|event| event.event_type == "sent_copy_created")
+    );
+}
+
+#[test]
 fn parses_watch_durations() {
     assert_eq!(parse_duration("250ms").unwrap(), Duration::from_millis(250));
     assert_eq!(parse_duration("2s").unwrap(), Duration::from_secs(2));
