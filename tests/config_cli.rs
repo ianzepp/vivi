@@ -985,3 +985,42 @@ fn config_set_is_refused_only_while_the_pump_is_running() {
     assert_eq!(fs::read(config_file(&dir)).unwrap(), before);
     drop(lock);
 }
+
+#[test]
+fn config_set_accepts_intake_array_and_rolls_back_invalid_values() {
+    let dir = init_project();
+    let root = dir.path().to_str().unwrap();
+    let path = config_file(&dir);
+    let text = fs::read_to_string(&path).unwrap();
+    fs::write(&path, format!("{text}# intake note\n")).unwrap();
+    let out = vivi(&[
+        "config",
+        "set",
+        "pump.targets.web.intake",
+        "[\"peer/main\"]",
+        "--project",
+        root,
+    ]);
+    assert_success(&out);
+    assert_eq!(
+        stdout(&out).trim(),
+        "set pump.targets.web.intake = [\"peer/main\"] (array)"
+    );
+    let written = fs::read_to_string(&path).unwrap();
+    assert!(written.contains("intake = [\"peer/main\"]"), "{written}");
+    assert!(written.contains("# intake note"), "{written}");
+    for (key, value) in [
+        ("pump.targets.web.intake", "[\"refs/remotes/origin/main\"]"),
+        ("pump.targets.web.intake_rung", "release"),
+    ] {
+        let before = fs::read(&path).unwrap();
+        let out = vivi(&["config", "set", key, value, "--project", root]);
+        assert!(!out.status.success(), "{key}: {}", stdout(&out));
+        assert!(
+            stderr(&out).contains("rolled back"),
+            "{key}: {}",
+            stderr(&out)
+        );
+        assert_eq!(fs::read(&path).unwrap(), before, "{key}");
+    }
+}

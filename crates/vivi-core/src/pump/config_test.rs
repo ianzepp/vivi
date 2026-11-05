@@ -2,7 +2,9 @@
 
 use crate::mailspace::MailspaceConfig;
 use crate::pool::dispatch::BUDGET_RANGE;
-use crate::pump::config::{DispatchConfig, Kind, PumpConfig, PumpTarget, StepBudgets};
+use crate::pump::config::{
+    DispatchConfig, IntakeIssue, IntakeRung, Kind, PumpConfig, PumpTarget, StepBudgets, intake,
+};
 use std::collections::BTreeMap;
 use std::path::Path;
 use vivi_error::VivariumError;
@@ -744,7 +746,7 @@ fn assert_correction_endpoints() {
 /// belongs to the mailspace file.)
 fn assert_wrong_types_are_deserialization_errors() {
     let text = "[dispatch.step_budgets]\nplanner = \"long\"\n";
-    assert!(toml::from_str::<PumpConfig>(text).is_err());
+    assert!(toml::from_str::<MailspaceConfig>(text).is_err());
 }
 
 #[test]
@@ -914,4 +916,116 @@ fn reply_to_prefers_the_board_setting_then_the_first_sender_then_the_operator() 
     assert_eq!(cfg.reply_to(), "ian");
     cfg.board.reply_to = Some("team".into());
     assert_eq!(cfg.reply_to(), "team");
+}
+
+#[test]
+fn intake_config_defaults_disabled() {
+    let legacy = pump("name = \"t\"\n[pump]\nmain = \"trunk\"\n");
+    let default = &legacy.target_configs()["default"];
+    assert!(default.intake.is_empty());
+    assert_eq!(default.intake_rung, IntakeRung::Need);
+    let cfg = pump("name = \"t\"\n[pump]\nmain = \"trunk\"\n[pump.targets.web]\npath = \"web\"\n");
+    let web = &cfg.targets["web"];
+    assert!(web.intake.is_empty());
+    assert_eq!(web.intake_rung, IntakeRung::Need);
+}
+
+#[test]
+fn intake_config_round_trips_target_settings() {
+    let cfg = pump(
+        "name = \"t\"\n[pump]\n[pump.targets.web]\npath = \"web\"\n\
+         intake = [\"peer/main\", \"release\"]\nintake_rung = \"main\"\n",
+    );
+    let web = &cfg.targets["web"];
+    assert_eq!(web.intake, ["peer/main", "release"]);
+    assert_eq!(web.intake_rung, IntakeRung::Main);
+    let text = toml::to_string(&cfg).expect("the pump config serializes");
+    let back: PumpConfig = toml::from_str(&text).expect("the written config parses");
+    assert_eq!(back.targets["web"].intake, ["peer/main", "release"]);
+    assert_eq!(back.targets["web"].intake_rung, IntakeRung::Main);
+}
+
+#[test]
+fn intake_config_rejects_invalid_branch_and_rung() {
+    use IntakeIssue::{
+        Duplicate, Empty, FullRef, Refspec, RemoteTracking, ScratchNamespace, SelfIntake, Url,
+        Wildcard,
+    };
+    let branches = [
+        "",
+        "https://host/org/repo.git",
+        "main:peer/main",
+        "release/*",
+        "refs/remotes/origin/main",
+        "refs/heads/main",
+        "vivi/need/abcd1234",
+        "main",
+        "peer/main",
+        "peer/main",
+    ];
+    let listed: Vec<String> = branches.iter().map(|branch| (*branch).to_owned()).collect();
+    assert_eq!(
+        intake::issues(&listed, "main"),
+        vec![
+            (0, Empty),
+            (1, Url),
+            (2, Refspec),
+            (3, Wildcard),
+            (4, RemoteTracking),
+            (5, FullRef),
+            (6, ScratchNamespace),
+            (7, SelfIntake),
+            (9, Duplicate),
+        ]
+    );
+    assert_eq!(intake::issues(&listed[8..9], "main"), Vec::new());
+    let cfg = pump(
+        "name = \"t\"\n[pump]\n[pump.targets.web]\npath = \"web\"\n\
+         intake = [\"https://host/org/repo.git\", \"peer/main\", \"main\"]\n",
+    );
+    let found = cfg.findings_for(Path::new("."), &[]);
+    assert_eq!(found.errors.len(), 2, "{:?}", found.errors);
+    assert!(
+        found.errors.iter().any(|error| error.contains("https://")),
+        "{:?}",
+        found.errors
+    );
+    assert!(
+        found
+            .errors
+            .iter()
+            .any(|error| error.contains("intake `main`")),
+        "{:?}",
+        found.errors
+    );
+    assert!(
+        toml::from_str::<MailspaceConfig>(
+            "name = \"t\"\n[pump]\n[pump.targets.web]\npath = \"web\"\nintake_rung = \"release\"\n"
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn intake_requires_selected_rung() {
+    let unset = pump(
+        "name = \"t\"\n[pump]\nmain = \"main\"\n[pump.targets.web]\npath = \"web\"\n\
+         intake = [\"peer/main\"]\nintake_rung = \"main\"\n",
+    );
+    let names: Vec<String> = unset
+        .missing_rungs()
+        .into_iter()
+        .map(|missing| missing.name)
+        .collect();
+    assert!(
+        names.contains(&String::from("pump.targets.web.rungs.main")),
+        "{names:?}"
+    );
+    let set = pump(
+        "name = \"t\"\n[pump]\nmain = \"main\"\n[pump.rungs]\n\
+         task = \"true\"\nneed = \"true\"\nmain = \"true\"\n\
+         [pump.targets.web]\npath = \"web\"\n\
+         intake = [\"peer/main\"]\nintake_rung = \"main\"\n",
+    );
+    assert!(set.missing_rungs().is_empty());
 }

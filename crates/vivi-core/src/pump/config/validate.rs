@@ -84,8 +84,34 @@ impl PumpConfig {
             let name = format!("pump.targets.{id}.rungs");
             let scope = format!("target {id}");
             self.missing_rungs_of(Some(id), &name, &scope, &mut missing);
+            if let Some(target) = self.targets.get(id) {
+                self.missing_intake_rung(id, target, &mut missing);
+            }
         }
         missing
+    }
+
+    /// The rung an enabled intake proves its branches with is required like
+    /// every other build rung: a target that accepts intake without it would
+    /// take work it cannot prove.
+    fn missing_intake_rung(&self, id: &str, target: &PumpTarget, missing: &mut Vec<Missing>) {
+        if target.intake.is_empty() {
+            return;
+        }
+        let rung = target.intake_rung.name();
+        let name = format!("pump.targets.{id}.rungs.{rung}");
+        if missing.iter().any(|item| item.name == name)
+            || self.effective_rungs(Some(id)).command(rung).is_some()
+        {
+            return;
+        }
+        missing.push(Missing {
+            name,
+            detail: format!(
+                "target {id} intake proves its branches with the {rung} rung, which is not set; \
+                 set it with `vivi pump rungs set {rung} <command> --target {id}`"
+            ),
+        });
     }
 
     fn missing_rungs_of(
@@ -304,8 +330,22 @@ fn validate_target(id: &str, target: &PumpTarget, found: &mut Findings) {
     if target.github_repo.as_deref().is_some_and(str::is_empty) {
         found.invalid(format!("{prefix} github_repo must not be empty when set"));
     }
+    validate_intake(id, target, found);
     let merge = target.merge.as_ref();
     validate_target_merge(id, merge, found);
+}
+
+/// Each intake value must be a literal head of a peer repository: never a
+/// URL, refspec, wildcard, full ref, remote-tracking ref, the target's own
+/// main, or a branch inside the pump's scratch namespace.
+fn validate_intake(id: &str, target: &PumpTarget, found: &mut Findings) {
+    for (index, issue) in super::intake::issues(&target.intake, &target.main) {
+        found.invalid(format!(
+            "[pump.targets.{id}] intake `{}` is {}",
+            target.intake[index],
+            issue.text()
+        ));
+    }
 }
 
 fn validate_target_merge(id: &str, merge: Option<&MergeConfig>, found: &mut Findings) {

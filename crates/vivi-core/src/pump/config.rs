@@ -10,6 +10,7 @@ mod check;
 #[path = "config_workspace.rs"]
 pub mod config_workspace;
 mod flow;
+pub mod intake;
 mod migrate;
 mod origins;
 mod planner;
@@ -21,6 +22,7 @@ mod validate;
 pub use budgets::StepBudgets;
 pub use check::{ValidateReport, issues_json, validate};
 pub use flow::{DEFAULT_SLICE_MINUTES, FlowConfig, SliceConfig, StagesConfig};
+pub use intake::{IntakeIssue, IntakeRung};
 pub use migrate::{MigrateReport, WrittenCharter, migrate};
 pub use planner::PlannerConfig;
 pub use rungs::{DEFAULT_RUNG_TIMEOUT, RUNG_NAMES, RungsConfig};
@@ -381,6 +383,12 @@ pub struct PumpTarget {
     /// workspace-level `[pump.rungs]` one.
     #[serde(skip_serializing_if = "RungsConfig::is_empty")]
     pub rungs: RungsConfig,
+    /// Literal Git heads this target accepts work from. Empty disables
+    /// intake; a value is a branch name, never a remote selector.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub intake: Vec<String>,
+    /// Rung that proves an intake branch before work starts on it.
+    pub intake_rung: IntakeRung,
 }
 
 impl Default for PumpTarget {
@@ -394,6 +402,8 @@ impl Default for PumpTarget {
             integration_repo: None,
             merge: None,
             rungs: RungsConfig::default(),
+            intake: Vec::new(),
+            intake_rung: IntakeRung::Need,
         }
     }
 }

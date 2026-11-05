@@ -595,3 +595,39 @@ async fn a_key_that_is_not_the_operators_is_refused() {
     assert_eq!(lines[0]["tool"], "config_set");
     assert_eq!(lines[0]["outcome"], "refused");
 }
+
+#[tokio::test]
+async fn intake_config_round_trips_target_settings() {
+    let fx = fixture("intake");
+    let key = fx.key_by(&fx.member, None);
+    let got = fx
+        .call(
+            &key,
+            "config_set",
+            json!({"key": "pump.targets.web.intake", "value": "[\"peer/main\"]"}),
+        )
+        .await;
+    assert_eq!(got["kind"], "array");
+    assert_eq!(got["value"], "[\"peer/main\"]");
+    let got = fx
+        .call(
+            &key,
+            "config_set",
+            json!({"key": "pump.targets.web.intake_rung", "value": "main"}),
+        )
+        .await;
+    assert_eq!(got["kind"], "string");
+    let text = fx.config_text();
+    assert!(text.contains("intake = [\"peer/main\"]"), "{text}");
+    assert!(text.contains("intake_rung = \"main\""), "{text}");
+    let before = fx.config_text();
+    let message = fx
+        .refused(
+            &key,
+            "config_set",
+            json!({"key": "pump.targets.web.intake", "value": "[\"refs/remotes/origin/main\"]"}),
+        )
+        .await;
+    assert!(message.contains("rolled back"), "{message}");
+    assert_eq!(fx.config_text(), before);
+}
