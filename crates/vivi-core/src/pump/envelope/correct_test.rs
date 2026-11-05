@@ -88,6 +88,12 @@ fn the_spec_names_the_step_and_asks_for_the_envelope_only() {
     assert!(got.body.contains("Rewrite only the envelope"));
     assert!(got.body.contains("keep every fact"));
     assert!(got.body.contains("planner: answer"));
+    assert!(got.body.contains("Unknown keys are rejected"));
+    assert!(
+        got.body
+            .contains("actual reply begins with a line containing only `+++`")
+    );
+    assert!(got.body.contains("literal strings"));
     assert!(got.body.contains("the plan, no fences"));
 }
 

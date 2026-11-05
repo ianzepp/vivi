@@ -4,6 +4,7 @@
 //! typed `answer` and its fields; the prose report is the body.
 //! The parser lives in `vivi_mail::letter`.
 
+pub(crate) mod contract;
 pub mod correct;
 pub(crate) mod refusal;
 
