@@ -262,7 +262,8 @@ impl Mailspace {
     /// reaches its holder when `vivi sync` pushes the letter, and anything
     /// else is an error. A letter with no local recipient is kept as the
     /// sender's own copy (`sent`), so its From must be a role of this
-    /// mailspace. The bytes are stored as given.
+    /// mailspace; with no recipient at all that copy is read, as if addressed
+    /// to nobody. The bytes are stored as given.
     ///
     /// # Errors
     /// Returns an error if the message cannot be parsed, a recipient is
@@ -288,23 +289,24 @@ impl Mailspace {
         let mut role = canonical_local_role(folder)?;
         let mut recipients: Vec<String> = local.into_iter().collect();
         let held = recipients.is_empty();
+        let mut author_copy = false;
         if held {
-            if remote.is_empty() {
-                return Err(VivariumError::Message(
-                    "no recipient address resolves to a known local identity".into(),
-                ));
-            }
             recipients.push(self.raw_sender(&parsed)?);
             role = "sent".into();
+            author_copy = remote.is_empty();
         }
-        let requests = raw_delivery_requests(&recipients, &role, data.len());
+        let requests = raw_delivery_requests(&recipients, &role, data.len(), author_copy);
         let subject = parsed.subject().unwrap_or_default().to_string();
         let storage = self.storage()?;
         let stored = storage.deliver_raw_batch(
             &requests,
             data,
             "mail deliver",
-            "delivered",
+            if author_copy {
+                "sent_copy_created"
+            } else {
+                "delivered"
+            },
             &role,
             &subject,
         )?;
@@ -328,23 +330,23 @@ impl Mailspace {
         })
     }
 
-    /// The local role a letter addressed only to other mailspaces is kept
-    /// under: its From, which must be a role of this mailspace.
+    /// The local role a letter with no local recipient is kept under: its
+    /// From, which must be a role of this mailspace.
     fn raw_sender(&self, parsed: &mail_parser::Message<'_>) -> Result<String, VivariumError> {
         let mut from = BTreeSet::new();
         collect_addresses(parsed.from(), &mut from);
         let Some(from) = from.into_iter().next() else {
             return Err(VivariumError::Message(
-                "a letter addressed only to other mailspaces needs a From that is a role of \
-                 this mailspace; the letter has no From"
+                "a letter with no local recipient needs a From that is a role of this mailspace; \
+                 the letter has no From"
                     .into(),
             ));
         };
         match self.classify_recipient(&from) {
             Ok(Recipient::Local(identity)) => Ok(identity),
             _ => Err(VivariumError::Message(format!(
-                "a letter addressed only to other mailspaces needs a From that is a role of \
-                 this mailspace; '{from}' is not one"
+                "a letter with no local recipient needs a From that is a role of this mailspace; \
+                 '{from}' is not one"
             ))),
         }
     }
