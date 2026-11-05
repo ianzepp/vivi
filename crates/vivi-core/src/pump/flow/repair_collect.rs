@@ -20,6 +20,9 @@ use vivi_error::VivariumError;
 use vivi_mail::letter::records::NoteWord;
 use vivi_mail::letter::roles::RoleKind;
 
+/// Bounded prior-attempt context capture and rendering for briefings.
+pub(crate) mod context;
+
 /// The answer word of a repairer job that ran past its time cap.
 const OVERTIME: &str = "overtime";
 
