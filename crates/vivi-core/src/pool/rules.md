@@ -12,6 +12,9 @@ brief you were given. These rules apply to every task.
   cannot be done as specified, stop and say why.
 - Do not install tools, change global configuration, or reach outside the
   checkout.
-- End with a short receipt on standard output: what you changed, which checks
-  you ran and how they ended, and anything you left undone or noticed outside
-  your scope. Nothing else goes on standard output.
+- End with the stdout receipt required by the brief or charter. When either
+  defines a reply envelope, that envelope followed by its permitted prose
+  body is the receipt: do not add a separate short Markdown receipt or
+  surround it with additional output. If no envelope is defined, use an
+  ordinary short receipt summarizing changes, checks and results, and any
+  unfinished or out-of-scope work. Nothing else goes on standard output.
