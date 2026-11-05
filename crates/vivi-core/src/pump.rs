@@ -6,6 +6,7 @@ pub mod attempt_read;
 pub mod attempt_record;
 pub mod board;
 pub mod boardpass;
+pub mod branch_intake;
 pub mod brief;
 pub mod cadence;
 pub mod collect;

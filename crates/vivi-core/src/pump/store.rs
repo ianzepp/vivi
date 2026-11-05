@@ -17,6 +17,7 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, pa
 
 use vivi_error::VivariumError;
 
+pub mod branch_intake;
 mod codec;
 mod flow_index;
 pub mod flow_links;
@@ -558,6 +559,7 @@ fn ensure_schema(conn: &Connection) -> Result<(), VivariumError> {
         .map_err(db_err("create schema"))?;
     drop_request_queues(conn)?;
     flow_index::ensure_tables(conn)?;
+    branch_intake::ensure_tables(conn)?;
     flow_links::ensure_tables(conn)?;
     step_payload::ensure_table(conn)?;
     job_release::ensure_table(conn)?;
