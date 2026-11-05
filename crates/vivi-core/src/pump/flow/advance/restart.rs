@@ -1,15 +1,19 @@
 //! Idempotent restart of a flow run.
 //!
-//! A restart sets the old run `restarting`, starts the next run (which is
-//! itself resumable), closes every open task of the old run `superseded` with
-//! its sentinel last, then sets the old run `superseded`. A failure at any
+//! A restart records the requested entry, sets the old run `restarting`, then
+//! starts the next run (which is itself resumable) once the shared prerequisite
+//! assessment admits one, closes every open task of the old run `superseded`
+//! with its sentinel last, then sets the old run `superseded`. A failure at any
 //! write leaves the old run `restarting`; the [`Restarts`] tick phase resumes
-//! it and drops the old run's queued jobs.
+//! it and drops the old run's queued jobs. A restart an unlanded prerequisite
+//! blocks is not a failure: the old run waits `restarting` with its entry and
+//! starts no successor.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::mailspace::pump_note::note_body;
 use crate::pump::flow::advance::start::{SENTINEL_NODE, start};
+use crate::pump::flow::build_prereq::assess;
 use crate::pump::flow::def::VERDICT_SUPERSEDED;
 use crate::pump::flow::fanout::{close_slice, is_slice_row};
 use crate::pump::flow::handlers::{FlowMail, Registry, TickPhase};
@@ -38,15 +42,18 @@ pub(crate) fn register<S: JobStore, M: FlowMail>(registry: &mut Registry<S, M>) 
 pub(crate) enum RestartResult {
     /// The next run started and the old run is superseded.
     Started(RunRow),
-    /// The restart deferred: no next run has started yet. Admission returns
-    /// this once it exists; nothing returns it yet.
-    #[allow(dead_code)]
+    /// The restart deferred: a prerequisite has not landed, so no next run has
+    /// started yet. The requested entry and the `restarting` state stay
+    /// durable, and the restart phase retries on later ticks.
     Waiting,
 }
 
 /// Restart `need` from `old` at `entry`: set `old` restarting, start the next
 /// run, close the old run's open tasks `superseded` (the sentinel last), set
 /// `old` superseded. Safe to repeat after a failure: see [`resume`].
+///
+/// The requested entry is recorded before the old run leaves its live state,
+/// so a blocked restart keeps a durable, recoverable intent.
 ///
 /// # Errors
 /// Returns a [`VivariumError`] when the start, a close or a store write fails.
@@ -59,15 +66,39 @@ pub(crate) fn restart<M: MailWriter + MailReader>(
 ) -> Result<RestartResult, VivariumError> {
     store.set_restart_entry(&old.need, old.run, entry)?;
     store.set_run_state(&old.need, old.run, run_state::RESTARTING)?;
+    if !admits(ctx, store, mail, &old.need) {
+        return Ok(RestartResult::Waiting);
+    }
     let next = start(ctx, store, mail, &old.need, Some(entry))?;
     supersede(store, mail, old)?;
     Ok(RestartResult::Started(next))
 }
 
+/// Whether `need` may have a successor run now: only a build whose every
+/// prerequisite has landed is admitted. The assessment queues the typed build
+/// wait and raises its diagnostics; a prerequisite read error never admits a
+/// successor and leaves the recorded intent to a later tick.
+fn admits<M: MailReader>(ctx: &Ctx, store: &PumpStore, mail: &M, need: &str) -> bool {
+    match assess(ctx, store, mail, need) {
+        Ok(found) => found.eligible,
+        Err(error) => {
+            ctx.log(&format!(
+                "flow restart: {need} waits, its prerequisites are unreadable: {error}"
+            ));
+            false
+        }
+    }
+}
+
 /// Finish a restart left `restarting`: the newer run of the same need
 /// (starting or live) is the restart target; resume it if it is still
 /// starting, then finish the closes. With no newer run (the start failed
-/// before it wrote a run row), start one at the entry [`restart`] recorded.
+/// before it wrote a run row, or a prerequisite deferred it), start one at the
+/// entry [`restart`] recorded, unless the assessment still blocks it.
+///
+/// A restart that an unlanded prerequisite blocks is deliberate waiting, not a
+/// failed recovery: the old run stays `restarting` with its entry, and no
+/// successor artifacts appear.
 ///
 /// # Errors
 /// Returns a [`VivariumError`] when no newer run exists and no entry was
@@ -97,6 +128,9 @@ pub(crate) fn resume<M: MailWriter + MailReader>(
                     old.need, old.run
                 ))
             })?;
+            if !admits(ctx, store, mail, &old.need) {
+                return Ok(());
+            }
             start(ctx, store, mail, &old.need, Some(&entry))?;
         }
     }

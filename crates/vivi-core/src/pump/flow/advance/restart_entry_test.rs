@@ -8,7 +8,7 @@ use crate::pump::config::PumpConfig;
 use crate::pump::flow::advance::start::start;
 use crate::pump::flow::fake_mail::FakeMail;
 use crate::pump::flow::index::run_state;
-use crate::pump::flow::mail::MailWriter;
+use crate::pump::flow::mail::{MailReader, MailWriter};
 use crate::pump::host::test_ctx;
 use crate::pump::store::{DB_FILENAME, PumpStore};
 use vivi_error::VivariumError;
@@ -68,5 +68,40 @@ fn a_restart_with_no_entry_and_no_newer_run_still_errors() -> Result<(), Vivariu
     let old = start(&ctx, &store, &mut mail, NEED, None)?;
     store.set_run_state(NEED, old.run, run_state::RESTARTING)?;
     assert!(resume(&ctx, &store, &mut mail, &old).is_err());
+    Ok(())
+}
+
+#[test]
+fn a_blocked_recovery_waits_at_its_recorded_entry_then_starts_it() -> Result<(), VivariumError> {
+    let dir = tempdir().map_err(|e| VivariumError::Other(e.to_string()))?;
+    let (ctx, _host) = test_ctx(dir.path(), PumpConfig::default());
+    let store = PumpStore::open(&dir.path().join(DB_FILENAME))?;
+    let mut mail = FakeMail::new("pump");
+    MailWriter::open_record(&mut mail, NEED, "record")?;
+    let old = start(&ctx, &store, &mut mail, NEED, None)?;
+    store.set_restart_entry(NEED, old.run, "rework1")?;
+    store.set_run_state(NEED, old.run, run_state::RESTARTING)?;
+    mail.set_prerequisites(NEED, &["dep"]);
+
+    resume(&ctx, &store, &mut mail, &old)?;
+    assert_eq!(store.runs_of(NEED)?.len(), 1, "no successor artifacts");
+    assert_eq!(mail.sentinel_count(NEED)?, 1, "no successor sentinel");
+    assert_eq!(
+        store.restart_entry(NEED, old.run)?.as_deref(),
+        Some("rework1")
+    );
+
+    resume(&ctx, &store, &mut mail, &old)?;
+    assert_eq!(store.runs_of(NEED)?.len(), 1, "a repeated tick still waits");
+
+    mail.set_prerequisites(NEED, &[]);
+    resume(&ctx, &store, &mut mail, &old)?;
+    let runs = store.runs_of(NEED)?;
+    assert_eq!(runs.len(), 2);
+    assert_eq!(runs[0].state, "superseded");
+    assert_eq!(
+        (runs[1].state.as_str(), runs[1].entry.as_str()),
+        ("live", "rework1")
+    );
     Ok(())
 }

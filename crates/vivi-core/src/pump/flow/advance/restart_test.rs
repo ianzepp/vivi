@@ -12,21 +12,24 @@ use super::{RESTART_STUCK, RestartResult, prune_dead_jobs, register, restart};
 use crate::mailspace::pump_note::Note;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::advance::start::{SENTINEL_NODE, start};
+use crate::pump::flow::build_prereq::PREREQ_UNREADABLE;
 use crate::pump::flow::def::VERDICT_SUPERSEDED;
 use crate::pump::flow::fake_mail::{Call, FakeMail};
 use crate::pump::flow::fanout::SLICE_NODE_PREFIX;
 use crate::pump::flow::handlers::Registry;
 use crate::pump::flow::index::run_state;
 use crate::pump::flow::index::{RunRow, StepJobRow, StepRow, StepState};
-use crate::pump::flow::mail::{MailReader, MailWriter, TaskStatus};
+use crate::pump::flow::mail::{MailReader, MailWriter, NeedStatus, TaskState, TaskStatus};
 use crate::pump::flow::slice_dispatch::SliceMail;
 use crate::pump::flow::tick::tick_with;
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::jobs::{JobSpec, JobStatus, JobStore, PoolJob, enqueue};
+use crate::pump::store::build_waits::PrerequisiteState;
 use crate::pump::store::{DB_FILENAME, PumpStore};
 use vivi_error::VivariumError;
 use vivi_mail::letter::fixture::step_body;
 use vivi_mail::letter::records::NoteWord;
+use vivi_mail::letter::work::StepFront;
 
 type R = Result<(), VivariumError>;
 
@@ -115,6 +118,30 @@ impl Rig {
     fn restart(&mut self) -> Result<RestartResult, VivariumError> {
         let old = self.old()?;
         restart(&self.ctx, &self.store, &mut self.mail, &old, "plan")
+    }
+
+    /// A restart requested at a non-default entry of the build flow.
+    fn restart_at(&mut self, entry: &str) -> Result<RestartResult, VivariumError> {
+        let old = self.old()?;
+        restart(&self.ctx, &self.store, &mut self.mail, &old, entry)
+    }
+
+    /// Make `NEED` a build whose prerequisite `dep` has not landed.
+    fn blocked_by(&mut self, dep: &str) {
+        self.mail.set_prerequisites(NEED, &[dep]);
+    }
+
+    fn entry_of(&self, run: u32) -> Result<Option<String>, VivariumError> {
+        self.store.restart_entry(NEED, run)
+    }
+
+    fn sentinel(&self) -> Result<String, VivariumError> {
+        self.store
+            .steps_of(NEED, 1)?
+            .into_iter()
+            .find(|r| r.node == SENTINEL_NODE)
+            .map(|r| r.task)
+            .ok_or_else(|| VivariumError::Other("no sentinel row".into()))
     }
 
     fn exceptions(&self) -> String {
@@ -386,5 +413,213 @@ fn dead_runs_list_their_dispatched_jobs_once_and_late_results_close_out_quietly(
     assert_eq!(rig.mail.calls.len(), calls);
     assert_eq!(abandoned(&rig)?.len(), 1);
     assert_eq!(rig.exceptions(), "");
+    Ok(())
+}
+
+#[test]
+fn a_blocked_restart_waits_with_its_entry_and_starts_no_successor() -> R {
+    let mut rig = rig()?;
+    rig.blocked_by("dep");
+    assert_eq!(rig.restart_at("rework1")?, RestartResult::Waiting);
+
+    assert_eq!(rig.entry_of(1)?.as_deref(), Some("rework1"));
+    assert_eq!(rig.state_of(1)?, run_state::RESTARTING);
+    assert_eq!(rig.store.runs_of(NEED)?.len(), 1, "no successor run");
+    assert_eq!(rig.mail.sentinel_count(NEED)?, 1, "no successor sentinel");
+    let rows = rig.store.steps_of(NEED, 1)?;
+    assert_eq!(rows.len(), 4, "the old run's step rows are untouched");
+    assert!(rows.iter().all(|r| r.state != StepState::Done));
+    let sentinel = rig.sentinel()?;
+    assert_eq!(rig.mail.task_state(&sentinel)?.status, TaskStatus::Open);
+    assert!(
+        rig.mail
+            .position(|c| matches!(c, Call::CloseTask { handle, .. } if *handle == sentinel))
+            .is_none(),
+        "the old sentinel stays open"
+    );
+    let waits = rig.store.build_waits()?;
+    assert_eq!(waits.len(), 1, "the blocker is queued as the build wait");
+    assert_eq!(waits[0].need, NEED);
+    assert_eq!(waits[0].prerequisites.len(), 1);
+    assert_eq!(waits[0].prerequisites[0].handle, "dep");
+    assert_eq!(waits[0].prerequisites[0].state, PrerequisiteState::Open);
+    assert_eq!(rig.exceptions(), "", "an open prerequisite waits silently");
+    Ok(())
+}
+
+#[test]
+fn a_blocked_restart_keeps_waiting_over_ticks_and_a_reopened_store() -> R {
+    let mut rig = rig()?;
+    rig.blocked_by("dep");
+    assert_eq!(rig.restart_at("rework1")?, RestartResult::Waiting);
+
+    rig.host.set_now(epoch());
+    for _ in 0..3 {
+        rig.tick()?;
+    }
+    assert_eq!(rig.state_of(1)?, run_state::RESTARTING);
+    assert_eq!(rig.store.runs_of(NEED)?.len(), 1);
+    assert_eq!(rig.mail.sentinel_count(NEED)?, 1);
+
+    // Past the stuck line the blocked restart is still waiting, not stuck.
+    rig.host.set_now(epoch() + 700);
+    rig.tick()?;
+    assert_eq!(rig.exceptions().matches(RESTART_STUCK).count(), 0);
+
+    let path = rig._dir.path().join(DB_FILENAME);
+    let reopened = PumpStore::open(&path)?;
+    let runs = reopened.runs_of(NEED)?;
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].state, run_state::RESTARTING);
+    assert_eq!(
+        reopened.restart_entry(NEED, 1)?.as_deref(),
+        Some("rework1"),
+        "the requested entry survives"
+    );
+    assert_eq!(reopened.build_waits()?.len(), 1);
+    Ok(())
+}
+
+#[test]
+fn a_successor_row_committed_before_a_dependency_arrives_still_recovers() -> R {
+    let mut rig = rig()?;
+    let old = rig.old()?;
+    let next = RunRow {
+        run: old.run + 1,
+        state: run_state::STARTING.to_string(),
+        ..old.clone()
+    };
+    rig.store.insert_run(&next)?;
+    rig.store.set_restart_entry(NEED, old.run, "plan")?;
+    rig.store
+        .set_run_state(NEED, old.run, run_state::RESTARTING)?;
+    rig.blocked_by("dep");
+
+    rig.tick()?;
+    assert_eq!(rig.state_of(1)?, run_state::SUPERSEDED);
+    assert_eq!(rig.state_of(2)?, run_state::LIVE);
+    assert!(
+        rig.store.build_waits()?.is_empty(),
+        "an already-created successor is recovered, not re-gated"
+    );
+    Ok(())
+}
+
+/// A fake mail whose prerequisite read fails, as an unreadable graph does.
+struct Unreadable(FakeMail);
+
+impl MailWriter for Unreadable {
+    fn send_step(
+        &mut self,
+        from: &str,
+        to: &str,
+        subject: &str,
+        body: &str,
+        depends_on: &[String],
+    ) -> Result<String, VivariumError> {
+        self.0.send_step(from, to, subject, body, depends_on)
+    }
+
+    fn bind(&mut self, need: &str, units: &[String]) -> Result<(), VivariumError> {
+        self.0.bind(need, units)
+    }
+
+    fn reply(&mut self, handle: &str, body: &str) -> Result<(), VivariumError> {
+        self.0.reply(handle, body)
+    }
+
+    fn post_to_need_audience(&mut self, need: &str, body: &str) -> Result<(), VivariumError> {
+        self.0.post_to_need_audience(need, body)
+    }
+
+    fn close_task(
+        &mut self,
+        handle: &str,
+        verdict: &str,
+        branch: Option<&str>,
+        commit: Option<&str>,
+    ) -> Result<(), VivariumError> {
+        self.0.close_task(handle, verdict, branch, commit)
+    }
+
+    fn reopen_task(&mut self, handle: &str) -> Result<(), VivariumError> {
+        self.0.reopen_task(handle)
+    }
+
+    fn close_need(&mut self, need: &str, note: &str) -> Result<(), VivariumError> {
+        self.0.close_need(need, note)
+    }
+
+    fn open_record(&mut self, need: &str, body: &str) -> Result<String, VivariumError> {
+        MailWriter::open_record(&mut self.0, need, body)
+    }
+
+    fn close_record(&mut self, need: &str, outcome: &str) -> Result<(), VivariumError> {
+        self.0.close_record(need, outcome)
+    }
+}
+
+impl MailReader for Unreadable {
+    fn task_state(&self, handle: &str) -> Result<TaskState, VivariumError> {
+        self.0.task_state(handle)
+    }
+
+    fn need_state(&self, need: &str) -> Result<NeedStatus, VivariumError> {
+        self.0.need_state(need)
+    }
+
+    fn need_marks(&self, need: &str) -> Result<Vec<String>, VivariumError> {
+        self.0.need_marks(need)
+    }
+
+    fn open_record(&self, need: &str) -> Result<Option<(String, String)>, VivariumError> {
+        MailReader::open_record(&self.0, need)
+    }
+
+    fn bound_units(&self, need: &str) -> Result<Vec<String>, VivariumError> {
+        self.0.bound_units(need)
+    }
+
+    fn sentinel_count(&self, need: &str) -> Result<usize, VivariumError> {
+        self.0.sentinel_count(need)
+    }
+
+    fn need_prerequisites(&self, _need: &str) -> Result<Vec<String>, VivariumError> {
+        Err(VivariumError::Message("graph unreadable".into()))
+    }
+
+    fn last_closed_record(&self, need: &str) -> Result<Option<String>, VivariumError> {
+        self.0.last_closed_record(need)
+    }
+
+    fn sent_step(&self, subject: &str, step: &StepFront) -> Result<Option<String>, VivariumError> {
+        self.0.sent_step(subject, step)
+    }
+}
+
+#[test]
+fn an_unreadable_prerequisite_read_fails_closed_and_keeps_the_intent() -> R {
+    let mut rig = rig()?;
+    let old = rig.old()?;
+    let inner = std::mem::replace(&mut rig.mail, FakeMail::new("pump"));
+    let mut mail = Unreadable(inner);
+    let result = restart(&rig.ctx, &rig.store, &mut mail, &old, "rework1")?;
+    rig.mail = mail.0;
+    assert_eq!(result, RestartResult::Waiting);
+
+    assert_eq!(rig.entry_of(1)?.as_deref(), Some("rework1"));
+    assert_eq!(rig.state_of(1)?, run_state::RESTARTING);
+    assert_eq!(rig.store.runs_of(NEED)?.len(), 1, "no successor run");
+    assert_eq!(rig.mail.sentinel_count(NEED)?, 1, "no successor sentinel");
+    assert_eq!(
+        rig.exceptions().matches(PREREQ_UNREADABLE).count(),
+        1,
+        "the shared unreadable diagnostic is raised once: {}",
+        rig.exceptions()
+    );
+    // A later tick with a readable graph starts the deferred successor.
+    rig.tick()?;
+    assert_eq!(rig.state_of(2)?, run_state::LIVE);
+    assert_eq!(rig.state_of(1)?, run_state::SUPERSEDED);
     Ok(())
 }
