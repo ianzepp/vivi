@@ -15,6 +15,7 @@ use vivi_util::duration::parse_duration_secs;
 
 mod check;
 mod command;
+mod reporting;
 mod result;
 
 pub use check::{CommandCheck, CommandException, CommandExecution, fingerprint};
@@ -198,6 +199,7 @@ pub fn prepare_due(ctx: &Ctx, st: &mut State) {
     };
     let mailspace = open.lock();
     result::collect(ctx, st, &mut cadence, &mailspace, now);
+    reporting::collect(ctx, st, &mut cadence, &mailspace, now);
     let scans = scan_roles(ctx, &mailspace, now);
     for scan in scans.values() {
         if scan.command.is_some() {
