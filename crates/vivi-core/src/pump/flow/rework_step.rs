@@ -12,7 +12,8 @@ use crate::pump::flow::index::{RunRow, StepRow};
 use crate::pump::flow::outcome::{self, StartAction, StartCx, StepHandler};
 use crate::pump::flow::step_inputs::{make_read_only, step_replies};
 use crate::pump::flow::verify_inputs::{
-    admitted_plan, audit_context, branch_range, capped, cto_ruling, latest_of_class, rung_report,
+    BranchRange, admitted_plan, audit_context, branch_range, capped, cto_ruling, latest_of_class,
+    rung_report,
 };
 use crate::pump::jobs::JobStore;
 use crate::pump::store::PumpStore;
@@ -26,6 +27,9 @@ const REWORK_NODE: &str = "rework1";
 const JOB_KIND: &str = "flow-rework";
 /// Most bytes of the admitted plan in the brief.
 const PLAN_CAP: usize = 60_000;
+/// The brief opens with this: the slicer returns slices, it does not build.
+const SLICE_ONLY: &str = "Return rework slices, or escalate and say why: do not implement. This \
+     checkout is read-only, so the only work you can deliver here is the slice list.\n\n";
 /// Most bytes of a failed slice's last hand message in the brief.
 const FAILED_MESSAGE_CAP: usize = 1_500;
 /// Requirement statuses that are not gaps.
@@ -36,7 +40,14 @@ struct ReworkStart;
 
 impl StepHandler for ReworkStart {
     fn start(&self, cx: &StartCx<'_>, step: &StepRow) -> Result<StartAction, VivariumError> {
-        let brief = brief(cx)?;
+        let range = branch_range(cx.ctx, cx.store, &cx.run.need)?;
+        let tip = range.tip.clone().ok_or_else(|| {
+            VivariumError::Message(format!(
+                "need {} has no usable need branch tip to start rework from",
+                cx.run.need
+            ))
+        })?;
+        let brief = brief(cx, &range)?;
         let mut spec = outcome::role_job(
             cx.ctx,
             cx.run,
@@ -46,18 +57,21 @@ impl StepHandler for ReworkStart {
             SLICER_ROLE,
             &brief,
         );
+        spec.target = Some(range.target.clone());
         make_read_only(cx.ctx, &mut spec);
+        // The branch is the snapshot, merged work included; the target's main
+        // is only what an unpublished branch was cut from.
+        spec.from_ref = Some(tip);
         Ok(StartAction::Job(Box::new(spec)))
     }
 }
 
-fn brief(cx: &StartCx<'_>) -> Result<String, VivariumError> {
+fn brief(cx: &StartCx<'_>, range: &BranchRange) -> Result<String, VivariumError> {
     let need = &cx.run.need;
-    let range = branch_range(cx.ctx, cx.store, need)?;
     let plan = admitted_plan(cx.store, need)?;
     let (context_run, rows) = audit_context(cx.store, need, cx.run.run)?;
     let mut text = format!(
-        "mode: rework\nneed: {need}\ntarget: {}\nneed branch: {}\n\n",
+        "{SLICE_ONLY}mode: rework\nneed: {need}\ntarget: {}\nneed branch: {}\n\n",
         range.target, range.branch
     );
     if context_run != cx.run.run {

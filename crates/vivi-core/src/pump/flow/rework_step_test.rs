@@ -2,11 +2,12 @@
 //! and its slicer job brief carries the stored findings and failing output.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use serde_json::json;
 use tempfile::{TempDir, tempdir};
 
-use crate::pump::config::PumpConfig;
+use crate::pump::config::{PumpConfig, PumpTarget};
 use crate::pump::flow::def::{FlowKind, FlowNode, NodeClass};
 use crate::pump::flow::fake_mail::FakeMail;
 use crate::pump::flow::handlers::{Registry, shipped};
@@ -15,7 +16,7 @@ use crate::pump::flow::load::load;
 use crate::pump::flow::mail::MailWriter;
 use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
 use crate::pump::flow::step_inputs::POOL_RESULT_MARKER;
-use crate::pump::host::{Ctx, test_ctx};
+use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::jobs::{JobSpec, JobStore, PoolJob};
 use crate::pump::store::step_payload::StepPayloadRow;
 use crate::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
@@ -25,6 +26,7 @@ type R = Result<(), VivariumError>;
 
 const NEED: &str = "n1";
 const BASE: &str = "0123456789abcdef0123456789abcdef01234567";
+const TIP: &str = "89abcdef0123456789abcdef0123456789abcdef";
 
 #[derive(Default)]
 struct Jobs {
@@ -55,6 +57,7 @@ impl StepHandler for Marker {
 struct Rig {
     _dir: TempDir,
     ctx: Ctx,
+    host: Arc<FakeHost>,
     store: PumpStore,
     mail: FakeMail,
     run: RunRow,
@@ -65,10 +68,11 @@ fn rig() -> Result<Rig, VivariumError> {
 }
 
 fn rig_with(cfg: PumpConfig) -> Result<Rig, VivariumError> {
-    let dir = tempdir().map_err(|e| VivariumError::Other(e.to_string()))?;
-    let (ctx, _host) = test_ctx(dir.path(), cfg);
-    let store = PumpStore::open(&dir.path().join(DB_FILENAME))?;
-    store.upsert_need_branch(&NeedBranchRow {
+    rig_branch(cfg, Some(live_row()))
+}
+
+fn live_row() -> NeedBranchRow {
+    NeedBranchRow {
         need: NEED.into(),
         branch: format!("vivi/need/{NEED}"),
         base: Some(BASE.into()),
@@ -76,10 +80,29 @@ fn rig_with(cfg: PumpConfig) -> Result<Rig, VivariumError> {
         run: 1,
         target: "default".into(),
         priors: Vec::new(),
-    })?;
+    }
+}
+
+/// Put `tip` on the need branch's remote ref, as a published branch has it.
+fn publish_tip(rig: &Rig, tip: &str) {
+    rig.host.reply(
+        "ls-remote origin refs/heads/vivi/need/",
+        0,
+        &format!("{tip}\trefs/heads/vivi/need/{NEED}\n"),
+    );
+}
+
+fn rig_branch(cfg: PumpConfig, row: Option<NeedBranchRow>) -> Result<Rig, VivariumError> {
+    let dir = tempdir().map_err(|e| VivariumError::Other(e.to_string()))?;
+    let (ctx, host) = test_ctx(dir.path(), cfg);
+    let store = PumpStore::open(&dir.path().join(DB_FILENAME))?;
+    if let Some(row) = row {
+        store.upsert_need_branch(&row)?;
+    }
     Ok(Rig {
         _dir: dir,
         ctx,
+        host,
         store,
         mail: FakeMail::new("mind"),
         run: RunRow {
@@ -210,7 +233,7 @@ fn the_shipped_registry_picks_the_override_for_rework1_and_not_for_slice() -> R 
     };
     assert_eq!(job.role, "slicer");
     assert!(job.read_only);
-    assert_eq!(job.from_ref.as_deref(), Some(rig.ctx.cfg.main.as_str()));
+    assert_eq!(job.from_ref.as_deref(), Some(BASE));
     assert_eq!(
         job.extra_targets,
         crate::pump::flow::step_inputs::targets(&rig.ctx)
@@ -246,7 +269,9 @@ fn the_rework_brief_carries_the_stored_finding_and_failing_test() -> R {
         return Err(VivariumError::Other("rework1 did not start a job".into()));
     };
     let body = &job.body;
-    assert!(body.starts_with("mode: rework\n"), "{body}");
+    assert!(body.starts_with("Return rework slices"), "{body}");
+    assert!(body.contains("read-only"), "{body}");
+    assert!(body.contains("mode: rework\n"), "{body}");
     assert!(body.contains("need: n1"), "{body}");
     assert!(body.contains("vivi/need/n1"), "{body}");
     assert!(body.contains("THE PLAN"), "{body}");
@@ -386,8 +411,8 @@ fn an_unlock_restart_names_the_missing_cto_ruling() -> R {
     Ok(())
 }
 
-/// The rework1 job the shipped registry starts, for budget assertions.
-fn shipped_rework_job(rig: &Rig) -> Result<Box<JobSpec>, VivariumError> {
+/// What the shipped registry's handler answers for rework1.
+fn rework_start(rig: &Rig) -> Result<StartAction, VivariumError> {
     let registry = shipped::<Jobs, FakeMail>(&rig.ctx);
     let def = load(FlowKind::Build)?;
     let cx = StartCx {
@@ -405,7 +430,12 @@ fn shipped_rework_job(rig: &Rig) -> Result<Box<JobSpec>, VivariumError> {
     let handler = registry
         .handler_for(FlowKind::Build, &node)
         .ok_or_else(|| VivariumError::Other("no handler for rework1".into()))?;
-    match handler.start(&cx, &step("rework1", "t-rw", None))? {
+    handler.start(&cx, &step("rework1", "t-rw", None))
+}
+
+/// The rework1 job the shipped registry starts, for budget assertions.
+fn shipped_rework_job(rig: &Rig) -> Result<Box<JobSpec>, VivariumError> {
+    match rework_start(rig)? {
         StartAction::Job(job) => Ok(job),
         other => Err(VivariumError::Other(format!(
             "rework1 did not start a job: {other:?}"
@@ -450,28 +480,163 @@ fn rework1_without_a_slicer_override_takes_the_changed_dispatch_fallback() -> R 
 }
 
 fn rework_brief(rig: &Rig) -> Result<String, VivariumError> {
-    let mut registry: Registry<Jobs, FakeMail> = Registry::new();
-    super::register(&mut registry);
-    let def = load(FlowKind::Build)?;
-    let cx = StartCx {
-        ctx: &rig.ctx,
-        store: &rig.store,
-        mail: &rig.mail,
-        run: &rig.run,
-        def: &def,
+    Ok(shipped_rework_job(rig)?.body.clone())
+}
+
+/// The target `sandbox` beside the primary `default`: a job bound to the need
+/// branch's own target, not the primary one.
+fn two_targets() -> PumpConfig {
+    let mut cfg = PumpConfig::default();
+    cfg.targets
+        .insert(String::from("default"), PumpTarget::default());
+    cfg.targets.insert(
+        String::from("sandbox"),
+        PumpTarget {
+            path: String::from("pump-sandbox"),
+            main: String::from("vivi/main"),
+            ..PumpTarget::default()
+        },
+    );
+    cfg
+}
+
+/// The need branch is published: the job starts from its tip, which holds the
+/// merged work, and not from main or the recorded base.
+#[test]
+fn a_rework_slicer_starts_from_the_published_need_branch_tip() -> R {
+    let rig = rig()?;
+    rig.seed()?;
+    publish_tip(&rig, TIP);
+
+    let job = shipped_rework_job(&rig)?;
+
+    assert_eq!(job.target.as_deref(), Some("default"));
+    assert_eq!(job.from_ref.as_deref(), Some(TIP));
+    assert_ne!(job.from_ref.as_deref(), Some(rig.ctx.cfg.main.as_str()));
+    assert_ne!(job.from_ref.as_deref(), Some(BASE));
+    assert!(job.read_only);
+    assert_eq!(
+        job.extra_targets,
+        crate::pump::flow::step_inputs::targets(&rig.ctx)
+    );
+    Ok(())
+}
+
+/// The need branch row records the target of the need's first slice; every
+/// later read follows that target, not the dispatcher's primary one.
+#[test]
+fn a_rework_slicer_follows_the_target_stored_on_the_need_branch() -> R {
+    let row = NeedBranchRow {
+        target: String::from("sandbox"),
+        ..live_row()
     };
-    let node = FlowNode {
-        id: "rework1".into(),
-        class: NodeClass::Slicer,
-        label: String::new(),
+    let rig = rig_branch(two_targets(), Some(row))?;
+    rig.seed()?;
+    publish_tip(&rig, TIP);
+
+    let job = shipped_rework_job(&rig)?;
+
+    assert_eq!(job.target.as_deref(), Some("sandbox"));
+    assert_eq!(job.from_ref.as_deref(), Some(TIP));
+    assert!(job.read_only);
+    assert!(
+        job.extra_targets.contains(&String::from("default")),
+        "{:?}",
+        job.extra_targets
+    );
+    assert!(
+        job.extra_targets.contains(&String::from("sandbox")),
+        "{:?}",
+        job.extra_targets
+    );
+    Ok(())
+}
+
+/// Nothing landed on the need branch yet: the recorded base is the snapshot,
+/// never the current main the branch was cut from.
+#[test]
+fn an_unpublished_need_branch_starts_rework_from_its_recorded_base() -> R {
+    let rig = rig()?;
+    rig.seed()?;
+
+    let job = shipped_rework_job(&rig)?;
+
+    assert_eq!(job.from_ref.as_deref(), Some(BASE));
+    assert_ne!(job.from_ref.as_deref(), Some(rig.ctx.cfg.main.as_str()));
+    Ok(())
+}
+
+/// No need branch row at all: no snapshot exists, so no job is started.
+#[test]
+fn a_missing_need_branch_row_starts_no_rework_job() -> R {
+    let rig = rig_branch(PumpConfig::default(), None)?;
+    rig.seed()?;
+
+    let err = rework_start(&rig)
+        .err()
+        .ok_or_else(|| VivariumError::Other("a missing need branch row started a job".into()))?;
+    assert!(err.to_string().contains(NEED), "{err}");
+    Ok(())
+}
+
+/// A need branch that is being moved is not readable: no job is started.
+#[test]
+fn a_non_live_need_branch_starts_no_rework_job() -> R {
+    let row = NeedBranchRow {
+        status: String::from("fresh"),
+        ..live_row()
     };
-    let handler = registry
-        .handler_for(FlowKind::Build, &node)
-        .ok_or_else(|| VivariumError::Other("rework1 not registered".into()))?;
-    let StartAction::Job(job) = handler.start(&cx, &step("rework1", "t-rw", None))? else {
-        return Err(VivariumError::Other("rework1 did not start a job".into()));
+    let rig = rig_branch(PumpConfig::default(), Some(row))?;
+    rig.seed()?;
+
+    let err = rework_start(&rig)
+        .err()
+        .ok_or_else(|| VivariumError::Other("a non-live need branch started a job".into()))?;
+    assert!(err.to_string().contains("usable"), "{err}");
+    Ok(())
+}
+
+/// A live row with no base and no remote ref has no snapshot either.
+#[test]
+fn a_live_need_branch_without_a_tip_starts_no_rework_job() -> R {
+    let row = NeedBranchRow {
+        base: None,
+        ..live_row()
     };
-    Ok(job.body.clone())
+    let rig = rig_branch(PumpConfig::default(), Some(row))?;
+    rig.seed()?;
+
+    let err = rework_start(&rig)
+        .err()
+        .ok_or_else(|| VivariumError::Other("a tip-less need branch started a job".into()))?;
+    assert!(err.to_string().contains("usable"), "{err}");
+    Ok(())
+}
+
+/// The job and the brief read the branch once, so both name the same
+/// snapshot.
+#[test]
+fn one_branch_resolution_supplies_the_job_and_the_brief() -> R {
+    let rig = rig()?;
+    rig.seed()?;
+    publish_tip(&rig, TIP);
+
+    let job = shipped_rework_job(&rig)?;
+
+    let reads = rig
+        .host
+        .commands()
+        .iter()
+        .filter(|command| command.contains("ls-remote"))
+        .count();
+    assert_eq!(reads, 1, "the branch was read more than once");
+    assert_eq!(job.from_ref.as_deref(), Some(TIP));
+    assert!(
+        job.body.contains("need branch: vivi/need/n1"),
+        "{}",
+        job.body
+    );
+    Ok(())
 }
 
 /// The lab stress run (need 3e5bac51): slice n4u4 conflicted and was

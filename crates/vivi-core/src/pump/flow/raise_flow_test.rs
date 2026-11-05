@@ -290,7 +290,13 @@ fn a_failed_rung_goes_to_the_judge_and_a_residual_ruling_raises_the_rung() -> R 
     assert_eq!(rig.step("rework1")?.state, StepState::Running);
     let rework = rig.job_of("rework1")?;
     assert_eq!(rework.role, "slicer");
-    assert!(rework.body.starts_with("mode: rework"), "{}", rework.body);
+    assert!(
+        rework.body.starts_with("Return rework slices"),
+        "{}",
+        rework.body
+    );
+    assert!(rework.body.contains("read-only"), "{}", rework.body);
+    assert!(rework.body.contains("mode: rework"), "{}", rework.body);
     assert!(!rig.has_step("build2")?);
 
     // A rework reply `sliced` opens build2 (stubbed to built at once).
@@ -317,7 +323,12 @@ fn a_judge_block_goes_straight_to_rework() -> R {
     assert_eq!(rig.step("rework1")?.state, StepState::Running);
     let rework = rig.job_of("rework1")?;
     assert_eq!(rework.role, "slicer");
-    assert!(rework.body.starts_with("mode: rework"), "{}", rework.body);
+    assert!(
+        rework.body.starts_with("Return rework slices"),
+        "{}",
+        rework.body
+    );
+    assert!(rework.body.contains("read-only"), "{}", rework.body);
     assert!(
         rework.body.contains("the rung failure is real"),
         "the judge reason reaches the rework brief: {}",

@@ -182,7 +182,9 @@ fn assert_rework(rig: &mut Rig, node: &str, word: &str) -> R {
     let id = open(rig, "rework1")?;
     assert_eq!(verdict(rig, node)?.as_deref(), Some(word));
     let body = rig.jobs.jobs[&id].body.clone();
-    assert!(body.starts_with("mode: rework"), "{body}");
+    assert!(body.starts_with("Return rework slices"), "{body}");
+    assert!(body.contains("read-only"), "{body}");
+    assert!(body.contains("mode: rework"), "{body}");
     assert!(rig.row("cto")?.is_none());
     assert_eq!(rig.exceptions(), "");
     Ok(())
