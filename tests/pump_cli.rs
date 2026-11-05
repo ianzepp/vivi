@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use vivi_core::mailspace::{Mailspace, PumpAction, PumpActionKind};
 use vivi_core::pump::flow::index::{RunRow, StepState};
+use vivi_core::pump::store::build_waits::{BuildPrerequisite, BuildWait, PrerequisiteState};
 use vivi_core::pump::store::{DB_FILENAME, PumpStore};
 
 #[test]
@@ -379,6 +380,76 @@ fn a_second_instance_is_refused() {
     );
     drop(held);
     assert_success(&vivi(["pump", "once", "--project", root(&project)]));
+}
+
+#[test]
+fn health_json_lists_the_persisted_waits() {
+    let project = temp_mailspace();
+    let health = || -> serde_json::Value {
+        let out = vivi(["pump", "health", "--json", "--project", root(&project)]);
+        assert_success(&out);
+        serde_json::from_str(&stdout(&out)).unwrap()
+    };
+    let empty = health();
+    assert_eq!(empty["waiting"], serde_json::json!([]), "{empty}");
+
+    let store = PumpStore::open(&pump_home(&project).join(DB_FILENAME)).unwrap();
+    store
+        .upsert_build_wait(&BuildWait {
+            need: String::from("n1"),
+            record: String::from("r1"),
+            prerequisites: vec![
+                BuildPrerequisite {
+                    handle: String::from("b"),
+                    state: PrerequisiteState::ClosedUnlanded,
+                    detail: None,
+                    outcome: Some(String::from("failed")),
+                },
+                BuildPrerequisite {
+                    handle: String::from("a"),
+                    state: PrerequisiteState::Held,
+                    detail: Some(String::from("waiting on the gate")),
+                    outcome: None,
+                },
+            ],
+            observed_at: 1_700_000_000,
+        })
+        .unwrap();
+    drop(store);
+
+    let populated = health();
+    assert_eq!(populated["waiting"][0]["need"], "n1", "{populated}");
+    assert_eq!(populated["waiting"][0]["record"], "r1", "{populated}");
+    assert_eq!(populated["waiting"][0]["observed_at"], 1_700_000_000);
+    assert_eq!(
+        populated["waiting"][0]["prerequisites"][0]["handle"], "a",
+        "{populated}"
+    );
+    assert_eq!(populated["waiting"][0]["prerequisites"][0]["state"], "held");
+    assert_eq!(
+        populated["waiting"][0]["prerequisites"][0]["detail"],
+        "waiting on the gate"
+    );
+    assert_eq!(
+        populated["waiting"][0]["prerequisites"][1]["state"],
+        "closed_unlanded"
+    );
+    assert_eq!(
+        populated["waiting"][0]["prerequisites"][1]["outcome"],
+        "failed"
+    );
+    // The plain-text form names the same wait.
+    let text = vivi(["pump", "health", "--project", root(&project)]);
+    assert_success(&text);
+    let text = stdout(&text);
+    assert!(text.contains("waiting  1\n"), "{text}");
+    assert!(
+        text.contains(
+            "need n1 record r1 observed 1700000000 waiting on a held (waiting on the gate), \
+             b closed_unlanded outcome failed"
+        ),
+        "{text}"
+    );
 }
 
 #[test]

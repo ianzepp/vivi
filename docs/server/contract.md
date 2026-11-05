@@ -890,6 +890,7 @@ end has no pump: `404 not_hosted`.
 | `schema` | The `pump.db` schema this server reads |
 | `exceptions` | `{at, kind, unit, text}` at or after `since`, else in the last hour; fifty at most, newest kept |
 | `changed_since` | Only with `since`: `{since, exceptions}`, the count of exception rows strictly after `since` |
+| `waiting` | The persisted build waits, current snapshot data (never filtered by `since`): `{need, record, prerequisites: [{handle, state, detail?, outcome?}], observed_at}`, `need` order, prerequisites in handle order. `state` is `open`, `held` or `closed_unlanded`; `detail` and `outcome` appear only when the classification carried them |
 
 Verdict rules, first match wins:
 
@@ -901,6 +902,13 @@ Verdict rules, first match wins:
 3. `degraded`: control paused, stopped or unreadable; writer state unknown;
    or no writer but a fresh `status.txt` while control says running.
 4. `ok`.
+
+`waiting` is a read of the persisted projection, not new judgement. Ordinary
+prerequisite waiting does not itself make the writer degraded or stalled:
+the verdict rules above are unchanged and no wait appears among the reasons.
+The read calls no admission, reads no dependency mail, emits no exception,
+creates or migrates no storage and takes no pump lock. A database at a schema
+this server reads but without the additive waits table answers `waiting: []`.
 
 Not-ready fold, applied after the rules above (vivi 21, `add_not_ready`): a
 project missing config the pump needs adds a `not ready: ...` reason. If it

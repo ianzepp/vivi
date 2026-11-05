@@ -40,6 +40,34 @@ The snapshot is assembled from Vivi's records and pool slots. It can report a
 warning for an unreadable project or state file while still returning rows
 from other registered roots.
 
+## Pump health
+
+```sh
+vivi pump health [--json] [--since <epoch>] [--stale-after <secs>]
+```
+
+A read-only verdict: `ok`, `degraded`, `stalled` or `unknown`, with one reason
+line per finding. `--json` prints the whole answer; the server serves the same
+body over REST and MCP. Ordinary prerequisite waiting never lowers the verdict
+and never adds a reason.
+
+`waiting` lists the queued build waits the pump persisted, current snapshot
+data: `--since` windows the exceptions only, so it never hides a wait. Each
+entry carries `need` (the dependent), `record` (the open pump record that
+queued it), `observed_at`, and the `prerequisites` that had not landed with
+the `state` that classified each one (`open`, `held` or `closed_unlanded`),
+plus `detail` and `outcome` when the classification recorded them. Waits are in
+need-handle order and their prerequisites in handle order, so two reads agree.
+A `pump.db` whose schema predates the waits table answers an empty list. The
+plain-text form counts them on one `waiting  <n>` line and then gives one
+`need <need> record <record> observed <at> waiting on …` line each, using the
+same handles, states and details as the pump's own `status.txt` wait lines.
+
+The command reads `pump.db` read-only and reports what it persisted; it judges
+no admission, reads no dependency mail, emits no exception, creates or migrates
+no storage and never takes the pump lock. Repeated reads leave no file, alarm
+or lock behind.
+
 ## Attempt and need reports
 
 Reports read attempt records and lifecycle timestamps already in the selected
