@@ -294,6 +294,31 @@ fn the_contract_names_the_check_results_the_parser_accepts() {
     assert!(parse::<Hand>(&envelope("pass (24 tests OK)")).is_err());
 }
 
+/// The contract tells the hand what `seconds` accepts — a finite,
+/// non-negative number, integer or float, with the fraction kept — and shows
+/// a decimal, and the parser agrees: integer, `0.0` and `12.5` all parse with
+/// their values preserved.
+#[test]
+fn the_contract_describes_accepted_check_seconds() {
+    let text = contract();
+    assert!(text.contains("non-negative"), "{text}");
+    assert!(text.contains("seconds = 12.5"), "{text}");
+    let envelope = |seconds: &str| {
+        format!(
+            "+++\nanswer = \"built\"\n\n[[check]]\ncmd = \"t\"\nresult = \"pass\"\nseconds = {seconds}\n+++\nbody\n"
+        )
+    };
+    for seconds in ["40", "0.0", "12.5"] {
+        let hand = parse::<Hand>(&envelope(seconds)).unwrap_or_else(|e| panic!("{seconds}: {e}"));
+        let got = hand.front.check[0].seconds;
+        assert_eq!(
+            got,
+            seconds.parse::<f64>().unwrap(),
+            "the parser keeps {seconds}"
+        );
+    }
+}
+
 // ---- retry ----------------------------------------------------------------
 
 fn failed_job(id: &str) -> PoolJob {
