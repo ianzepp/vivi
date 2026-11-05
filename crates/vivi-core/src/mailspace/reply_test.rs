@@ -179,6 +179,109 @@ fn a_note_with_an_invalid_front_is_refused_at_write_time() {
 }
 
 #[test]
+fn unaddressed_reply_links_parent_without_delivery() {
+    let (_tmp, space, addressed) = space_with_mail();
+    let addressed_handle = {
+        let storage = space.storage().unwrap();
+        storage.display_handle(&addressed.message_id).unwrap()
+    };
+    let unaddressed = space
+        .send(SendRequest {
+            from: "mind".into(),
+            to: Vec::new(),
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: "own note".into(),
+            body: "an item nobody else holds".into(),
+            role: "inbox".into(),
+            kind: Some("mail".into()),
+            reply_to: None,
+        })
+        .unwrap();
+    for (parent, actor, subject) in [
+        (addressed_handle, "hand", "Re: unit"),
+        (unaddressed.sent, "mind", "Re: own note"),
+    ] {
+        let reply = space
+            .reply(
+                &parent,
+                actor,
+                Vec::new(),
+                Vec::new(),
+                None,
+                "no audience".into(),
+            )
+            .unwrap();
+        assert!(reply.delivered.is_empty(), "{reply:?}");
+        assert!(reply.remote.is_empty(), "{reply:?}");
+        let thread = space.thread(&reply.sent, false, 10, 10).unwrap();
+        assert_eq!(thread.len(), 2, "the reply is linked to {parent}");
+        let storage = space.storage().unwrap();
+        let message_id = storage.resolve_message_token(&reply.sent).unwrap();
+        let text = storage.read_message(&message_id).unwrap();
+        let text = String::from_utf8_lossy(&text);
+        assert!(text.contains(&format!("Subject: {subject}")), "{text}");
+        assert!(text.contains("In-Reply-To:"), "{text}");
+    }
+}
+
+#[test]
+fn cc_only_reply_does_not_add_parent_author() {
+    let (_tmp, mut space, parent) = space_with_mail();
+    space.add_identity("ceo").unwrap();
+    let handle = {
+        let storage = space.storage().unwrap();
+        storage.display_handle(&parent.message_id).unwrap()
+    };
+    let reply = space
+        .reply(
+            &handle,
+            "hand",
+            Vec::new(),
+            vec!["ceo".into()],
+            None,
+            "copied only".into(),
+        )
+        .unwrap();
+    let delivered: Vec<&str> = reply
+        .delivered
+        .iter()
+        .map(|copy| copy.identity.as_str())
+        .collect();
+    assert_eq!(
+        delivered,
+        ["ceo"],
+        "the parent author is not added: {reply:?}"
+    );
+}
+
+#[test]
+fn explicit_reply_recipient_still_delivers() {
+    let (_tmp, mut space, parent) = space_with_mail();
+    space.add_identity("ceo").unwrap();
+    let handle = {
+        let storage = space.storage().unwrap();
+        storage.display_handle(&parent.message_id).unwrap()
+    };
+    let reply = space
+        .reply(
+            &handle,
+            "hand",
+            vec!["ceo".into()],
+            Vec::new(),
+            None,
+            "named recipient".into(),
+        )
+        .unwrap();
+    let delivered: Vec<&str> = reply
+        .delivered
+        .iter()
+        .map(|copy| copy.identity.as_str())
+        .collect();
+    assert_eq!(delivered, ["ceo"], "{reply:?}");
+}
+
+#[test]
 fn a_reply_to_a_self_addressed_item_is_kept_on_its_thread() {
     let tmp = tempfile::tempdir().unwrap();
     let mut space = Mailspace::init(Some(tmp.path())).unwrap();

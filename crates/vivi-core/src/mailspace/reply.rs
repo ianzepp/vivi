@@ -16,8 +16,9 @@ pub(super) struct NoteReply {
 }
 
 impl Mailspace {
-    /// Reply to an existing message. Resolves recipients from the parent
-    /// message if none are specified: its sender, local or remote.
+    /// Reply to an existing message. The To and Cc lists are used exactly as
+    /// supplied: with no recipient the reply is the author's own sent copy on
+    /// the parent's thread, and nobody is added from the parent.
     ///
     /// # Errors
     /// Returns an error if the parent handle cannot be resolved, the from
@@ -37,13 +38,6 @@ impl Mailspace {
             .parse(&data)
             .ok_or_else(|| VivariumError::Parse("failed to parse reply parent".into()))?;
         let from = self.resolve_identity(from)?;
-        // A reply to an item only its author holds (self-addressed, e.g. an operator's own need)
-        // goes back to the author, like a note: the thread keeps it, and nobody else is invented.
-        let to = if to.is_empty() {
-            reply_recipients(self, &parsed, &from).unwrap_or_else(|_| vec![from.clone()])
-        } else {
-            to
-        };
         let subject =
             subject.unwrap_or_else(|| reply_subject(parsed.subject().unwrap_or("(no subject)")));
         self.send(SendRequest {
