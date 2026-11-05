@@ -291,7 +291,80 @@ fn a_second_job_starts_from_a_clean_tree_but_keeps_an_unignored_build_directory(
     );
 }
 
+#[test]
+fn runner_records_exact_output_sizes_and_unavailable_captures() {
+    let cases = [
+        ("empty", "true", "complete", "0", "complete", "0"),
+        (
+            "small",
+            "printf abc; printf xy >&2",
+            "complete",
+            "3",
+            "complete",
+            "2",
+        ),
+        (
+            "large",
+            "head -c 100000 /dev/zero | tr '\\0' x; head -c 70000 /dev/zero | tr '\\0' y >&2",
+            "complete",
+            "100000",
+            "complete",
+            "70000",
+        ),
+        (
+            "missing",
+            "rm -f PLACEHOLDER/job/agent.out; printf err >&2",
+            "unavailable",
+            "",
+            "complete",
+            "3",
+        ),
+    ];
+    for (index, (name, command, out_state, out_bytes, err_state, err_bytes)) in
+        cases.into_iter().enumerate()
+    {
+        let root = tempfile::tempdir().unwrap();
+        let config = embedded_config("true");
+        let slot = lay_out(root.path(), &config);
+        assert!(boot(&slot).status.success());
+        let command = command.replace("PLACEHOLDER", slot.work.to_str().unwrap());
+        let id = format!("job00000000{}", index + 3);
+        std::fs::write(
+            slot.work.join("job.tgz"),
+            one_job_archive_with_command(&config, &id, Some(&command)),
+        )
+        .unwrap();
+        let out = boot(&slot);
+        let result = std::fs::read_to_string(slot.work.join("job/result")).unwrap();
+        assert!(out.status.success(), "{name}: {}", said(&out));
+        assert!(
+            result.contains(&format!("agent_out_state={out_state}\n")),
+            "{result}"
+        );
+        assert!(
+            result.contains(&format!("agent_err_state={err_state}\n")),
+            "{result}"
+        );
+        if !out_bytes.is_empty() {
+            assert!(
+                result.contains(&format!("agent_out_bytes={out_bytes}\n")),
+                "{result}"
+            );
+        } else {
+            assert!(!result.contains("agent_out_bytes="), "{result}");
+        }
+        assert!(
+            result.contains(&format!("agent_err_bytes={err_bytes}\n")),
+            "{result}"
+        );
+    }
+}
+
 fn one_job_archive(config: &PoolConfig, id: &str) -> Vec<u8> {
+    one_job_archive_with_command(config, id, None)
+}
+
+fn one_job_archive_with_command(config: &PoolConfig, id: &str, command: Option<&str>) -> Vec<u8> {
     let plan = dispatch::plan_job(
         config,
         "p",
@@ -317,7 +390,7 @@ fn one_job_archive(config: &PoolConfig, id: &str) -> Vec<u8> {
             allow_default_branch: true,
             read_only: false,
             reasoning: None,
-            command: None,
+            command: command.map(str::to_string),
         },
         job::DEFAULT_RULES.to_string(),
         id.to_string(),
