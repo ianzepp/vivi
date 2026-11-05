@@ -2,6 +2,12 @@
 
 use serde::{Deserialize, Serialize};
 
+mod context;
+pub use context::{
+    NEW_FACT_RUN, built_reports_failed_check, cto_missing_new_fact, step_answer_compatible,
+    topological_order, validate_slices, wrong_slicer_mode,
+};
+
 use super::roles::{RoleKind, SlicerMode};
 
 /// Current reply-contract wire version.

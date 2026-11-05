@@ -20,6 +20,7 @@ use crate::pump::flow::tick::raise_once;
 use crate::pump::host::Ctx;
 use crate::pump::jobs::{JobStatus, PoolJob};
 use vivi_mail::letter::roles::{Parsed, RoleKind, parse_for};
+use vivi_mail::letter::submission::{cto_missing_new_fact, step_answer_compatible};
 
 /// A step is retried once: the second failed attempt answers `failed`.
 const MAX_ATTEMPTS: u32 = 2;
@@ -159,17 +160,20 @@ fn final_message(job: &PoolJob) -> String {
 /// `NEW_FACT_RUN` on, a head-cto answer other than `lock` must also carry a
 /// non-empty `new_fact` (the field is checked for presence, not for truth).
 fn judged(class: &NodeClass, parsed: Parsed, run: u32) -> Result<Collected, EnvelopeError> {
-    if !class.words().contains(&parsed.answer.as_str()) {
+    if !step_answer_compatible(
+        &class
+            .words()
+            .iter()
+            .map(|word| (*word).to_owned())
+            .collect::<Vec<_>>(),
+        &parsed.answer,
+    ) {
         return Err(EnvelopeError::Invalid(format!(
             "answer {:?} is not one of this step's words",
             parsed.answer
         )));
     }
-    if *class == NodeClass::Cto
-        && run >= NEW_FACT_RUN
-        && parsed.answer != "lock"
-        && !has_new_fact(&parsed.front)
-    {
+    if *class == NodeClass::Cto && cto_missing_new_fact(run, &parsed.answer, &parsed.front) {
         return Err(EnvelopeError::Invalid(format!(
             "run {run}: every head-cto answer but `lock` needs a non-empty `new_fact` \
              (expected a new fact since the last run; actual: none)"
@@ -177,13 +181,6 @@ fn judged(class: &NodeClass, parsed: Parsed, run: u32) -> Result<Collected, Enve
     }
     let payload = json!({"front": parsed.front, "body": parsed.body});
     Ok(Collected::Outcome(parsed.answer, payload))
-}
-
-fn has_new_fact(front: &serde_json::Value) -> bool {
-    front
-        .get("new_fact")
-        .and_then(serde_json::Value::as_str)
-        .is_some_and(|fact| !fact.trim().is_empty())
 }
 
 /// A broken envelope: a correction while some remain, then `failed`.
