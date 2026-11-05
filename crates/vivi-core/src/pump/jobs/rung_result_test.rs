@@ -22,6 +22,79 @@ fn exit_zero_passes() {
 }
 
 #[test]
+fn intake_empty_failure_set_not_green() {
+    let old = parse(&job(
+        JobStatus::Finished,
+        Some(
+            "agent exit 101 in 1s\nrunner capture receipt: 0/0 bytes complete\nrunner capture stderr: 0/0 bytes complete\n",
+        ),
+    ));
+    let now = parse(&job(
+        JobStatus::Finished,
+        Some(
+            "agent exit 101 in 1s\nrunner capture receipt: 0/0 bytes complete\nrunner capture stderr: 0/0 bytes complete\n",
+        ),
+    ));
+    assert_ne!(super::compare(&old, &now), super::Comparison::Acceptable);
+}
+
+#[test]
+fn intake_truncated_evidence_not_green() {
+    let old = parse(&job(
+        JobStatus::Finished,
+        Some(
+            "agent exit 101 in 1s\nrunner capture receipt: 1/2 bytes truncated\nrunner capture stderr: 0/0 bytes complete\n",
+        ),
+    ));
+    let now = parse(&job(
+        JobStatus::Finished,
+        Some(
+            "agent exit 101 in 1s\nrunner capture receipt: 1/2 bytes truncated\nrunner capture stderr: 0/0 bytes complete\n",
+        ),
+    ));
+    assert_eq!(super::compare(&old, &now), super::Comparison::Unavailable);
+}
+
+#[test]
+fn cargo_subset_and_difference_comparison() {
+    let mk = |names: &[&str]| {
+        let failures = names
+            .iter()
+            .map(|name| format!("test {name} ... FAILED\n"))
+            .collect::<String>();
+        parse(&job(
+            JobStatus::Finished,
+            Some(&format!(
+                "agent exit 101 in 1s\nrunner capture receipt: 100/100 bytes complete\nrunner capture stderr: 0/0 bytes complete\n{}{}",
+                running("alpha"),
+                failures
+            )),
+        ))
+    };
+    let baseline = mk(&["m::old", "m::fixed"]);
+    let subset = mk(&["m::old"]);
+    let difference = mk(&["m::old", "m::new"]);
+    assert_eq!(
+        super::compare(&baseline, &subset),
+        super::Comparison::Acceptable
+    );
+    assert_eq!(
+        super::compare(&baseline, &difference),
+        super::Comparison::NewRed
+    );
+}
+
+#[test]
+fn exit_zero_is_acceptable_even_without_failure_evidence() {
+    let zero = parse(&job(JobStatus::Finished, Some("agent exit 0 in 1s")));
+    let absent = parse(&job(JobStatus::Lost, None));
+    assert_eq!(
+        super::compare(&absent, &zero),
+        super::Comparison::Acceptable
+    );
+}
+
+#[test]
 fn exit_one_fails_with_its_code() {
     let result = parse(&job(JobStatus::Finished, Some("boom\nagent exit 1 in 8s")));
     assert!(!result.pass);
