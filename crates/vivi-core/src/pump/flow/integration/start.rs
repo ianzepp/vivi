@@ -106,7 +106,8 @@ impl StepHandler for SyncStart {
         let brief = format!(
             "Merge main ({main}) into the need branch at {tip}, \
              resolve any conflicts, and publish the result to the need branch. \
-             Answer with the merge envelope.\n",
+             Answer with the merge envelope.\n\n{}",
+            crate::pump::envelope::format::role(RoleKind::Merge),
             main = tips.main_tip,
             tip = tips.need_tip,
         );
