@@ -532,3 +532,35 @@ fn a_requeue_of_an_open_step_with_no_job_and_no_hold_is_still_refused() -> R {
     );
     Ok(())
 }
+
+#[test]
+fn a_blocked_replan_waits_and_raises_no_refusal() -> R {
+    let mut rig = rig()?;
+    let need = rig.need.clone();
+    rig.mail.set_prerequisites(&need, &["dep"]);
+    let id = rig.post(&PumpActionRequest::replan())?;
+    rig.phase()?;
+    let alarms = rig.exceptions();
+    rig.phase()?;
+
+    assert!(rig.applied(&id)?, "the letter is applied, not refused");
+    assert!(!alarms.contains(ACTION_REFUSED), "{alarms}");
+    assert!(
+        !alarms.contains(crate::pump::flow::tick::OPERATOR_HOLD),
+        "{alarms}"
+    );
+    let runs = rig.store.runs_of(&need)?;
+    assert_eq!(runs.len(), 1, "no successor run");
+    assert_eq!(runs[0].state, "restarting");
+    assert_eq!(
+        rig.store.restart_entry(&need, 1)?.as_deref(),
+        Some("plan"),
+        "one durable intent"
+    );
+    assert_eq!(
+        rig.exceptions(),
+        alarms,
+        "a spent letter raises nothing again"
+    );
+    Ok(())
+}

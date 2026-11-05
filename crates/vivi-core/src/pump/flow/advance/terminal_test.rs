@@ -15,6 +15,7 @@ use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::load::load;
 use crate::pump::flow::mail::{MailReader, MailWriter, NeedStatus, TaskState, TaskStatus};
 use crate::pump::flow::outcome::Outcome;
+use crate::pump::flow::tick::OPERATOR_HOLD;
 use crate::pump::host::{Ctx, test_ctx};
 use crate::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
 use vivi_error::VivariumError;
@@ -404,5 +405,62 @@ fn a_land_names_the_branch_and_commit_the_main_merge_landed() -> R {
         })
         .expect("need closed");
     assert_eq!(note, "landed by the pump flow: main at b05ff62");
+    Ok(())
+}
+
+#[test]
+fn a_blocked_restart_terminal_queues_the_restart_and_keeps_one_intent() -> R {
+    let mut rig = rig()?;
+    rig.mail.set_prerequisites(NEED, &["dep"]);
+    let cto = rig.step("cto", "rework")?;
+    rig.store.upsert_need_branch(&NeedBranchRow::for_run(
+        &run_row(),
+        "vivi/unit/n1-a1".into(),
+        Some("main".into()),
+        "live",
+        ".",
+        vec![],
+    ))?;
+    let other = rig.step("build1", "")?.task;
+    rig.mail.calls.clear();
+
+    let advanced = rig.advance(&cto)?;
+    assert_eq!(advanced.finished, vec![Finished::RestartQueued]);
+
+    assert_eq!(
+        rig.store.restart_entry(NEED, 1)?.as_deref(),
+        Some("rework1"),
+        "the requested entry is durable"
+    );
+    let runs = rig.store.runs_of(NEED)?;
+    assert_eq!(runs.len(), 1, "no successor run");
+    assert_eq!(runs[0].state, "restarting");
+    assert!(rig.store.steps_of(NEED, 2)?.is_empty(), "no successor step");
+    assert_eq!(rig.mail.sentinel_count(NEED)?, 1, "no successor sentinel");
+    assert!(
+        rig.mail
+            .position(|c| matches!(c, Call::CloseTask { handle, .. } if *handle == rig.sentinel))
+            .is_none(),
+        "the parent sentinel stays open"
+    );
+    assert_eq!(rig.mail.task_state(&rig.sentinel)?.status, TaskStatus::Open);
+    assert_eq!(
+        rig.mail.task_state(&other)?.status,
+        TaskStatus::Open,
+        "the old run's steps stay open"
+    );
+    assert_eq!(rig.mail.need_state(NEED)?, NeedStatus::Open);
+    assert!(
+        rig.store.exceptions()?.is_empty(),
+        "an open prerequisite waits silently: {:?}",
+        rig.store.exceptions()?
+    );
+    assert!(
+        rig.store
+            .steps_of(NEED, 1)?
+            .iter()
+            .all(|r| r.verdict.as_deref() != Some(OPERATOR_HOLD)),
+        "a prerequisite wait is not an operator hold"
+    );
     Ok(())
 }
