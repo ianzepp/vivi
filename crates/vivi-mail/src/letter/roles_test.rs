@@ -18,9 +18,44 @@ fn a_valid_hand_envelope_parses() {
     assert_eq!(parsed.answer, "built");
     assert_eq!(parsed.body, "report");
     assert_eq!(parsed.front["change"][0], "src/a.rs");
-    assert_eq!(parsed.front["check"][0]["seconds"], 94);
+    assert_eq!(parsed.front["check"][0]["seconds"], 94.0);
     assert_eq!(parsed.front["check"][0]["result"], "pass");
     assert_eq!(parsed.front["follow_up"][0]["need"], "fix b");
+}
+
+#[test]
+fn check_seconds_accept_integer_and_decimal_numbers() {
+    let check_row = |seconds: &str| {
+        format!(
+            "answer = \"built\"\n\n[[check]]\ncmd = \"cargo test\"\nresult = \"pass\"\
+             \nseconds = {seconds}\n"
+        )
+    };
+    for (front, expected) in [
+        (check_row("0"), 0.0),
+        (check_row("94"), 94.0),
+        (check_row("0.0"), 0.0),
+        (check_row("12.5"), 12.5),
+        (check_row("1.25e1"), 12.5),
+        (check_row("-0.0"), 0.0),
+    ] {
+        let parsed = parse_for(RoleKind::Hand, &hand(&front)).unwrap();
+        assert_eq!(parsed.answer, "built");
+        assert_eq!(parsed.body, "report");
+        assert_eq!(parsed.front["check"][0]["seconds"].as_f64(), Some(expected));
+    }
+
+    let merge = check_row("12.5").replace("built", "merged");
+    let parsed = parse_for(RoleKind::Merge, &hand(&merge)).unwrap();
+    assert_eq!(parsed.answer, "merged");
+    assert_eq!(parsed.body, "report");
+    assert_eq!(parsed.front["check"][0]["seconds"].as_f64(), Some(12.5));
+
+    let repairer = check_row("12").replace("built", "failed");
+    let parsed = parse_for(RoleKind::Repairer, &hand(&repairer)).unwrap();
+    assert_eq!(parsed.answer, "failed");
+    assert_eq!(parsed.body, "report");
+    assert_eq!(parsed.front["check"][0]["seconds"].as_f64(), Some(12.0));
 }
 
 #[test]
@@ -216,6 +251,7 @@ fn a_valid_repairer_envelope_parses() {
     let parsed = parse_for(RoleKind::Repairer, &hand(REPAIRER_BUILT)).unwrap();
     assert_eq!(parsed.answer, "built");
     assert_eq!(parsed.front["change"][0], "src/a.rs");
+    assert_eq!(parsed.front["check"][0]["seconds"].as_f64(), Some(12.0));
     let failed = parse_for(RoleKind::Repairer, &hand("answer = \"failed\"\n")).unwrap();
     assert_eq!(failed.answer, "failed");
 }
