@@ -33,6 +33,33 @@ fn spec(id: &str) -> JobSpec {
 }
 
 #[test]
+fn intake_supersedes_queued_applied_job_is_never_dispatched() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ctx, host) = test_ctx(dir.path(), PumpConfig::default());
+    let ctx = ctx.with_routing(merge_routing(None));
+    host.reply("pool status", 0, "slot primary bridge slot-1 free\\n");
+    host.reply("task send", 0, "created hand a1b2c3d4\\n");
+    host.reply(
+        "pool dispatch",
+        0,
+        "dispatched a1b2c3d4 bridge slot-1 model/default unit/task\\n",
+    );
+    let mut store = Store::default();
+    let mut job = PoolJob::from(JobSpec::new(
+        "retired-pending",
+        "merge",
+        "merge",
+        "integrate",
+        "merge branches",
+    ));
+    job.applied_at = Some(11);
+    store.jobs.insert(job.id.clone(), job);
+
+    assert!(dispatch_pending(&ctx, &mut store).unwrap().is_empty());
+    assert_eq!(pool_dispatch_calls(&host), 0);
+    assert_eq!(store.jobs["retired-pending"].status, JobStatus::Pending);
+}
+#[test]
 fn enqueue_refuses_a_read_only_job_without_a_start_ref() {
     let mut store = Store::default();
     let mut job = spec("review-1");
@@ -971,6 +998,27 @@ fn a_held_job_without_a_step_names_the_job_release() {
 }
 
 #[test]
+fn an_operator_release_does_not_revive_an_applied_held_job() {
+    let (_dir, ctx, host, mut store) = refusal_rig_for(
+        Some("t1"),
+        None,
+        1,
+        "refused t1 \\\"no usable bridge\\\"\\n",
+    );
+    for _ in 0..3 {
+        dispatch_pending(&ctx, &mut store).unwrap();
+    }
+    store.jobs.get_mut("m1").unwrap().applied_at = Some(11);
+    let pump_db = PumpStore::open(&ctx.home.join(DB_FILENAME)).unwrap();
+    pump_db.request_job_release("m1", 1).unwrap();
+
+    assert!(dispatch_pending(&ctx, &mut store).unwrap().is_empty());
+    assert!(store.jobs["m1"].held.is_some());
+    assert_eq!(pool_dispatch_calls(&host), 3);
+    assert!(pump_db.take_job_releases().unwrap().is_empty());
+}
+
+#[test]
 fn a_release_request_clears_the_hold_and_the_job_is_offered_again() {
     let (_dir, ctx, host, mut store) =
         refusal_rig_for(Some("t1"), None, 1, "refused t1 \"no usable bridge\"\n");
@@ -1006,6 +1054,28 @@ fn a_release_request_clears_the_hold_and_the_job_is_offered_again() {
             .any(|line| line.contains("job release ignored: nope is not held"))
     );
     assert!(pump_db.take_job_releases().unwrap().is_empty());
+}
+
+#[test]
+fn config_reload_does_not_release_an_applied_held_job() {
+    let (_dir, ctx, _host, mut store) = refusal_rig_for(
+        Some("t1"),
+        None,
+        1,
+        "refused t1 \\\"no usable bridge\\\"\\n",
+    );
+    for _ in 0..3 {
+        dispatch_pending(&ctx, &mut store).unwrap();
+    }
+    let job = store.jobs.get_mut("m1").unwrap();
+    job.applied_at = Some(11);
+    let held = job.held.clone();
+    let refusals = job.dispatch_refusals;
+
+    release_held_after_reload(&ctx, &mut store);
+
+    assert_eq!(store.jobs["m1"].held, held);
+    assert_eq!(store.jobs["m1"].dispatch_refusals, refusals);
 }
 
 #[test]

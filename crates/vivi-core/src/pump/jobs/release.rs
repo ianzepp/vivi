@@ -13,7 +13,7 @@ use vivi_error::VivariumError;
 /// again.
 pub(in crate::pump) fn release_held_after_reload(ctx: &Ctx, st: &mut impl JobStore) {
     for (id, job) in st.jobs_mut().iter_mut() {
-        if job.status != JobStatus::Pending || job.held.is_none() {
+        if job.status != JobStatus::Pending || job.held.is_none() || job.applied_at.is_some() {
             continue;
         }
         job.held = None;
@@ -34,10 +34,9 @@ pub(super) fn apply_releases(ctx: &Ctx, st: &mut impl JobStore) -> Result<(), Vi
         return Ok(());
     }
     for id in PumpStore::open(&path)?.take_job_releases()? {
-        let held = st
-            .jobs_mut()
-            .get_mut(&id)
-            .filter(|job| job.status == JobStatus::Pending && job.held.is_some());
+        let held = st.jobs_mut().get_mut(&id).filter(|job| {
+            job.status == JobStatus::Pending && job.held.is_some() && job.applied_at.is_none()
+        });
         let Some(job) = held else {
             ctx.log(&format!("job release ignored: {id} is not held"));
             continue;

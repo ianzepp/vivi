@@ -137,6 +137,25 @@ fn requeue_job_writes_a_release_row_for_a_held_job() {
 }
 
 #[test]
+fn requeue_job_refuses_an_applied_pending_job_even_when_held() {
+    let project = project();
+    let mut st = State::default();
+    let mut spec = JobSpec::new("retired", "merge", "merge", "integrate", "merge branches");
+    spec.id = String::from("retired");
+    enqueue(&mut st, spec).unwrap();
+    let job = st.jobs.get_mut("retired").unwrap();
+    job.held = Some(String::from("no usable bridge"));
+    job.applied_at = Some(11);
+    let store = PumpStore::open(&project.home().join(DB_FILENAME)).unwrap();
+    store.initialize_control("running").unwrap();
+    store.save(&st).unwrap();
+
+    let error = run(project.root(), &job_command("retired", false)).unwrap_err();
+    assert!(error.to_string().contains("applied"), "{error}");
+    assert!(store.take_job_releases().unwrap().is_empty());
+}
+
+#[test]
 fn requeue_job_refuses_a_job_that_is_not_held_or_unknown() {
     let project = project();
     let store = seed_jobs(&project);
