@@ -68,6 +68,85 @@ fn strings(values: &[&String]) -> Vec<String> {
 }
 
 #[test]
+fn author_edits_dependencies_through_recipient_handle() {
+    let (mailspace, _tmp) = roster();
+    let (dep, _) = send_item(&mailspace, "need", "work", &[]);
+    let (_, recipient_handle) = send_item(&mailspace, "need", "release", &[]);
+    let result = mailspace
+        .set_dependencies("ceo", &recipient_handle, "need", &strings(&[&dep]), &[])
+        .unwrap();
+    assert!(result[0].added && result[0].changed);
+    assert_eq!(node(&mailspace, &recipient_handle).readiness, "blocked");
+}
+
+#[test]
+fn mind_and_operator_edit_without_holding_a_copy() {
+    let (mut mailspace, _tmp) = roster();
+    mailspace.add_identity("operator").unwrap();
+    mailspace
+        .set_role(
+            "operator",
+            RoleUpdate {
+                kind: Some(Some("operator".into())),
+                ..RoleUpdate::default()
+            },
+        )
+        .unwrap();
+    let (dep, _) = send_item(&mailspace, "need", "work", &[]);
+    let (_, handle) = send_item(&mailspace, "need", "release", &[]);
+    for actor in ["boss", "operator"] {
+        let write = mailspace
+            .set_dependencies(actor, &handle, "need", &strings(&[&dep]), &[])
+            .unwrap();
+        assert!(write[0].added && write[0].changed);
+        mailspace
+            .set_dependencies(actor, &handle, "need", &[], &strings(&[&dep]))
+            .unwrap();
+    }
+    assert_eq!(node(&mailspace, &handle).readiness, "ready");
+}
+
+#[test]
+fn unauthorized_holder_cannot_edit_dependencies() {
+    let (mailspace, _tmp) = roster();
+    let (dep, _) = send_item(&mailspace, "need", "work", &[]);
+    let (_, held) = send_item(&mailspace, "need", "release", &[]);
+    let before = letters(&mailspace);
+    let err = mailspace
+        .set_dependencies("cto", &held, "need", &strings(&[&dep]), &[])
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("may not change the dependencies"), "{err}");
+    assert_eq!(letters(&mailspace), before);
+    assert!(mailspace.backlog_dependencies(&held).unwrap().is_empty());
+    assert_eq!(node(&mailspace, &held).readiness, "ready");
+}
+
+#[test]
+fn unaddressed_item_accepts_dependency_edits() {
+    let (mailspace, _tmp) = roster();
+    let (dep, _) = send_item(&mailspace, "need", "work", &[]);
+    let result = mailspace
+        .send(SendRequest {
+            from: "ceo".into(),
+            to: vec![],
+            cc: vec![],
+            bcc: vec![],
+            subject: "unaddressed".into(),
+            body: body_for("need", "body"),
+            role: "needs".into(),
+            kind: Some("need".into()),
+            reply_to: None,
+        })
+        .unwrap();
+    let handle = result.sent;
+    mailspace
+        .set_dependencies("ceo", &handle, "need", &strings(&[&dep]), &[])
+        .unwrap();
+    assert_eq!(node(&mailspace, &handle).readiness, "blocked");
+}
+
+#[test]
 fn author_adds_a_dependency_after_the_send() {
     let (mailspace, _tmp) = roster();
     let (dep, dep_held) = send_item(&mailspace, "need", "work", &[]);

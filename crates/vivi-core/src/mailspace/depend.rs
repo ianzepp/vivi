@@ -75,8 +75,12 @@ impl Mailspace {
                 "name at least one dependency to --add or --remove".into(),
             ));
         }
-        let (identity, message) = self.resolve_owned_message(identity, handle)?;
+        let identity = self.resolve_identity(identity)?;
         let storage = self.storage()?;
+        let message_id = storage.resolve_message_token(handle)?;
+        let message = storage
+            .message_by_id(&message_id)?
+            .ok_or_else(|| VivariumError::Message(format!("message not found: {handle}")))?;
         let item = self.writable_item(&storage, &identity, handle, kind, &message)?;
         let to_add = resolve_targets(&storage, add, true)?;
         let to_remove = resolve_targets(&storage, remove, false)?;

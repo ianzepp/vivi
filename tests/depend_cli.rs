@@ -4,6 +4,43 @@ use std::path::Path;
 use std::process::{Command, Output};
 
 #[test]
+fn author_can_depend_through_recipient_handle_and_unauthorized_holder_is_refused() {
+    let project = tempfile::tempdir().unwrap();
+    init_roster(project.path());
+    let root = project.path().to_str().unwrap();
+    let dep = send_work(project.path(), "need", "work", &[]);
+    let item = send_work(project.path(), "need", "release", &[]);
+    let result = vivi([
+        "need",
+        "depend",
+        &item.held,
+        "--add",
+        &dep.held,
+        "--for",
+        "ceo",
+        "--project",
+        root,
+    ]);
+    assert_success(&result);
+    assert!(blocked(root).contains(&item.held));
+
+    let refused = vivi([
+        "need",
+        "depend",
+        &item.held,
+        "--remove",
+        &dep.held,
+        "--for",
+        "cto",
+        "--project",
+        root,
+    ]);
+    assert!(!refused.status.success());
+    assert!(stderr(&refused).contains("may not change the dependencies"));
+    assert!(blocked(root).contains(&item.held));
+}
+
+#[test]
 fn need_depend_adds_and_removes_prerequisites_and_graph_follows() {
     let project = tempfile::tempdir().unwrap();
     init_roster(project.path());
