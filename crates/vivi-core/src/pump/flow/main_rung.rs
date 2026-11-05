@@ -4,8 +4,6 @@ mod green;
 mod red;
 mod schedule;
 
-use std::collections::BTreeSet;
-
 use crate::pump::flow::def::FlowKind;
 use crate::pump::flow::handlers::{FlowMail, Registry, TickPhase};
 use crate::pump::flow::load::load;
@@ -303,17 +301,7 @@ fn apply<M: FlowMail>(
         }
         "fail" => {
             store.set_main_state(&key(TESTED, target), tip)?;
-            let failing: BTreeSet<String> = payload
-                .get("failing")
-                .and_then(|v| v.as_array())
-                .map(|ids| {
-                    ids.iter()
-                        .filter_map(|id| id.as_str().map(str::to_owned))
-                        .collect()
-                })
-                .unwrap_or_default();
-            let tail = payload.get("tail").and_then(|v| v.as_str()).unwrap_or("");
-            red::report_red(ctx, store, mail, target, tip, &failing, tail)?;
+            red::report_red(ctx, store, mail, target, tip, &payload)?;
         }
         _ => lost(ctx, store, target, tip, job, same_tip)?,
     }

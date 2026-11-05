@@ -13,6 +13,7 @@ use crate::pump::flow::def::FlowKind;
 use crate::pump::flow::handlers::FlowMail;
 use crate::pump::flow::kind;
 use crate::pump::flow::mail::{MailReader, MailWriter, NeedStatus};
+use crate::pump::flow::rung_step;
 use crate::pump::flow::tick::raise_once;
 use crate::pump::flow::verify;
 use crate::pump::host::{Ctx, shell_quote};
@@ -53,7 +54,10 @@ pub(crate) fn find_repair_need<M: FlowMail>(
     Ok(None)
 }
 
-/// A main rung went red on `tip`: file or reply on the repair need.
+/// A main rung went red on `tip`: file or reply on the repair need. The
+/// `outcome` is the enriched rung answer (`rung_step::answer`); its canonical
+/// failing ids decide suppression and its diagnostic is the one report the
+/// filed body, every MainRed reply and every opened record carry.
 ///
 /// # Errors
 /// Returns an error when the state, the mailspace, or the `need send` fails.
@@ -63,40 +67,54 @@ pub(crate) fn report_red<M: FlowMail>(
     mail: &mut M,
     target: &str,
     tip: &str,
-    failing: &BTreeSet<String>,
-    tail: &str,
+    outcome: &serde_json::Value,
 ) -> Result<(), VivariumError> {
     if predates_repair(ctx, store, target, tip)? {
         return Ok(());
     }
+    let failing = failing_ids(outcome);
+    let report = rung_step::render_diagnostic(outcome);
     let state_key = key(FAILING, target);
     let previous: BTreeSet<String> = match store.main_state(&state_key)? {
         Some(json) => serde_json::from_str(&json)
             .map_err(|e| VivariumError::Message(format!("bad {state_key} state: {e}")))?,
         None => BTreeSet::new(),
     };
-    let existing = match resume_filed(store, mail, target, tip)? {
-        Resumed::Opened => return store_failing(store, &state_key, failing),
+    let existing = match resume_filed(store, mail, target, tip, &report)? {
+        Resumed::Opened => return store_failing(store, &state_key, &failing),
         Resumed::Open(need) => Some(need),
         Resumed::None => find_repair_need(&*mail, target)?,
     };
     match existing {
         Some(need) => {
             store.clear_main_state(&key(SENDING, target))?;
-            if previous == *failing {
+            if previous == failing {
                 return Ok(());
             }
-            let rest = format!("tested {tip}\n{}", body_tail(failing, tail));
-            mail.reply(&need, &note_body(NoteWord::MainRed, None, &rest)?)?;
+            mail.reply(&need, &note_body(NoteWord::MainRed, None, &report)?)?;
         }
         None => {
-            let Some(need) = file_need(ctx, store, target, tip, failing, tail)? else {
+            let Some(need) = file_need(ctx, store, target, tip, &report)? else {
                 return Ok(());
             };
-            open_filed(store, mail, target, tip, &need)?;
+            open_filed(store, mail, target, tip, &need, &report)?;
         }
     }
-    store_failing(store, &state_key, failing)
+    store_failing(store, &state_key, &failing)
+}
+
+/// The canonical failing ids the enriched rung answer carries. The set is the
+/// only suppression input; an empty set is still a failure, never green.
+fn failing_ids(outcome: &serde_json::Value) -> BTreeSet<String> {
+    outcome
+        .get("failing")
+        .and_then(|value| value.as_array())
+        .map(|ids| {
+            ids.iter()
+                .filter_map(|id| id.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Whether the tested `tip` predates the newest landed repair merge of
@@ -159,6 +177,7 @@ fn resume_filed<M: FlowMail>(
     mail: &mut M,
     target: &str,
     tip: &str,
+    report: &str,
 ) -> Result<Resumed, VivariumError> {
     let Some(need) = store.main_state(&key(FILED, target))? else {
         return Ok(Resumed::None);
@@ -171,17 +190,19 @@ fn resume_filed<M: FlowMail>(
     if MailReader::open_record(&*mail, &need)?.is_some() {
         return Ok(Resumed::Open(need));
     }
-    open_filed(store, mail, target, tip, &need)?;
+    open_filed(store, mail, target, tip, &need, report)?;
     Ok(Resumed::Opened)
 }
 
-/// Open the pump record on a filed repair need, then drop the sending marker.
+/// Open the pump record on a filed repair need, carrying `report` as its
+/// prose, then drop the sending marker.
 fn open_filed<M: FlowMail>(
     store: &PumpStore,
     mail: &mut M,
     target: &str,
     tip: &str,
     need: &str,
+    report: &str,
 ) -> Result<(), VivariumError> {
     let front = RecordFront {
         need: need.to_string(),
@@ -189,7 +210,7 @@ fn open_filed<M: FlowMail>(
         target: Some(target.to_string()),
         tested: Some(tip.to_string()),
     };
-    let record = vivi_mail::letter::render(&front, "")
+    let record = vivi_mail::letter::render(&front, report)
         .map_err(|error| VivariumError::Message(error.to_string()))?;
     MailWriter::open_record(mail, need, &record)?;
     store.clear_main_state(&key(SENDING, target))
@@ -207,23 +228,12 @@ fn alarm_unknown(ctx: &Ctx, target: &str, tip: &str, detail: &str) {
     );
 }
 
-/// The failing ids, one per line, then the tail.
-fn body_tail(failing: &BTreeSet<String>, tail: &str) -> String {
-    let mut text = String::from("failing:\n");
-    for id in failing {
-        text.push_str(&format!("{id}\n"));
-    }
-    text.push_str(&format!("\n{tail}\n"));
-    text
-}
-
 /// Write the repair need's body file; returns the short tip and the path.
 fn write_body(
     ctx: &Ctx,
     target: &str,
     tip: &str,
-    failing: &BTreeSet<String>,
-    tail: &str,
+    report: &str,
 ) -> Result<(String, std::path::PathBuf), VivariumError> {
     let short: String = tip.chars().take(8).collect();
     let safe: String = target
@@ -234,7 +244,7 @@ fn write_body(
     fs::create_dir_all(&dir)
         .map_err(|e| VivariumError::Message(format!("cannot create {}: {e}", dir.display())))?;
     let path = dir.join(format!("repair-{safe}-{short}.txt"));
-    let body = format!("tested: {tip}\n\n{}", body_tail(failing, tail));
+    let body = format!("tested: {tip}\n\n{report}");
     fs::write(&path, body)
         .map_err(|e| VivariumError::Message(format!("cannot write {}: {e}", path.display())))?;
     Ok((short, path))
@@ -249,14 +259,13 @@ fn file_need(
     store: &PumpStore,
     target: &str,
     tip: &str,
-    failing: &BTreeSet<String>,
-    tail: &str,
+    report: &str,
 ) -> Result<Option<String>, VivariumError> {
     if let Some(sent_tip) = store.main_state(&key(SENDING, target))? {
         alarm_unknown(ctx, target, &sent_tip, "an earlier send left no handle");
         return Ok(None);
     }
-    let (short, path) = write_body(ctx, target, tip, failing, tail)?;
+    let (short, path) = write_body(ctx, target, tip, report)?;
     let subject = format!("pump: main rung red on {target} at {short}");
     let args = format!(
         "need send --from {} --to {} --subject {} --body-file {} --mark repair --target {} --done-when {}",
