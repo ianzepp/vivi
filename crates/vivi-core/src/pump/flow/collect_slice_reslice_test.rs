@@ -30,7 +30,12 @@ use vivi_mail::letter::work::TaskFront;
 type R = Result<(), VivariumError>;
 
 const NEED: &str = "n1";
+/// The target's main ref.
+const MAIN: &str = "1111111111111111111111111111111111111111";
+/// The base recorded for the need branch.
 const BASE: &str = "2222222222222222222222222222222222222222";
+/// The published tip of the need branch.
+const TIP: &str = "4444444444444444444444444444444444444444";
 const FAILED: &str = "+++\nanswer = \"failed\"\n+++\ngave up";
 const DESIGN: &str = "+++\nanswer = \"blocked-scope\"\nscope_paths = [\"src/x.rs\"]\n\
                       scope_reason = 'needs a design'\nscope_design = true\n+++\nnothing changed";
@@ -93,6 +98,18 @@ fn rig() -> Result<Rig, VivariumError> {
         target: "default".into(),
         priors: Vec::new(),
     })?;
+    // The target's main and the branch ancestry are scripted explicitly.
+    host.reply(
+        "ls-remote origin refs/heads/main",
+        0,
+        &format!("{MAIN}\trefs/heads/main\n"),
+    );
+    host.reply(
+        &format!("ls-remote origin refs/heads/{}", need_branch::branch(NEED)),
+        0,
+        &format!("{TIP}\trefs/heads/{}\n", need_branch::branch(NEED)),
+    );
+    host.reply("merge-base --is-ancestor", 1, "");
     let mut mail = FakeMail::new("mind");
     MailWriter::open_record(&mut mail, NEED, &record_body(NEED, "build"))?;
     Ok(Rig {

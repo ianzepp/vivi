@@ -84,9 +84,7 @@ fn step(node: &str, task: &str) -> StepRow {
 
 fn rig() -> Result<Rig, VivariumError> {
     let dir = tempdir().map_err(|e| VivariumError::Other(e.to_string()))?;
-    let mut cfg = PumpConfig::default();
-    cfg.main = String::from(MAIN);
-    let (ctx, host) = test_ctx(dir.path(), cfg);
+    let (ctx, host) = test_ctx(dir.path(), PumpConfig::default());
     let mut routing = (*ctx.routing).clone();
     routing.roles.retain(|role| role.name != SLICER_ROLE);
     routing.roles.push(RoutedRole {
@@ -123,7 +121,8 @@ fn rig() -> Result<Rig, VivariumError> {
         fanout: Some("fan1".into()),
         deps: Vec::new(),
     })?;
-    // A live need branch on the default target, published at NEED_TIP.
+    // A live need branch on the default target, published at NEED_TIP, with
+    // the target's main and the ancestry query scripted explicitly.
     store.upsert_need_branch(&NeedBranchRow::for_run(
         &run,
         need_branch::branch(NEED),
@@ -133,10 +132,17 @@ fn rig() -> Result<Rig, VivariumError> {
         Vec::new(),
     ))?;
     host.reply(
+        "ls-remote origin refs/heads/main",
+        0,
+        &format!("{MAIN}\trefs/heads/main\n"),
+    );
+    host.reply(
         &format!("ls-remote origin refs/heads/{}", need_branch::branch(NEED)),
         0,
         &format!("{NEED_TIP}\trefs/heads/{}\n", need_branch::branch(NEED)),
     );
+    // The published tip holds work main does not: the branch is the base.
+    host.reply("merge-base --is-ancestor", 1, "");
     Ok(Rig {
         _dir: dir,
         ctx,

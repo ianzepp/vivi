@@ -6,7 +6,9 @@ use crate::pump::flow::advance::start::SENTINEL_NODE;
 use crate::pump::flow::budget_retry;
 use crate::pump::flow::collect_slice::runner_env_failure;
 use crate::pump::flow::def::NodeClass;
-use crate::pump::flow::fanout::{SLICE_NODE_PREFIX, SLICES_INVALID, check_batch, parse_reply};
+use crate::pump::flow::fanout::{
+    SLICE_NODE_PREFIX, SLICES_INVALID, check_batch, parse_reply, target_of,
+};
 use crate::pump::flow::handlers::{FlowMail, Registry, TickPhase};
 use crate::pump::flow::index::run_state;
 use crate::pump::flow::index::{JOB_STALE, PayloadIdentity, RunRow, StepRow, StepState};
@@ -14,7 +16,7 @@ use crate::pump::flow::reslice_apply;
 use crate::pump::flow::step_error::{self, STEP_ERROR_HELD, STEP_ERROR_LIMIT};
 use crate::pump::flow::step_inputs::{read_only_job, targets};
 use crate::pump::flow::tick::{OPERATOR_HOLD, raise_once};
-use crate::pump::flow::verify_inputs::{self, BranchRange};
+use crate::pump::flow::verify_inputs::{self, SlicerBase, SlicerSource};
 use crate::pump::host::Ctx;
 use crate::pump::jobs::rung_result::{ENV_FAILURE, EnvFailure};
 use crate::pump::jobs::{self, JobSpec, JobStatus, JobStore, PoolJob};
@@ -128,7 +130,8 @@ pub(crate) fn request<S: JobStore, M: FlowMail>(
             return Ok(row.task.clone());
         }
     }
-    let range = range_of(ctx, store, run)?;
+    let hint = target_of(&mail.task_body(&slice.task)?);
+    let base = verify_inputs::slicer_base(ctx, store, &run.need, hint.as_deref())?;
     let node = format!("{prefix}{}", earlier.len() + 1);
     let body = render(&TaskFront::step(&run.need, run.run, &node), &tail)
         .map_err(|err| VivariumError::Message(format!("reslice body for {node}: {err}")))?;
@@ -146,31 +149,10 @@ pub(crate) fn request<S: JobStore, M: FlowMail>(
     store.insert_run_step(run, &row)?;
     let fanout = store.slice_link(&slice.task)?.and_then(|link| link.fanout);
     store.link_slice(&SliceLink::for_run(run, &task, fanout, Vec::new()))?;
-    let brief = brief(ctx, mail, slice, mode, input)?;
-    let spec = job(ctx, run, &row, slice, mode, &brief, &range)?;
+    let brief = brief(ctx, mail, slice, mode, input, &base)?;
+    let spec = job(ctx, run, &row, slice, mode, &brief, &base)?;
     jobs::enqueue(st, spec)?;
     Ok(task)
-}
-
-/// The need branch a reslice job starts from: the stored row of the need, on
-/// its own target, with the branch tip (a live but unpublished branch gives
-/// its recorded base). A branch with neither is refused before anything is
-/// sent, bound or indexed.
-fn range_of(ctx: &Ctx, store: &PumpStore, run: &RunRow) -> Result<BranchRange, VivariumError> {
-    let range = verify_inputs::branch_range(ctx, store, &run.need)?;
-    pinned(&range)?;
-    Ok(range)
-}
-
-/// The immutable start of a job on `range`: the branch tip, or the recorded
-/// base of a live branch that was never published. Never the target's main.
-fn pinned(range: &BranchRange) -> Result<&str, VivariumError> {
-    range.tip.as_deref().ok_or_else(|| {
-        VivariumError::Message(format!(
-            "need branch {} of target {} has no published tip and no recorded base",
-            range.branch, range.target
-        ))
-    })
 }
 
 fn sentinel_task(rows: &[StepRow], run: &RunRow) -> Result<String, VivariumError> {
@@ -193,11 +175,11 @@ fn job(
     slice: &StepRow,
     mode: Mode,
     brief: &str,
-    range: &BranchRange,
+    base: &SlicerBase,
 ) -> Result<JobSpec, VivariumError> {
     let mut spec = read_only_job(ctx, run, row, &NodeClass::Slicer, SLICER_ROLE, brief)?;
-    spec.target = Some(range.target.clone());
-    spec.from_ref = Some(pinned(range)?.to_owned());
+    spec.target = Some(base.target.clone());
+    spec.from_ref = Some(base.sha.clone());
     spec.id = format!("reslice-{}-a1", row.task);
     spec.kind = KIND.to_owned();
     spec.task = Some(row.task.clone());
@@ -240,17 +222,36 @@ fn brief<M: FlowMail>(
     slice: &StepRow,
     mode: Mode,
     input: &str,
+    base: &SlicerBase,
 ) -> Result<String, VivariumError> {
     let context = reslice_context::quoted_context(&mail.task_body(&slice.task)?);
+    let fallback = base
+        .fallback_reason
+        .as_ref()
+        .map_or_else(String::new, |reason| format!("base fallback: {reason}\n"));
     Ok(format!(
-        "{}\n\nmode: {}\nslice size: aim for 5 to {} minutes\ntargets: {}\n\n\
+        "{}\n\nmode: {}\nslice size: aim for 5 to {} minutes\ntargets: {}\n\
+         base source: {}\nbase target: {}\nbase ref: {}\nbase sha: {}\n{}\n\
          {REQUEST_HEADING}\n\n{input}\n\n{}\n\n{context}",
         mode.instruction(),
         mode.word(),
         ctx.cfg.slice.minutes(),
         targets(ctx).join(", "),
+        source_word(base.source),
+        base.target,
+        base.reference,
+        base.sha,
+        fallback,
         reslice_context::CONTEXT_HEADING,
     ))
+}
+
+/// The brief word for a resolved base's source.
+fn source_word(source: SlicerSource) -> &'static str {
+    match source {
+        SlicerSource::NeedBranch => "need-branch",
+        SlicerSource::TargetMain => "target-main",
+    }
 }
 
 /// Registry hook: the reslices phase.
