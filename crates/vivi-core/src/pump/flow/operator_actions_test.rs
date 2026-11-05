@@ -213,6 +213,27 @@ fn a_requeue_queues_the_newest_job_again_at_the_same_attempt_once() -> R {
 }
 
 #[test]
+fn a_requeue_preserves_publication_assertions() -> R {
+    let mut rig = rig()?;
+    let assertions = vec![
+        "refs/heads/main=first-sha".to_string(),
+        "refs/tags/release=second-sha".to_string(),
+    ];
+    rig.jobs
+        .jobs
+        .get_mut("hand-a2")
+        .expect("original job")
+        .publish_if = assertions.clone();
+    let step = rig.step.clone();
+    rig.post(&PumpActionRequest::requeue(&step, "again"))?;
+    rig.phase()?;
+
+    let copy = rig.jobs.jobs().get("hand-a2-q1").expect("queued copy");
+    assert_eq!(copy.publish_if, assertions);
+    Ok(())
+}
+
+#[test]
 fn a_requeue_of_a_task_outside_the_run_is_refused_and_spent() -> R {
     let mut rig = rig()?;
     let id = rig.post(&PumpActionRequest::requeue("no-such-task", "x"))?;
