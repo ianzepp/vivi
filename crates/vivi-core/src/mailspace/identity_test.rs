@@ -194,6 +194,51 @@ fn ensure_pump_planner_role_fills_a_blank_charter_and_leaves_the_planner_seat_al
 }
 
 #[test]
+#[test]
+fn role_command_target_fields_deserialize_with_legacy_defaults() {
+    let legacy: crate::mailspace::MailspaceConfig =
+        toml::from_str("name = 'test'\n[[identities]]\nname = 'hand'\n").unwrap();
+    let role = &legacy.identities[0];
+    assert!(role.command.is_none(), "legacy row must default to None");
+    assert!(role.target.is_none(), "legacy row must default to None");
+
+    let configured: crate::mailspace::MailspaceConfig = toml::from_str(
+        "name = 'test'\n[[identities]]\nname = 'hand'\n\
+         command = 'vivi board --graph'\ntarget = 'slice:d366cf32-1'\n",
+    )
+    .unwrap();
+    let role = &configured.identities[0];
+    assert_eq!(role.command.as_deref(), Some("vivi board --graph"));
+    assert_eq!(role.target.as_deref(), Some("slice:d366cf32-1"));
+
+    let tmp = tempfile::tempdir().unwrap();
+    Mailspace::init(Some(tmp.path())).unwrap();
+    let path = tmp.path().join(".vivi").join("mailspace.toml");
+    let mut raw: toml::Value = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let mut row = toml::map::Map::new();
+    row.insert(String::from("name"), toml::Value::from("hand"));
+    row.insert(
+        String::from("command"),
+        toml::Value::from("vivi board --graph"),
+    );
+    row.insert(
+        String::from("target"),
+        toml::Value::from("slice:d366cf32-1"),
+    );
+    raw["identities"] = toml::Value::Array(vec![toml::Value::Table(row)]);
+    std::fs::write(&path, toml::to_string_pretty(&raw).unwrap()).unwrap();
+    let mut mailspace = Mailspace::open_root(tmp.path().to_path_buf()).unwrap();
+    let json = serde_json::to_value(mailspace.role_view("hand").unwrap()).unwrap();
+    assert_eq!(json["command"], "vivi board --graph");
+    assert_eq!(json["target"], "slice:d366cf32-1");
+
+    mailspace.add_role("plain", RoleUpdate::default()).unwrap();
+    let json = serde_json::to_value(mailspace.role_view("plain").unwrap()).unwrap();
+    assert!(json["command"].is_null());
+    assert!(json["target"].is_null());
+}
+
+#[test]
 fn role_named_matches_name_and_alias_ignoring_case() {
     let config: crate::mailspace::MailspaceConfig =
         toml::from_str("name = 'test'\n[[identities]]\nname = 'Slicer'\naliases = ['cutter']\n")

@@ -13,6 +13,9 @@ use vivi_error::VivariumError;
 use vivi_storage::storage::Storage;
 use vivi_util::duration::parse_duration_secs;
 
+/// Validation helpers for shared role identity fields.
+mod check;
+
 /// Preferred lifecycle values; freeform strings are still accepted.
 pub const ROLE_STATUS_ACTIVE: &str = "active";
 pub const ROLE_STATUS_PARKED: &str = "parked";
@@ -64,6 +67,12 @@ pub struct LocalIdentity {
     /// Pool this role dispatches to (`[pools.<name>]`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pool: Option<String>,
+    /// Command this role runs when dispatched (e.g. `vivi board --graph`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    /// Dispatch target the command addresses (e.g. a graph node slice).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
     /// When set, overrides the kind's read-only default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub read_only: Option<bool>,
@@ -91,6 +100,8 @@ pub struct RoleUpdate {
     pub add_labels: Vec<String>,
     pub clear_labels: Vec<String>,
     pub pool: Option<Option<String>>,
+    pub command: Option<Option<String>>,
+    pub target: Option<Option<String>>,
     pub read_only: Option<Option<bool>>,
     pub models: Option<Vec<String>>,
 }
@@ -112,6 +123,8 @@ pub struct RoleView {
     pub host: Option<String>,
     pub cadence: Option<String>,
     pub pool: Option<String>,
+    pub command: Option<String>,
+    pub target: Option<String>,
     pub read_only: Option<bool>,
     pub models: Vec<String>,
     pub charter: String,
@@ -134,6 +147,8 @@ impl LocalIdentity {
             host: None,
             cadence: None,
             pool: None,
+            command: None,
+            target: None,
             read_only: None,
             models: Vec::new(),
         }
@@ -518,6 +533,8 @@ impl Mailspace {
             host: role.host.clone(),
             cadence: role.cadence.clone(),
             pool: role.pool.clone(),
+            command: role.command.clone(),
+            target: role.target.clone(),
             read_only: role.read_only,
             models: role.models.clone(),
             has_charter: !charter.is_empty(),
@@ -750,6 +767,8 @@ fn identity_patch(update: &RoleUpdate, role: &LocalIdentity) -> IdentityPatch {
         host: update.host.clone(),
         cadence: update.cadence.clone(),
         pool: update.pool.clone(),
+        command: None,
+        target: None,
         read_only: update.read_only,
         labels: update_has_labels(update).then(|| role.labels.clone()),
         aliases: None,

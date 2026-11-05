@@ -321,6 +321,8 @@ fn role_view(project: &Project, identity: &LocalIdentity) -> RoleView {
         host: identity.host.clone(),
         cadence: identity.cadence.clone(),
         pool: identity.pool.clone(),
+        command: identity.command.clone(),
+        target: identity.target.clone(),
         read_only: identity.read_only,
         models: identity.models.clone(),
         has_charter: !charter.is_empty(),
