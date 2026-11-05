@@ -32,6 +32,7 @@ type Reg = Registry<Jobs, FakeMail>;
 const NEED: &str = "n1";
 const BASE: &str = "1111111111111111111111111111111111111111";
 const TIP: &str = "2222222222222222222222222222222222222222";
+const MAIN: &str = "3333333333333333333333333333333333333333";
 
 #[derive(Default)]
 struct Jobs {
@@ -112,13 +113,20 @@ fn rig() -> Result<Rig, VivariumError> {
     })
 }
 
-/// The remote tip of the need branch and the need thread.
+/// The remote tip of the need branch, the target's main, the proof that the
+/// tip holds work main does not, and the need thread.
 fn replies(host: &Arc<FakeHost>) -> R {
     host.reply(
         "ls-remote origin refs/heads/vivi/need/",
         0,
         &format!("{TIP}\trefs/heads/vivi/need/{NEED}\n"),
     );
+    host.reply(
+        "ls-remote origin refs/heads/main",
+        0,
+        &format!("{MAIN}\trefs/heads/main\n"),
+    );
+    host.reply(&format!("merge-base --is-ancestor {TIP} {MAIN}"), 1, "");
     let thread = serde_json::to_string(&json!([
         {"handle": NEED, "message_id": "m1", "from": "operator@local",
          "subject": "Need", "body": vivi_mail::letter::fixture::need_body(&["it works"], "Build the thing")}

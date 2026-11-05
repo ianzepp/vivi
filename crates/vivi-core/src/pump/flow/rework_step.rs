@@ -1,6 +1,9 @@
 //! Node override handler for the build node rework1: the slicer in rework
 //! mode. It reads the audit findings, requirement gaps, judge reason and
 //! failing rung output from the stored step payloads and cuts rework slices.
+//! The slicer starts from one immutable base, chosen by
+//! [`slicer_base`]: the published need branch tip when that holds work main
+//! does not, else the target's current main.
 
 use serde_json::Value;
 
@@ -12,8 +15,8 @@ use crate::pump::flow::index::{RunRow, StepRow};
 use crate::pump::flow::outcome::{self, StartAction, StartCx, StepHandler};
 use crate::pump::flow::step_inputs::{make_read_only, step_replies};
 use crate::pump::flow::verify_inputs::{
-    BranchRange, admitted_plan, audit_context, branch_range, capped, cto_ruling, latest_of_class,
-    rung_report,
+    SlicerBase, SlicerSource, admitted_plan, audit_context, capped, cto_ruling, latest_of_class,
+    rung_report, slicer_base,
 };
 use crate::pump::jobs::JobStore;
 use crate::pump::store::PumpStore;
@@ -40,14 +43,10 @@ struct ReworkStart;
 
 impl StepHandler for ReworkStart {
     fn start(&self, cx: &StartCx<'_>, step: &StepRow) -> Result<StartAction, VivariumError> {
-        let range = branch_range(cx.ctx, cx.store, &cx.run.need)?;
-        let tip = range.tip.clone().ok_or_else(|| {
-            VivariumError::Message(format!(
-                "need {} has no usable need branch tip to start rework from",
-                cx.run.need
-            ))
-        })?;
-        let brief = brief(cx, &range)?;
+        // One immutable selection: the brief and the job name the same
+        // snapshot, and neither resolves it again.
+        let base = slicer_base(cx.ctx, cx.store, &cx.run.need, None)?;
+        let brief = brief(cx, &base)?;
         let mut spec = outcome::role_job(
             cx.ctx,
             cx.run,
@@ -57,32 +56,47 @@ impl StepHandler for ReworkStart {
             SLICER_ROLE,
             &brief,
         );
-        spec.target = Some(range.target.clone());
+        spec.target = Some(base.target.clone());
         make_read_only(cx.ctx, &mut spec);
-        // The branch is the snapshot, merged work included; the target's main
-        // is only what an unpublished branch was cut from.
-        spec.from_ref = Some(tip);
+        // The selected base replaces the target's main that a read-only job
+        // starts from: merged need-branch work when there is any, else main.
+        spec.from_ref = Some(base.sha.clone());
         Ok(StartAction::Job(Box::new(spec)))
     }
 }
 
-fn brief(cx: &StartCx<'_>, range: &BranchRange) -> Result<String, VivariumError> {
+/// How the brief names a source: the ref kind the base SHA was read from.
+fn source_label(source: SlicerSource) -> &'static str {
+    match source {
+        SlicerSource::NeedBranch => "need branch",
+        SlicerSource::TargetMain => "target main",
+    }
+}
+
+fn brief(cx: &StartCx<'_>, base: &SlicerBase) -> Result<String, VivariumError> {
     let need = &cx.run.need;
     let plan = admitted_plan(cx.store, need)?;
     let (context_run, rows) = audit_context(cx.store, need, cx.run.run)?;
     let mut text = format!(
-        "{SLICE_ONLY}mode: rework\nneed: {need}\ntarget: {}\nneed branch: {}\n\n",
-        range.target, range.branch
+        "{SLICE_ONLY}mode: rework\nneed: {need}\ntarget: {}\nbase source: {}\nbase ref: {}\n\
+         base sha: {}\n",
+        base.target,
+        source_label(base.source),
+        base.reference,
+        base.sha
     );
+    if let Some(reason) = &base.fallback_reason {
+        text.push_str(&format!("base fallback: {reason}\n"));
+    }
+    text.push('\n');
     if context_run != cx.run.run {
         text.push_str(&format!(
             "context: run {context_run} (this run restarted at rework1)\n\n"
         ));
     }
     text.push_str(
-        "Cut rework slices that go on the existing need branch and fix exactly the findings, \
-         requirement gaps, failing rung output and slices that did not land below. Do not \
-         re-cut merged slices.\n\n",
+        "Cut rework slices on top of that base and fix exactly the findings, requirement gaps, \
+         failing rung output and slices that did not land below. Do not re-cut merged slices.\n\n",
     );
     text.push_str("## Admitted plan\n\n");
     match plan {
