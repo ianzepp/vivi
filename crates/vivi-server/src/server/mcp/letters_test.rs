@@ -996,3 +996,51 @@ fn an_event_letter_is_never_an_item_status() {
         "event"
     );
 }
+
+fn sender(name: &str, prefix: &str) -> IdentityRecord {
+    IdentityRecord {
+        name: name.to_owned(),
+        fingerprint: "f".into(),
+        spki_der: "d".into(),
+        tokens: Vec::new(),
+        mailspace_id: Some(format!("{prefix}-0000-0000-0000-000000000000")),
+        guest: false,
+    }
+}
+
+#[test]
+fn a_send_without_an_address_keeps_the_caller_and_invents_no_recipient() {
+    let identity = sender("alice", "aaaaaaaa");
+    let composed = compose_send(&identity, &[], "subject", "body", "chat").unwrap();
+    let raw = String::from_utf8(composed.raw_eml.clone()).unwrap();
+    let letter = parse_letter(&composed.raw_eml);
+    assert!(letter.from.contains("alice@aaaaaaaa.local"), "{raw}");
+    assert!(letter.to.is_empty(), "{raw}");
+    assert!(!raw.lines().any(|line| line.starts_with("To:")), "{raw}");
+    assert!(!raw.contains("chat@"), "{raw}");
+    assert_eq!(letter.subject, "subject");
+    assert_eq!(letter.kind_header.as_deref(), Some("chat"));
+    assert_eq!(composed.kind.as_deref(), Some("chat"));
+    assert_eq!(composed.to, "");
+    assert!(raw.contains("X-Vivi-Format: 1"), "{raw}");
+    assert!(
+        raw.contains(&format!("<{}@aaaaaaaa.local>", composed.traveling_id)),
+        "{raw}"
+    );
+}
+
+#[test]
+fn a_send_keeps_the_addresses_it_is_given() {
+    let identity = sender("alice", "aaaaaaaa");
+    let to = vec!["hand@bbbbbbbb.local".to_owned()];
+    let composed = compose_send(&identity, &to, "subject", "body", "chat").unwrap();
+    let raw = String::from_utf8(composed.raw_eml.clone()).unwrap();
+    let letter = parse_letter(&composed.raw_eml);
+    assert_eq!(letter.to, to);
+    assert_eq!(composed.to, "hand@bbbbbbbb.local");
+    assert!(
+        raw.lines()
+            .any(|line| line.starts_with("To: ") && line.contains("hand@bbbbbbbb.local")),
+        "{raw}"
+    );
+}

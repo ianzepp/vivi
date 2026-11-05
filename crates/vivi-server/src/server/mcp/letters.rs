@@ -198,9 +198,6 @@ pub fn compose_send(
 ) -> Result<ComposedLetter, String> {
     let gated = gate_body(kind, body)?;
     let from = caller_address(identity)?;
-    if to.is_empty() {
-        return Err("send needs at least one to address".to_owned());
-    }
     let traveling_id = mint_traveling_id().map_err(|_| "entropy unavailable".to_owned())?;
     let prefix = identity.mailspace_prefix().unwrap_or("server");
     let mut eml = build_compose_draft(&ComposeDraft {

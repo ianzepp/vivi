@@ -330,14 +330,7 @@ fn send(
             "kind must be need, task, want, chat, or mail",
         ));
     }
-    let to = if kind == "chat" && arguments.get("to").is_none() {
-        let prefix = identity.mailspace_prefix().ok_or_else(|| {
-            ToolError::new("this identity has no mailspace prefix; it cannot send")
-        })?;
-        vec![format!("chat@{prefix}.local")]
-    } else {
-        parse_to(arguments)?
-    };
+    let to = parse_to(arguments)?;
     let subject = req_str(arguments, "subject")?;
     let body = req_str(arguments, "body")?;
     if subject.trim().is_empty() || body.trim().is_empty() {

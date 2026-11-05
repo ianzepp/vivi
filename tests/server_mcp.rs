@@ -718,6 +718,136 @@ async fn a_sugared_send_builds_front_matter_in_a_durable_project() {
 }
 
 #[tokio::test]
+async fn mcp_send_without_addresses_uses_key_identity() {
+    let fx = fixture("send-no-to").await;
+    let hand = fx.add_member("hand", 2).await;
+    let caller = format!("creator@{}.local", prefix_for("creator"));
+    let sent = fx
+        .call(
+            &fx.token,
+            "send",
+            json!({"kind": "need", "subject": "no audience", "body": "do the thing",
+                   "done_when": "it is done"}),
+        )
+        .await;
+    let need_id = sent["message_id"].as_str().unwrap().to_owned();
+    let raw = fx.raw_letter(&fx.token, &need_id).await;
+    assert_eq!(from_address(&raw), caller, "{raw}");
+    assert!(!raw.lines().any(|line| line.starts_with("To:")), "{raw}");
+    assert!(raw.contains("X-Vivi-Kind: need"), "{raw}");
+    assert!(!raw.contains("chat@"), "{raw}");
+    // The stored envelope carries no recipient, and the send appended
+    // exactly one need letter, under the caller's own registered prefix.
+    let records = fx.items(&fx.token).await;
+    let needs: Vec<&Value> = records.iter().filter(|r| r["kind"] == "need").collect();
+    assert_eq!(needs.len(), 1, "{records:?}");
+    assert_eq!(needs[0]["message_id"], need_id);
+    assert_eq!(needs[0]["to"], Value::Null, "{needs:?}");
+    assert_eq!(needs[0]["from"], "creator", "{needs:?}");
+    assert_eq!(needs[0]["from_prefix"], prefix_for("creator"));
+    // Work without an address is still project work: the other member sees it.
+    let seen = fx.items(&hand).await;
+    assert!(
+        seen.iter().any(|record| record["message_id"] == need_id),
+        "{seen:?}"
+    );
+
+    // Ordinary mail without an address stays its sender's alone.
+    let mail = fx
+        .call(
+            &fx.token,
+            "send",
+            json!({"kind": "mail", "subject": "private", "body": "only me"}),
+        )
+        .await;
+    let mail_id = mail["message_id"].as_str().unwrap().to_owned();
+    let mail_raw = fx.raw_letter(&fx.token, &mail_id).await;
+    assert_eq!(from_address(&mail_raw), caller, "{mail_raw}");
+    assert!(
+        !mail_raw.lines().any(|line| line.starts_with("To:")),
+        "{mail_raw}"
+    );
+    let mine = fx.items(&fx.token).await;
+    let stored = mine
+        .iter()
+        .find(|record| record["message_id"] == mail_id)
+        .expect("the sender holds its own mail");
+    assert_eq!(stored["to"], Value::Null, "{stored:?}");
+    let theirs = fx.items(&hand).await;
+    assert!(
+        !theirs.iter().any(|record| record["message_id"] == mail_id),
+        "plain mail without an address is sender-only: {theirs:?}"
+    );
+}
+
+#[tokio::test]
+async fn mcp_chat_without_to_does_not_invent_chat_recipient() {
+    let fx = fixture("chat-no-to").await;
+    let caller = format!("creator@{}.local", prefix_for("creator"));
+    let arguments = [
+        json!({"kind": "chat", "subject": "omitted", "body": "hello"}),
+        json!({"kind": "chat", "to": [], "subject": "empty", "body": "hello"}),
+    ];
+    for (index, arguments) in arguments.into_iter().enumerate() {
+        let sent = fx.call(&fx.token, "send", arguments).await;
+        let id = sent["message_id"].as_str().unwrap().to_owned();
+        let raw = fx.raw_letter(&fx.token, &id).await;
+        assert_eq!(from_address(&raw), caller, "{raw}");
+        assert!(!raw.contains("chat@"), "{raw}");
+        assert!(!raw.lines().any(|line| line.starts_with("To:")), "{raw}");
+        assert!(raw.contains("X-Vivi-Kind: chat"), "{raw}");
+        let records = fx.items(&fx.token).await;
+        let stored = records
+            .iter()
+            .find(|record| record["message_id"] == id)
+            .expect("the chat letter is stored");
+        assert_eq!(stored["to"], Value::Null, "{stored:?}");
+        assert_eq!(stored["kind"], "chat", "{stored:?}");
+        assert_eq!(
+            records.iter().filter(|r| r["kind"] == "chat").count(),
+            index + 1,
+            "one appended letter per send: {records:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn mcp_explicit_to_delivers() {
+    let fx = fixture("send-to").await;
+    let hand = fx.add_member("hand", 2).await;
+    let to = address("hand");
+    let sent = fx
+        .call(
+            &fx.token,
+            "send",
+            json!({"kind": "need", "to": to, "subject": "addressed", "body": "do it",
+                   "done_when": "it is done"}),
+        )
+        .await;
+    let id = sent["message_id"].as_str().unwrap();
+    let raw = fx.raw_letter(&fx.token, id).await;
+    assert!(
+        raw.lines()
+            .any(|line| line.starts_with("To: ") && line.contains(&to)),
+        "{raw}"
+    );
+    let records = fx.items(&fx.token).await;
+    let stored = records
+        .iter()
+        .find(|record| record["message_id"] == id)
+        .expect("the letter is stored");
+    assert_eq!(stored["to"], to, "{stored:?}");
+    let listed = fx
+        .call(&hand, "list", json!({"kind": "need", "status": "open"}))
+        .await;
+    assert_eq!(
+        handles(&listed),
+        [sent["handle"].as_str().unwrap()],
+        "{listed}"
+    );
+}
+
+#[tokio::test]
 async fn a_durable_chat_send_carries_the_format_header() {
     let fx = fixture("chat-format").await;
     let sent = fx
@@ -1272,6 +1402,20 @@ impl Fixture {
         .await;
         assert_eq!(status, StatusCode::CREATED, "{body}");
         id
+    }
+
+    /// Every letter `token`'s member may see, as the transport serves them.
+    async fn items(&self, token: &str) -> Vec<Value> {
+        let (status, page) = send_json(
+            &self.app,
+            "GET",
+            &format!("/v1/projects/{}/items?since=0", self.project),
+            None,
+            Some(token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{page}");
+        page["records"].as_array().unwrap().clone()
     }
 
     /// The raw `.eml` of a stored letter.
