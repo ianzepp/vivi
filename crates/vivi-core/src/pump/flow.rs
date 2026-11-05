@@ -5,6 +5,7 @@ pub mod answer;
 pub mod audit_step;
 pub(crate) mod budget_retry;
 pub mod build_front;
+pub(crate) mod build_prereq;
 pub mod collect;
 pub mod collect_slice;
 pub mod collect_step;
