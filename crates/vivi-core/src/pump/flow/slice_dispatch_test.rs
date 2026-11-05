@@ -503,6 +503,28 @@ fn classified(rig: &Rig, push: &str, exit: i32, message: &str) -> AttemptResult 
     classify(&rig.ctx, &job).expect("terminal job")
 }
 
+/// A read-only correction reply whose runner summary discarded `total` files
+/// and sampled `path` first.
+fn correction_job(id: &str, total: u64, path: &str, message: &str) -> PoolJob {
+    let receipt = format!(
+        "pool result j1: read_only_discarded\npool p  slot s1  model m\nfrom main  default\n\
+         result: read_only_discarded {total}\nagent exit 0 in 12s, job 20s, started from 1234567890\n\
+         discarded paths (1 of {total}):\n  {path}\n\n--- receipt\n{message}\n\n\
+         --- stderr tail\n\n\n--- runner log tail\nlog line"
+    );
+    let mut job = hand_job(id, JobStatus::Finished, Some(receipt));
+    job.read_only = true;
+    job
+}
+
+fn envelope_failed_lines(rig: &Rig) -> Vec<String> {
+    rig.exceptions()
+        .lines()
+        .filter(|line| line.contains("flow-envelope-failed"))
+        .map(str::to_owned)
+        .collect()
+}
+
 const BUILT: &str = "+++\nanswer = \"built\"\nchange = [\"src/a.rs\"]\n+++\nDone.";
 const BLOCKED: &str = "+++\nanswer = \"blocked-scope\"\nscope_paths = [\"src/x.rs\", \"src/y.rs\"]\nscope_reason = 'needs the helper'\nscope_design = true\n+++\nChanged nothing.";
 
@@ -653,6 +675,125 @@ fn corrections_run_out_and_the_attempt_fails_with_an_alarm() -> R {
 }
 
 #[test]
+fn a_broken_correction_reports_its_own_discarded_facts_not_the_publication() -> R {
+    let rig = rig()?;
+    let original = hand_job(
+        "slice-t0001-a1",
+        JobStatus::Finished,
+        Some(receipt(
+            "pushed vivi/unit/t0001-a1 abcdef0123",
+            0,
+            "I published src/hand.rs but wrote no envelope.",
+        )),
+    );
+    let correction = correction_job(
+        "slice-t0001-a1-c1",
+        4,
+        "src/correction.rs",
+        "still no envelope",
+    );
+    let got = classify_corrected(&rig.ctx, &original, &correction);
+    assert!(
+        matches!(got, Some(AttemptResult::Correct { .. })),
+        "{got:?}"
+    );
+    let lines = envelope_failed_lines(&rig);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    let line = &lines[0];
+    assert!(line.contains("slice-t0001-a1-c1"), "{line}");
+    assert!(line.contains("hand job slice-t0001-a1-c1"), "{line}");
+    assert!(line.contains("reply has no envelope"), "{line}");
+    assert!(
+        line.contains("changed 4 files (first: src/correction.rs)"),
+        "{line}"
+    );
+    assert!(!line.contains("src/hand.rs"), "{line}");
+    Ok(())
+}
+
+#[test]
+fn an_exhausted_correction_is_reported_once_with_its_own_facts() -> R {
+    let rig = rig()?;
+    let original = hand_job(
+        "slice-t0001-a1",
+        JobStatus::Finished,
+        Some(receipt(
+            "pushed vivi/unit/t0001-a1 abcdef0123",
+            0,
+            "I published src/hand.rs but wrote no envelope.",
+        )),
+    );
+    let second = correction_job("slice-t0001-a1-c2", 2, "src/second.rs", "still no envelope");
+    assert_eq!(
+        classify_corrected(&rig.ctx, &original, &second),
+        Some(AttemptResult::Failed)
+    );
+    let lines = envelope_failed_lines(&rig);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(lines[0].contains("slice-t0001-a1-c2"), "{}", lines[0]);
+    assert!(
+        lines[0].contains("changed 2 files (first: src/second.rs)"),
+        "{}",
+        lines[0]
+    );
+    Ok(())
+}
+
+#[test]
+fn one_correction_job_is_reported_only_once() -> R {
+    let rig = rig()?;
+    let original = hand_job(
+        "slice-t0001-a1",
+        JobStatus::Finished,
+        Some(receipt(
+            "pushed vivi/unit/t0001-a1 abcdef0123",
+            0,
+            "no envelope",
+        )),
+    );
+    let correction = correction_job("slice-t0001-a1-c1", 3, "src/once.rs", "no envelope");
+    let first = classify_corrected(&rig.ctx, &original, &correction);
+    let again = classify_corrected(&rig.ctx, &original, &correction);
+    assert_eq!(first, again);
+    assert!(
+        matches!(first, Some(AttemptResult::Correct { .. })),
+        "{first:?}"
+    );
+    assert_eq!(envelope_failed_lines(&rig).len(), 1);
+    Ok(())
+}
+
+#[test]
+fn malformed_correction_front_matter_uses_the_refusal_description() -> R {
+    let rig = rig()?;
+    let original = hand_job(
+        "slice-t0001-a1",
+        JobStatus::Finished,
+        Some(receipt(
+            "pushed vivi/unit/t0001-a1 abcdef0123",
+            0,
+            "no envelope",
+        )),
+    );
+    let malformed = "+++\nanswer = \"built\"\nproof = 'x'\n+++\nDone.";
+    let correction = correction_job("slice-t0001-a1-c1", 2, "src/malformed.rs", malformed);
+    let got = classify_corrected(&rig.ctx, &original, &correction);
+    assert!(
+        matches!(got, Some(AttemptResult::Correct { .. })),
+        "{got:?}"
+    );
+    let lines = envelope_failed_lines(&rig);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(lines[0].contains("slice-t0001-a1-c1"), "{}", lines[0]);
+    assert!(
+        lines[0].contains("changed 2 files (first: src/malformed.rs)"),
+        "{}",
+        lines[0]
+    );
+    Ok(())
+}
+
+#[test]
 fn a_corrected_envelope_is_judged_against_the_original_jobs_machine_facts() -> R {
     let rig = rig()?;
     let original = hand_job(
@@ -674,6 +815,7 @@ fn a_corrected_envelope_is_judged_against_the_original_jobs_machine_facts() -> R
         matches!(&got, Some(AttemptResult::Built { branch, .. }) if branch == "vivi/unit/t0001-a1"),
         "{got:?}"
     );
+    assert!(envelope_failed_lines(&rig).is_empty());
     Ok(())
 }
 
