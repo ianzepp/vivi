@@ -204,6 +204,26 @@ fn handles(views: &[vivi_storage::storage::StoredMessageView]) -> Vec<String> {
     views.iter().map(|v| v.handle.clone()).collect()
 }
 
+/// The stored bytes of the letter `handle` names, as text.
+fn raw_letter(fx: &Fx, handle: &str) -> String {
+    let ms = fx.ms();
+    let storage = ms.storage().unwrap();
+    let id = storage.resolve_message_token(handle).unwrap();
+    String::from_utf8_lossy(&storage.read_message(&id).unwrap()).into_owned()
+}
+
+/// The RFC Message-ID header value of the letter `handle` names.
+fn message_id_of(fx: &Fx, handle: &str) -> String {
+    raw_letter(fx, handle)
+        .lines()
+        .find_map(|line| line.strip_prefix("Message-ID: "))
+        .expect("a Message-ID header")
+        .trim()
+        .trim_start_matches('<')
+        .trim_end_matches('>')
+        .to_owned()
+}
+
 #[tokio::test]
 async fn a_key_without_identity_sends_as_the_default_operator() {
     let fx = fixture("send");
@@ -581,9 +601,201 @@ async fn a_reply_threads_with_its_parent() {
         assert_eq!(messages.len(), 2, "{shown}");
         assert!(messages.iter().any(|m| m["body"] == "because"), "{shown}");
     }
-    // The reply went to the operator's inbox.
+    // A reply with no `to` copies nobody: it is the author's own sent copy.
     let inbox = fx.ms().list("operator", "inbox").unwrap();
-    assert_eq!(inbox.len(), 1);
+    assert!(
+        inbox.is_empty(),
+        "no implicit copy to the parent author: {inbox:?}"
+    );
+    let sent = fx.ms().list("mind", "sent").unwrap();
+    assert_eq!(handles(&sent), vec![reply_handle.to_owned()]);
+}
+
+/// A hosted send with no `to` is the key identity's own sent copy: the
+/// author is the key's role, nobody is delivered to, and the letter names
+/// that role. An explicit `from` may name the same role, by name or by an
+/// address of it, and changes nothing.
+#[tokio::test]
+async fn mcp_send_without_addresses_uses_key_identity() {
+    let fx = fixture("send-no-addresses");
+    let hand = fx.key(Some("hand"));
+    let sent = fx
+        .call(
+            &hand,
+            "send",
+            json!({"kind": "mail", "subject": "no one", "body": "alone"}),
+        )
+        .await;
+    assert_eq!(sent["from"], "hand", "{sent}");
+    assert!(sent["delivered"].as_array().unwrap().is_empty(), "{sent}");
+    let handle = sent["handle"].as_str().unwrap();
+    let ms = fx.ms();
+    assert_eq!(handles(&ms.list("hand", "sent").unwrap()), vec![handle]);
+    for role in ["operator", "mind"] {
+        assert!(ms.list(role, "inbox").unwrap().is_empty(), "{role}");
+    }
+    let raw = raw_letter(&fx, handle);
+    assert!(
+        raw.contains(&format!("From: <{}>", ms.address_for("hand"))),
+        "{raw}"
+    );
+    assert!(!raw.contains("To: <"), "no invented recipient: {raw}");
+
+    // The same role claimed by name or address is honored, not refused.
+    let by_name = fx
+        .call(
+            &hand,
+            "send",
+            json!({"kind": "mail", "from": "hand", "subject": "by name", "body": "alone"}),
+        )
+        .await;
+    assert_eq!(by_name["from"], "hand", "{by_name}");
+    let by_address = fx
+        .call(
+            &hand,
+            "send",
+            json!({"kind": "mail", "from": ms.address_for("hand"), "subject": "by address", "body": "alone"}),
+        )
+        .await;
+    assert_eq!(by_address["from"], "hand", "{by_address}");
+    assert_eq!(fx.ms().list("hand", "sent").unwrap().len(), 3);
+}
+
+/// A hosted reply with no `to` stays the actor's own sent copy on the
+/// parent's thread: the parent's author gets no implicit copy, and the
+/// thread still joins both letters.
+#[tokio::test]
+async fn mcp_reply_without_to_is_author_only_and_threaded() {
+    let fx = fixture("reply-author-only");
+    let operator = fx.key(None);
+    let mind = fx.key(Some("mind"));
+    let sent = fx
+        .call(
+            &operator,
+            "send",
+            json!({"kind": "need", "to": "mind", "subject": "question", "body": "+++\ndone_when = [\"answered\"]\n+++\n\nwhy?"}),
+        )
+        .await;
+    let handle = sent["handle"].as_str().unwrap().to_owned();
+
+    let replied = fx
+        .call(&mind, "reply", json!({"handle": handle, "body": "because"}))
+        .await;
+    assert_eq!(replied["in_reply_to"], handle);
+    assert_eq!(replied["from"], "mind", "{replied}");
+    assert!(
+        replied["delivered"].as_array().unwrap().is_empty(),
+        "{replied}"
+    );
+    let reply = replied["handle"].as_str().unwrap();
+
+    let ms = fx.ms();
+    for role in ["operator", "mind"] {
+        assert!(ms.list(role, "inbox").unwrap().is_empty(), "{role}");
+    }
+    assert_eq!(handles(&ms.list("mind", "sent").unwrap()), vec![reply]);
+    let parent_id = message_id_of(&fx, &handle);
+    let raw = raw_letter(&fx, reply);
+    assert!(raw.contains(&format!("In-Reply-To: {parent_id}")), "{raw}");
+    assert!(raw.contains(&format!("References: {parent_id}")), "{raw}");
+    assert_eq!(ms.thread(&handle, false, 50, 50).unwrap().len(), 2);
+}
+
+/// An explicit `to` on a hosted reply is honored as given: the named role
+/// gets a delivered copy in its inbox, threaded under the parent.
+#[tokio::test]
+async fn mcp_explicit_to_delivers() {
+    let fx = fixture("reply-explicit-to");
+    let operator = fx.key(None);
+    let mind = fx.key(Some("mind"));
+    let sent = fx
+        .call(
+            &operator,
+            "send",
+            json!({"kind": "mail", "to": "mind", "subject": "question", "body": "why?"}),
+        )
+        .await;
+    let handle = sent["handle"].as_str().unwrap().to_owned();
+    let ms = fx.ms();
+    assert_eq!(ms.list("mind", "inbox").unwrap().len(), 1);
+
+    let replied = fx
+        .call(
+            &mind,
+            "reply",
+            json!({"handle": handle, "to": "operator", "body": "because"}),
+        )
+        .await;
+    assert_eq!(replied["from"], "mind", "{replied}");
+    assert_eq!(replied["delivered"][0]["identity"], "operator", "{replied}");
+    let delivered = replied["delivered"][0]["handle"].as_str().unwrap();
+
+    // The operator's inbox holds the delivered copy, on the parent's thread.
+    let inbox = fx.ms().list("operator", "inbox").unwrap();
+    assert_eq!(handles(&inbox), vec![delivered.to_owned()]);
+    assert_eq!(inbox[0].subject, "Re: question");
+    assert_eq!(inbox[0].handle, delivered);
+    let parent_id = message_id_of(&fx, &handle);
+    let raw = raw_letter(&fx, delivered);
+    assert!(raw.contains(&format!("In-Reply-To: {parent_id}")), "{raw}");
+    let thread = fx.ms().thread(&handle, false, 50, 50).unwrap();
+    assert_eq!(thread.len(), 2, "{thread:?}");
+}
+
+/// A hosted key may claim its own identity, never another: an explicit
+/// `from` that resolves to a different role is refused before a write.
+#[tokio::test]
+async fn mcp_sender_assertion_cannot_impersonate() {
+    let fx = fixture("sender-assertion");
+    let hand = fx.key(Some("hand"));
+    let operator_address = fx.ms().address_for("operator");
+    let before = fx.ms().storage().unwrap().list_messages().unwrap().len();
+    for claimed in ["operator", "mind", operator_address.as_str(), "ghost"] {
+        let message = fx
+            .call_err(
+                &hand,
+                "send",
+                json!({"kind": "mail", "from": claimed, "to": "mind",
+                       "subject": "s", "body": "b"}),
+            )
+            .await;
+        assert!(message.contains("from:"), "{claimed}: {message}");
+        let ms = fx.ms();
+        for role in ["operator", "mind", "hand"] {
+            assert!(ms.list(role, "sent").unwrap().is_empty(), "{role}");
+            assert!(ms.list(role, "inbox").unwrap().is_empty(), "{role}");
+        }
+    }
+    assert_eq!(
+        fx.ms().storage().unwrap().list_messages().unwrap().len(),
+        before,
+        "a refused assertion writes nothing"
+    );
+
+    // The same claim on a reply is refused too.
+    let operator = fx.key(None);
+    let sent = fx
+        .call(
+            &operator,
+            "send",
+            json!({"kind": "mail", "to": "hand", "subject": "s", "body": "b"}),
+        )
+        .await;
+    let handle = sent["handle"].as_str().unwrap().to_owned();
+    let before = fx.ms().storage().unwrap().list_messages().unwrap().len();
+    let message = fx
+        .call_err(
+            &hand,
+            "reply",
+            json!({"handle": handle, "from": "operator", "body": "mine"}),
+        )
+        .await;
+    assert!(message.contains("from:"), "{message}");
+    assert_eq!(
+        fx.ms().storage().unwrap().list_messages().unwrap().len(),
+        before
+    );
+    assert!(fx.ms().list("hand", "sent").unwrap().is_empty());
 }
 
 #[tokio::test]

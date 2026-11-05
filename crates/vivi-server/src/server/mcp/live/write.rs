@@ -39,6 +39,29 @@ fn delivery_json(h: &Hosted, result: &DeliveryResult) -> Result<Value, ToolError
     }))
 }
 
+/// Check the `from` a hosted write claims, if any. The author stays the
+/// key's own identity (`h.actor`): a claim is honored only when it names
+/// that same role, by name, alias, or an address of it, so a key can never
+/// send as another identity. A refusal happens before anything is written.
+fn assert_sender(h: &Hosted, arguments: &Value) -> Result<(), ToolError> {
+    let Some(claimed) = opt_str(arguments, "from")? else {
+        return Ok(());
+    };
+    let resolved = h.ms.resolve_identity(claimed).map_err(|error| {
+        ToolError::new(format!(
+            "from: '{claimed}' is not a role of the project mailspace ({error})"
+        ))
+    })?;
+    if resolved == h.actor {
+        return Ok(());
+    }
+    Err(ToolError::new(format!(
+        "from: this call acts as '{}', so it cannot send as '{claimed}' ({resolved}): a hosted \
+         key never sends as another identity",
+        h.actor
+    )))
+}
+
 pub(super) fn send(
     h: &Hosted,
     limiter: &RateLimiter,
@@ -46,6 +69,7 @@ pub(super) fn send(
     arguments: &Value,
 ) -> Result<Value, ToolError> {
     rate_limit(limiter, project_id, &h.actor)?;
+    assert_sender(h, arguments)?;
     let kind = req_str(arguments, "kind")?;
     let role = match kind {
         "need" => "needs",
@@ -91,18 +115,16 @@ pub(super) fn reply(
     arguments: &Value,
 ) -> Result<Value, ToolError> {
     rate_limit(limiter, project_id, &h.actor)?;
+    assert_sender(h, arguments)?;
     let handle = req_str(arguments, "handle")?;
     let body = req_str(arguments, "body")?;
+    // The reply goes where the caller says it goes: an explicit `to`
+    // delivers, and no `to` leaves the reply as the author's own copy on the
+    // parent's thread (the library adds nobody from the parent).
+    let to = parse_to(arguments)?;
     let result =
-        h.ms.reply(
-            handle,
-            &h.actor,
-            Vec::new(),
-            Vec::new(),
-            None,
-            body.to_owned(),
-        )
-        .map_err(lib_error)?;
+        h.ms.reply(handle, &h.actor, to, Vec::new(), None, body.to_owned())
+            .map_err(lib_error)?;
     let mut out = delivery_json(h, &result)?;
     out["in_reply_to"] = json!(handle);
     Ok(out)
