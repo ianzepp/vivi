@@ -48,6 +48,12 @@ fn run_rung(case: &str, fail_on: Option<&str>) -> (Option<i32>, Vec<String>) {
     // PATH applies to this child only; the shim dir shadows any real cargo
     // while /usr/bin and /bin keep bash and the shebang resolvable.
     cmd.env("PATH", format!("{}:/usr/bin:/bin", dir.path().display()));
+    // A startup file named by BASH_ENV (or ENV for sh) would run before the
+    // script and could put the real cargo back ahead of the shim; the main
+    // case would then run the real root `cargo test`, which runs this test
+    // again, without end. The child gets neither.
+    cmd.env_remove("BASH_ENV");
+    cmd.env_remove("ENV");
     cmd.env("RUNG_SHIM_LOG", &log);
     cmd.env("RUNG_SHIM_COUNT", &count);
     if let Some(fail_on) = fail_on {
