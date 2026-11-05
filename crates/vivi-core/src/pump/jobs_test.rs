@@ -86,6 +86,10 @@ fn enqueue_is_idempotent_but_rejects_reusing_an_id_for_other_work() {
     let mut changed = spec("plan-board-1");
     changed.body = String::from("different plan");
     assert!(enqueue(&mut store, changed).is_err());
+
+    let mut guarded = spec("plan-board-1");
+    guarded.publish_if = vec![format!("refs/heads/main={}", "a".repeat(40))];
+    assert!(enqueue(&mut store, guarded).is_err());
 }
 
 #[test]
@@ -447,6 +451,10 @@ fn pool_command_carries_repository_and_write_context() {
     job.allow_default_branch = true;
     job.publish_ref = Some(String::from("refs/heads/next"));
     job.publish_expect = Some(String::from("a".repeat(40)));
+    job.publish_if = vec![
+        format!("refs/heads/main={}", "a".repeat(40)),
+        format!("refs/heads/release={}", "b".repeat(40)),
+    ];
     let command = pool_command(&job, "local", "a1b2c3d4");
     assert!(command.contains("--pool local"));
     assert!(command.contains("a1b2c3d4"));
@@ -460,6 +468,18 @@ fn pool_command_carries_repository_and_write_context() {
     assert!(!command.contains("--read-only"));
     assert!(command.contains("--publish-ref refs/heads/next"));
     assert!(command.contains(&format!("--publish-expect {}", "a".repeat(40))));
+    assert!(command.contains(&format!("--publish-if refs/heads/main={}", "a".repeat(40))));
+    assert!(command.contains(&format!(
+        "--publish-if refs/heads/release={}",
+        "b".repeat(40)
+    )));
+    let serialized = serde_json::to_string(&job).unwrap();
+    let restored: PoolJob = serde_json::from_str(&serialized).unwrap();
+    assert_eq!(restored.publish_if, job.publish_if);
+    let mut old_value = serde_json::to_value(&job).unwrap();
+    old_value.as_object_mut().unwrap().remove("publish_if");
+    let old_job: PoolJob = serde_json::from_value(old_value).unwrap();
+    assert!(old_job.publish_if.is_empty());
 }
 
 #[test]
