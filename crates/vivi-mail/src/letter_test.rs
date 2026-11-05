@@ -117,6 +117,20 @@ fn parse_moves_complete_tables_below_the_fence_into_the_front_matter() {
 }
 
 #[test]
+fn parse_moves_tables_wrapped_in_a_second_fence_block_into_the_front_matter() {
+    let text = "+++\nanswer = \"built\"\n+++\n\nThe report.\n\n+++\n\
+                [[check]]\ncmd = \"cargo test\"\nresult = \"fail\"\nseconds = 3.1\n\
+                detail = 'two tests failed'\n\n[[check]]\ncmd = \"stage 1\"\nresult = \"pass\"\nseconds = 50\n+++\n";
+    let reply = parse::<roles::Hand>(text).unwrap();
+    assert_eq!(reply.front.check.len(), 2);
+    assert_eq!(
+        reply.front.check[0].detail.as_deref(),
+        Some("two tests failed")
+    );
+    assert_eq!(reply.body, "The report.");
+}
+
+#[test]
 fn parse_letter_keeps_table_lines_in_prose_and_parse_refuses_them() {
     let text = "+++\nanswer = \"ok\"\n+++\n\n[[check]]\nx";
     assert!(matches!(

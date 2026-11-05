@@ -207,7 +207,19 @@ fn rescue_tables_below_fence<T: DeserializeOwned + Validate>(
     }
     let start = start?;
     let (prose, tables) = pieces.body.split_at(start);
-    let front_text = format!("{}\n{}", pieces.front, tables);
+    // Some replies wrap the late tables in a second `+++` block: drop bare
+    // fence lines from what is moved, and from the end of the prose.
+    let not_fence = |line: &&str| line.trim() != FENCE;
+    let tables: Vec<&str> = tables.lines().filter(not_fence).collect();
+    let mut prose: Vec<&str> = prose.lines().collect();
+    while prose
+        .last()
+        .is_some_and(|line| line.trim().is_empty() || line.trim() == FENCE)
+    {
+        prose.pop();
+    }
+    let prose = prose.join("\n");
+    let front_text = format!("{}\n{}\n", pieces.front, tables.join("\n"));
     let front: T = toml::from_str(&front_text).ok()?;
     front.validate().ok()?;
     Some(Envelope {
