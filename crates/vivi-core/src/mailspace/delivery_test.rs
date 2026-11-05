@@ -699,3 +699,112 @@ fn memo_tag_search_finds_a_tagged_memo() {
     assert_eq!(found[0].0.subject, "runbook");
     assert_eq!(found[0].1, vec!["ops".to_string()]);
 }
+
+/// Every row's stored letter, keyed by the row's handle.
+fn stored_letter(mailspace: &Mailspace, handle: &str) -> String {
+    let storage = mailspace.storage().unwrap();
+    let id = storage.resolve_message_token(handle).unwrap();
+    String::from_utf8_lossy(&storage.read_message(&id).unwrap()).into_owned()
+}
+
+#[test]
+fn recipientless_send_stores_one_author_copy() {
+    let (_tmp, mailspace) = space(false);
+    let domain = mailspace.address_domain();
+    let mut request = request("hand", "kept for me".into());
+    request.to = Vec::new();
+    request.subject = "note to self".into();
+
+    let sent = mailspace.send(request).unwrap();
+
+    assert!(sent.delivered.is_empty(), "{sent:?}");
+    assert!(sent.remote.is_empty(), "{sent:?}");
+    let rows = rows(&mailspace);
+    assert_eq!(
+        rows.len(),
+        1,
+        "one author copy, no synthetic recipient: {rows:?}"
+    );
+    assert_eq!(rows[0].local_role, "sent");
+    assert_eq!(rows[0].account, "mind");
+    assert!(rows[0].read_state, "the author's own copy is read");
+    assert_eq!(rows[0].handle, sent.sent);
+
+    let raw = stored_letter(&mailspace, &sent.sent);
+    assert!(raw.contains(&format!("From: <mind@{domain}>")), "{raw}");
+    assert!(!raw.contains("\r\nTo:"), "no recipient header: {raw}");
+    assert!(!raw.contains("\r\nCc:"), "no recipient header: {raw}");
+
+    let storage = mailspace.storage().unwrap();
+    let id = storage.resolve_message_token(&sent.sent).unwrap();
+    let events = storage.list_mailspace_events(&id).unwrap();
+    assert!(
+        events
+            .iter()
+            .any(|event| event.event_type == "sent_copy_created"),
+        "the author event stays: {events:?}"
+    );
+    assert!(
+        events.iter().all(|event| event.event_type != "delivered"),
+        "nobody was delivered to: {events:?}"
+    );
+}
+
+#[test]
+fn a_cc_only_send_delivers_to_the_cc_and_keeps_the_author_copy() {
+    let (_tmp, mailspace) = space(false);
+    let domain = mailspace.address_domain();
+    let mut request = request("hand", "cc only".into());
+    request.to = Vec::new();
+    request.cc = vec!["hand".into()];
+
+    let sent = mailspace.send(request).unwrap();
+
+    assert_eq!(sent.delivered.len(), 1, "{sent:?}");
+    assert_eq!(sent.delivered[0].identity, "hand");
+    assert!(sent.remote.is_empty(), "{sent:?}");
+    let rows = rows(&mailspace);
+    assert_eq!(
+        rows.len(),
+        2,
+        "one delivered copy and one author copy: {rows:?}"
+    );
+    let delivered = rows
+        .iter()
+        .find(|row| row.local_role == "inbox")
+        .expect("the Cc copy");
+    let author = rows
+        .iter()
+        .find(|row| row.local_role == "sent")
+        .expect("the author copy");
+    assert_eq!(delivered.account, "hand");
+    assert_eq!(author.account, "mind");
+    assert!(author.read_state, "the author's own copy is read");
+
+    let raw = stored_letter(&mailspace, &delivered.handle);
+    assert!(raw.contains(&format!("From: <mind@{domain}>")), "{raw}");
+    assert!(raw.contains(&format!("Cc: <hand@{domain}>")), "{raw}");
+    assert!(
+        !raw.contains("\r\nTo:"),
+        "a Cc-only letter has no To: {raw}"
+    );
+    assert_eq!(raw, stored_letter(&mailspace, &author.handle));
+
+    let storage = mailspace.storage().unwrap();
+    let author_id = storage.resolve_message_token(&author.handle).unwrap();
+    let events = storage.list_mailspace_events(&author_id).unwrap();
+    assert!(
+        events.iter().all(|event| event.event_type != "delivered"),
+        "the author copy is not a delivery: {events:?}"
+    );
+    let delivered_id = storage.resolve_message_token(&delivered.handle).unwrap();
+    let events = storage.list_mailspace_events(&delivered_id).unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.event_type == "delivered")
+            .count(),
+        1,
+        "{events:?}"
+    );
+}

@@ -38,6 +38,9 @@ impl Mailspace {
     /// Cc header, the sent copy is the local record, and `vivi sync` carries
     /// the letter. Those addresses are listed in [`DeliveryResult::remote`].
     ///
+    /// A send with no To and no Cc is the author's own copy: one read row
+    /// under `sent`, no delivered copy, and no synthetic recipient.
+    ///
     /// # Errors
     /// Returns an error if the sender or any recipient identity cannot be
     /// resolved, if message composition fails, or if a storage operation fails.
@@ -71,11 +74,6 @@ impl Mailspace {
         }
         let from = self.resolve_identity(&request.from)?;
         let (recipients, remote) = self.split_recipients(&request.to, &request.cc)?;
-        if recipients.is_empty() && remote.is_empty() {
-            return Err(VivariumError::Message(
-                "delivery needs at least one To or Cc recipient".into(),
-            ));
-        }
         let storage = self.storage()?;
         let reply_parent = request
             .reply_to

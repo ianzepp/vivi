@@ -60,3 +60,64 @@ fn a_pulled_letter_takes_its_kind_from_the_role_it_was_delivered_to() {
         );
     }
 }
+
+use crate::mailspace::{Mailspace, MailspaceWatchRequest, SendRequest, run_watch};
+
+fn author_space() -> (tempfile::TempDir, Mailspace) {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut mailspace = Mailspace::init(Some(tmp.path())).unwrap();
+    mailspace.add_identity("mind").unwrap();
+    mailspace.add_identity("hand").unwrap();
+    (tmp, mailspace)
+}
+
+/// A watch that matches only when a scanned event passes every filter.
+fn watch(for_identity: &str, events: &str) -> MailspaceWatchRequest {
+    MailspaceWatchRequest {
+        for_identity: for_identity.into(),
+        kinds: "mail,task,need,want".into(),
+        events: events.into(),
+        statuses: None,
+        match_from: None,
+        match_subject_prefix: None,
+        handle: None,
+        until_count: 1,
+        // A zero timeout makes one scan and then fails: Ok means a match.
+        timeout: Some("0s".into()),
+        once: false,
+        since: None,
+        cursor_file: None,
+        write_cursor: false,
+        poll_interval: "10ms".into(),
+        json: false,
+    }
+}
+
+#[test]
+fn a_recipientless_send_wakes_no_recipient_watcher() {
+    let (_tmp, mailspace) = author_space();
+    mailspace
+        .send(SendRequest {
+            from: "mind".into(),
+            to: Vec::new(),
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: "note to self".into(),
+            body: "kept for me".into(),
+            role: "inbox".into(),
+            kind: Some("mail".into()),
+            reply_to: None,
+        })
+        .unwrap();
+
+    for role in ["hand", "mind"] {
+        assert!(
+            run_watch(&mailspace, watch(role, "delivered")).is_err(),
+            "a delivery watch misses this send for {role}"
+        );
+    }
+    assert!(
+        run_watch(&mailspace, watch("mind", "sent_copy_created")).is_ok(),
+        "the author's own sent event still wakes"
+    );
+}
