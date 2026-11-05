@@ -12,6 +12,7 @@ pub mod read;
 pub mod records;
 pub mod review;
 pub mod roles;
+pub mod submission;
 pub mod sugar;
 pub mod work;
 
@@ -220,8 +221,13 @@ fn rescue_tables_below_fence<T: DeserializeOwned + Validate>(
     }
     let prose = prose.join("\n");
     let front_text = format!("{}\n{}\n", pieces.front, tables.join("\n"));
-    let front: T = toml::from_str(&front_text).ok()?;
-    front.validate().ok()?;
+    let front: T = match toml::from_str(&front_text) {
+        Ok(front) => front,
+        Err(_) => return None,
+    };
+    if front.validate().is_err() {
+        return None;
+    }
     Some(Envelope {
         front,
         body: prose.trim().to_string(),

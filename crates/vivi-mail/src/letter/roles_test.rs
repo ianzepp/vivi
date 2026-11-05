@@ -3,6 +3,80 @@
 use super::{RoleKind, parse_for};
 use crate::letter::LetterError as EnvelopeError;
 
+#[test]
+fn structured_fields_validate_each_role_and_keep_body_separate() {
+    let fixtures = [
+        (RoleKind::Hand, serde_json::json!({"answer":"built"})),
+        (RoleKind::Repairer, serde_json::json!({"answer":"built"})),
+        (
+            RoleKind::Slicer,
+            serde_json::json!({"answer":"escalate","reason":"large"}),
+        ),
+        (RoleKind::Planner, serde_json::json!({"answer":"planned"})),
+        (RoleKind::Researcher, serde_json::json!({"answer":"READY"})),
+        (
+            RoleKind::Admitter,
+            serde_json::json!({"answer":"revise","required_changes":["fix"]}),
+        ),
+        (
+            RoleKind::Auditor,
+            serde_json::json!({"answer":"clean_pass"}),
+        ),
+        (
+            RoleKind::Judge,
+            serde_json::json!({"answer":"block","reason":"evidence"}),
+        ),
+        (
+            RoleKind::Cto,
+            serde_json::json!({"answer":"lock","reason":"done"}),
+        ),
+        (RoleKind::Merge, serde_json::json!({"answer":"merged"})),
+        (RoleKind::HeadCeo, serde_json::json!({"answer":"no-op"})),
+    ];
+    for (kind, fields) in fixtures {
+        let structured = super::parse_fields(kind, &fields, "body prose").unwrap();
+        let printed = parse_for(kind, &hand(&toml::to_string(&fields).unwrap())).unwrap();
+        assert_eq!(structured.answer, printed.answer, "{kind:?}");
+        assert_eq!(structured.front, printed.front, "{kind:?}");
+        assert_eq!(structured.body, "body prose");
+    }
+}
+
+#[test]
+fn structured_fields_reject_unknown_nested_fields_and_share_validation() {
+    let unknown = serde_json::json!({"answer":"sliced", "slice":[{"id":"S1","title":"t","brief":"b","target":"x","proof":1}]});
+    let structured = super::parse_fields(RoleKind::Slicer, &unknown, "").unwrap_err();
+    let printed = parse_for(
+        RoleKind::Slicer,
+        &hand("answer = 'sliced'\n[[slice]]\nid='S1'\ntitle='t'\nbrief='b'\ntarget='x'\nproof=1\n"),
+    )
+    .unwrap_err();
+    assert!(matches!(structured, EnvelopeError::Invalid(_)));
+    assert!(matches!(printed, EnvelopeError::Toml { .. }));
+    let bad = super::parse_fields(
+        RoleKind::Hand,
+        &serde_json::json!({"answer":"blocked-scope"}),
+        "",
+    )
+    .unwrap_err();
+    let printed = parse_for(RoleKind::Hand, &hand("answer = 'blocked-scope'\n")).unwrap_err();
+    assert_eq!(bad.to_string(), printed.to_string());
+    let non_object = super::parse_fields(RoleKind::Hand, &serde_json::json!([]), "").unwrap_err();
+    assert!(matches!(non_object, EnvelopeError::Invalid(_)));
+}
+
+#[test]
+fn role_kind_has_stable_kebab_case_spelling() {
+    assert_eq!(
+        serde_json::to_string(&RoleKind::HeadCeo).unwrap(),
+        "\"head-ceo\""
+    );
+    assert_eq!(
+        serde_json::from_str::<RoleKind>("\"head-ceo\"").unwrap(),
+        RoleKind::HeadCeo
+    );
+}
+
 fn hand(front: &str) -> String {
     format!("+++\n{front}+++\nreport\n")
 }

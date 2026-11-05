@@ -7,7 +7,8 @@ use super::review::{Admitter, Auditor, Cto, HeadCeo, Judge, Merge, Researcher};
 use super::{Envelope, FENCE, LetterError as EnvelopeError, Validate, parse};
 
 /// Which role wrote a reply.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum RoleKind {
     Researcher,
     Planner,
@@ -79,6 +80,54 @@ pub struct Parsed {
     pub answer: String,
     pub front: serde_json::Value,
     pub body: String,
+}
+
+/// Parse structured role fields without an envelope or storage representation.
+/// The body remains independent prose and is not interpreted as role data.
+pub fn parse_fields(
+    kind: RoleKind,
+    fields: &serde_json::Value,
+    body: &str,
+) -> Result<Parsed, EnvelopeError> {
+    match kind {
+        RoleKind::Hand => parsed_fields::<Hand>(fields, body),
+        RoleKind::Repairer => parsed_fields::<Repairer>(fields, body),
+        RoleKind::Slicer => parsed_fields::<Slicer>(fields, body),
+        RoleKind::Planner => parsed_fields::<Planner>(fields, body),
+        RoleKind::Researcher => parsed_fields::<Researcher>(fields, body),
+        RoleKind::Admitter => parsed_fields::<Admitter>(fields, body),
+        RoleKind::Auditor => parsed_fields::<Auditor>(fields, body),
+        RoleKind::Judge => parsed_fields::<Judge>(fields, body),
+        RoleKind::Cto => parsed_fields::<Cto>(fields, body),
+        RoleKind::Merge => parsed_fields::<Merge>(fields, body),
+        RoleKind::HeadCeo => parsed_fields::<HeadCeo>(fields, body),
+    }
+}
+
+fn parsed_fields<T>(fields: &serde_json::Value, body: &str) -> Result<Parsed, EnvelopeError>
+where
+    T: serde::de::DeserializeOwned + Serialize + Validate,
+{
+    if !fields.is_object() {
+        return Err(EnvelopeError::Invalid(
+            "role fields must be a JSON object".into(),
+        ));
+    }
+    let value: T = serde_json::from_value(fields.clone())
+        .map_err(|err| EnvelopeError::Invalid(err.to_string()))?;
+    value.validate().map_err(EnvelopeError::Invalid)?;
+    let front =
+        serde_json::to_value(&value).map_err(|err| EnvelopeError::Invalid(err.to_string()))?;
+    let answer = front
+        .get("answer")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| EnvelopeError::Invalid("missing answer".to_string()))?
+        .to_string();
+    Ok(Parsed {
+        answer,
+        front,
+        body: body.to_string(),
+    })
 }
 
 /// Parse a reply for the given role.
