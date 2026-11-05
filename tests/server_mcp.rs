@@ -605,6 +605,74 @@ async fn initialize_and_tools_list() {
 }
 
 #[tokio::test]
+async fn the_role_tools_advertise_command_and_target() {
+    let fx = fixture("role-schema").await;
+    let (status, listed) = fx.rpc(&fx.token, "tools/list", json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    let tools = listed["result"]["tools"].as_array().unwrap().clone();
+    let tool = |name: &str| {
+        tools
+            .iter()
+            .find(|tool| tool["name"] == name)
+            .unwrap_or_else(|| panic!("missing {name}"))
+            .clone()
+    };
+
+    // Both writes take the dependency-provided pair as strings, and keep the
+    // closed schema: no undeclared argument ever reaches a role write.
+    for name in ["role_add", "role_set"] {
+        let schema = &tool(name)["inputSchema"];
+        assert_eq!(schema["additionalProperties"], false, "{name}");
+        assert_eq!(schema["properties"]["command"]["type"], "string", "{name}");
+        assert_eq!(schema["properties"]["target"]["type"], "string", "{name}");
+    }
+    // Only `role set` has the clear pair; creation has nothing to clear.
+    let set_schema = &tool("role_set")["inputSchema"];
+    for field in ["clear_command", "clear_target"] {
+        assert_eq!(
+            set_schema["properties"][field]["type"], "boolean",
+            "role_set.{field}"
+        );
+    }
+    for field in ["clear_command", "clear_target"] {
+        assert!(
+            tool("role_add")["inputSchema"]["properties"]
+                .get(field)
+                .is_none(),
+            "role_add must not advertise {field}"
+        );
+    }
+    // Runtime bindings stay unexposed.
+    for name in ["role_add", "role_set"] {
+        for field in ["pid", "host"] {
+            assert!(
+                tool(name)["inputSchema"]["properties"].get(field).is_none(),
+                "{name} must not advertise {field}"
+            );
+        }
+    }
+
+    // The descriptions name what the views and the writes carry.
+    let list_tool = tool("role_list");
+    let list = list_tool["description"].as_str().unwrap();
+    assert!(
+        list.contains("command") && list.contains("target"),
+        "{list}"
+    );
+    let add_tool = tool("role_add");
+    let add = add_tool["description"].as_str().unwrap();
+    assert!(add.contains("command") && add.contains("target"), "{add}");
+    let set_tool = tool("role_set");
+    let set = set_tool["description"].as_str().unwrap();
+    for word in ["command", "target", "clear_command", "clear_target"] {
+        assert!(
+            set.contains(word),
+            "role_set description lacks {word}: {set}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn send_list_show_thread_done_graph() {
     let fx = fixture("loop").await;
     let to = address("creator");
