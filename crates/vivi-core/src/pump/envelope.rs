@@ -5,6 +5,7 @@
 //! The parser lives in `vivi_mail::letter`.
 
 pub mod correct;
+pub(crate) mod format;
 pub(crate) mod refusal;
 
 pub use vivi_mail::letter::{Envelope, LetterError as EnvelopeError, Validate, parse, split};
