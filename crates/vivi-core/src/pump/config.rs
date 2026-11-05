@@ -10,6 +10,7 @@ mod check;
 #[path = "config_workspace.rs"]
 pub mod config_workspace;
 mod flow;
+mod intake;
 mod migrate;
 mod origins;
 mod planner;
@@ -381,6 +382,10 @@ pub struct PumpTarget {
     /// workspace-level `[pump.rungs]` one.
     #[serde(skip_serializing_if = "RungsConfig::is_empty")]
     pub rungs: RungsConfig,
+    /// Branches from this target that the pump may admit; empty disables intake.
+    pub intake: Vec<String>,
+    /// Minimum completion rung required before an intake branch is admitted.
+    pub intake_rung: String,
 }
 
 impl Default for PumpTarget {
@@ -394,6 +399,8 @@ impl Default for PumpTarget {
             integration_repo: None,
             merge: None,
             rungs: RungsConfig::default(),
+            intake: Vec::new(),
+            intake_rung: String::from("need"),
         }
     }
 }

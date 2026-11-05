@@ -306,6 +306,9 @@ fn validate_target(id: &str, target: &PumpTarget, found: &mut Findings) {
     }
     let merge = target.merge.as_ref();
     validate_target_merge(id, merge, found);
+    found
+        .errors
+        .extend(super::intake::validate_target_intake(id, target));
 }
 
 fn validate_target_merge(id: &str, merge: Option<&MergeConfig>, found: &mut Findings) {
