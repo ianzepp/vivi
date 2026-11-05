@@ -60,6 +60,40 @@ pub struct CommandExecution {
     /// The backoff epoch an environment retry waits for.
     #[serde(default)]
     pub retry_at: Option<u64>,
+    /// The agent exit code the execution reported; absent when it reported
+    /// none at all.
+    #[serde(default)]
+    pub exit: Option<i32>,
+    /// The full commit the runner started the execution on, read from the
+    /// matched `pool_collected` record. Never a scan tip, a shortened receipt
+    /// hash, or the main ref as it reads after collection.
+    #[serde(default)]
+    pub tested_commit: Option<String>,
+    /// What the result still owes before its job may be applied: a red need,
+    /// or a recovery report for a green over an open red need.
+    #[serde(default)]
+    pub awaiting: Option<String>,
+}
+
+/// A cadence-specific exception: the check could not establish a tested
+/// result, so it retries with exponential backoff and files no need.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+pub struct CommandException {
+    /// The exception kind the pump recorded.
+    #[serde(default)]
+    pub kind: String,
+    /// One line saying what could not be read or run.
+    #[serde(default)]
+    pub reason: String,
+    /// When the exception was raised, epoch seconds.
+    #[serde(default)]
+    pub at: u64,
+    /// The attempt this exception belongs to.
+    #[serde(default)]
+    pub attempt: u32,
+    /// The epoch before which no execution may be launched.
+    #[serde(default)]
+    pub retry_at: Option<u64>,
 }
 
 /// Durable command-check state for one role.
@@ -77,13 +111,36 @@ pub struct CommandCheck {
     /// The latest execution, with the context it was enqueued in.
     #[serde(default)]
     pub latest: Option<CommandExecution>,
+    /// The main tip the changed-tip gate is waiting to move past.
+    #[serde(default)]
+    pub waiting_main: Option<String>,
+    /// The cadence-specific exception the check is backing off from.
+    #[serde(default)]
+    pub exception: Option<CommandException>,
 }
 
 impl CommandCheck {
     /// Record a new execution, keeping the durable green/red history.
+    ///
+    /// A changed command, target or target main is a different check: it
+    /// inherits neither another check's green skip nor its red need.
     pub fn record(&mut self, execution: CommandExecution) {
+        if self.fingerprint != execution.fingerprint {
+            self.last_green_commit = None;
+            self.red_need = None;
+        }
         self.fingerprint.clone_from(&execution.fingerprint);
+        self.waiting_main = None;
+        self.exception = None;
         self.latest = Some(execution);
+    }
+
+    /// The exception this check is still backing off from at `now`.
+    #[must_use]
+    pub fn pending_exception(&self, now: u64) -> Option<&CommandException> {
+        self.exception
+            .as_ref()
+            .filter(|exception| exception.retry_at.is_none_or(|at| at > now))
     }
 }
 

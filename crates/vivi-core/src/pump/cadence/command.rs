@@ -14,7 +14,7 @@ use crate::pump::state::State;
 use vivi_util::duration::parse_duration_secs;
 
 use super::check::{self, CommandCheck, CommandExecution};
-use super::{CadenceState, DISABLED_STATUSES, RoleScan, backoff_secs, epoch_label};
+use super::{CadenceState, DISABLED_STATUSES, RoleScan, epoch_label};
 
 /// The repository target a cadence job works on.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -246,39 +246,6 @@ fn next_attempt(check: &CommandCheck) -> u32 {
             latest.attempt.saturating_add(1).max(1)
         }
         _ => 1,
-    }
-}
-
-/// Record the terminal outcome of a running command execution and settle the
-/// job so a green or red interval is measured from its completion.
-pub fn absorb(st: &mut State, cadence: &mut CadenceState, now: u64) {
-    let mut settle = Vec::new();
-    for entry in cadence.checks.values_mut() {
-        let Some(latest) = entry
-            .latest
-            .as_mut()
-            .filter(|latest| latest.ended_at.is_none() && !latest.job.is_empty())
-        else {
-            continue;
-        };
-        let Some(outcome) = jobs::completion(st, &latest.job) else {
-            continue;
-        };
-        let success = outcome.state == "finished" && outcome.agent_success() == Some(true);
-        let environment = matches!(outcome.state.as_str(), "timeout" | "lost");
-        latest.ended_at = Some(outcome.at);
-        latest.outcome = Some(match (success, environment) {
-            (true, _) => String::from(check::GREEN),
-            (_, true) => String::from(check::ENVIRONMENT),
-            _ => String::from(check::RED),
-        });
-        if environment {
-            latest.retry_at = Some(outcome.at.saturating_add(backoff_secs(latest.attempt)));
-        }
-        settle.push(latest.job.clone());
-    }
-    for id in settle {
-        jobs::mark_applied(st, &id, now);
     }
 }
 
