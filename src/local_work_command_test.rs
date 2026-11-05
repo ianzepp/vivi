@@ -23,7 +23,7 @@ fn dispatch_command(project: &std::path::Path) -> NeedSendCommand {
     NeedSendCommand {
         send: LocalSendCommand {
             project: Some(project.to_path_buf()),
-            from: "operator".into(),
+            from: Some("operator".into()),
             to: vec!["mind".into()],
             cc: Vec::new(),
             bcc: Vec::new(),
@@ -129,6 +129,29 @@ fn dispatch_chains_a_filed_need_into_one_open_record() {
     assert_eq!(history.len(), 1);
     assert_eq!(history[0].handle, records[0].handle);
     assert_eq!(history[0].need, need);
+}
+
+#[test]
+fn an_omitted_sender_authors_the_need_and_its_marks_as_the_operator() {
+    let (tmp, _mailspace) = rig();
+    let mut command = dispatch_command(tmp.path());
+    command.send.from = None;
+    command.marks = vec!["gate".into()];
+    command.dispatch = false;
+    send_need(&command).unwrap();
+
+    let mailspace = Mailspace::discover(Some(tmp.path())).unwrap();
+    let storage = mailspace.storage().unwrap();
+    let sent = storage.list_messages_by_role("sent").unwrap();
+    let need = sent
+        .iter()
+        .find(|row| row.subject == "fix the gate")
+        .unwrap();
+    // The omitted sender is the operator, both on the letter and on the
+    // marks written under the sender's own copy.
+    assert!(need.from_addr.starts_with("operator@"), "{need:?}");
+    let handle = storage.display_handle(&need.message_id).unwrap();
+    assert_eq!(marks_of(&mailspace, &handle), vec!["gate"]);
 }
 
 #[test]

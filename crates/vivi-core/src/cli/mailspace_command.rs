@@ -287,9 +287,9 @@ pub enum MailAbsorbStatus {
         .args(["body", "body_file"])
 ))]
 pub struct LocalSendCommand {
-    /// Local sender identity or address
+    /// Local sender identity or address; defaults to the project operator
     #[arg(long)]
-    pub from: String,
+    pub from: Option<String>,
 
     /// Local To recipient; may be passed multiple times
     #[arg(long)]
@@ -459,9 +459,9 @@ pub struct MailReplyCommand {
     /// Existing mailspace handle to reply to
     pub handle: String,
 
-    /// Local sender identity
+    /// Local sender identity; defaults to the project operator
     #[arg(long)]
-    pub from: String,
+    pub from: Option<String>,
 
     /// Optional explicit To recipient; defaults to the parent sender
     #[arg(long)]

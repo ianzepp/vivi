@@ -457,7 +457,7 @@ fn parses_local_mail_send() {
         Command::Mail {
             command: MailCommand::Send(command),
         } => {
-            assert_eq!(command.from, "ceo");
+            assert_eq!(command.from.as_deref(), Some("ceo"));
             assert_eq!(command.to, vec!["cto"]);
             assert_eq!(command.subject, "review");
             assert_eq!(command.body.as_deref(), Some("please review"));
@@ -490,6 +490,144 @@ fn parses_local_mail_send_body_file() {
         } => {
             assert_eq!(command.body, None);
             assert_eq!(command.body_file, Some(PathBuf::from("body.md")));
+        }
+        other => panic!("unexpected command: {other:?}"),
+    }
+}
+
+#[test]
+fn parses_local_mail_send_without_from() {
+    let cli = Cli::try_parse_from([
+        "vivi",
+        "mail",
+        "send",
+        "--to",
+        "cto",
+        "--cc",
+        "hand",
+        "--subject",
+        "review",
+        "--body",
+        "please review",
+    ])
+    .unwrap();
+
+    match cli.command {
+        Command::Mail {
+            command: MailCommand::Send(command),
+        } => {
+            // An omitted sender is resolved to the project operator at
+            // execution time, never defaulted into the parsed command.
+            assert_eq!(command.from, None);
+            assert_eq!(command.to, vec!["cto"]);
+            assert_eq!(command.cc, vec!["hand"]);
+        }
+        other => panic!("unexpected command: {other:?}"),
+    }
+}
+
+#[test]
+fn parses_local_mail_reply_with_and_without_from() {
+    let cli = Cli::try_parse_from(["vivi", "mail", "reply", "abc123", "--body", "noted"]).unwrap();
+    match cli.command {
+        Command::Mail {
+            command: MailCommand::Reply(command),
+        } => {
+            assert_eq!(command.from, None);
+            assert!(command.to.is_empty());
+        }
+        other => panic!("unexpected command: {other:?}"),
+    }
+
+    let cli = Cli::try_parse_from([
+        "vivi",
+        "mail",
+        "reply",
+        "abc123",
+        "--from",
+        "ceo@vivi.local",
+        "--to",
+        "cto",
+        "--body",
+        "noted",
+    ])
+    .unwrap();
+    match cli.command {
+        Command::Mail {
+            command: MailCommand::Reply(command),
+        } => {
+            // An explicit project-address form survives parsing untouched.
+            assert_eq!(command.from.as_deref(), Some("ceo@vivi.local"));
+            assert_eq!(command.to, vec!["cto"]);
+        }
+        other => panic!("unexpected command: {other:?}"),
+    }
+}
+
+#[test]
+fn parses_nested_work_sends_without_from() {
+    let task = Cli::try_parse_from([
+        "vivi",
+        "task",
+        "send",
+        "--to",
+        "hand-1",
+        "--subject",
+        "do this",
+        "--body",
+        "work",
+    ])
+    .unwrap();
+    match task.command {
+        Command::Task {
+            command: TaskCommand::Send(TaskSendCommand { send, .. }),
+        } => {
+            assert_eq!(send.from, None);
+            assert_eq!(send.to, vec!["hand-1"]);
+        }
+        other => panic!("unexpected command: {other:?}"),
+    }
+
+    let need = Cli::try_parse_from([
+        "vivi",
+        "need",
+        "send",
+        "--to",
+        "cto",
+        "--subject",
+        "audit",
+        "--body",
+        "work",
+    ])
+    .unwrap();
+    match need.command {
+        Command::Need {
+            command: NeedCommand::Send(NeedSendCommand { send, .. }),
+        } => {
+            assert_eq!(send.from, None);
+            assert_eq!(send.to, vec!["cto"]);
+        }
+        other => panic!("unexpected command: {other:?}"),
+    }
+
+    let want = Cli::try_parse_from([
+        "vivi",
+        "want",
+        "send",
+        "--to",
+        "cto",
+        "--subject",
+        "later",
+        "--body",
+        "later",
+    ])
+    .unwrap();
+    match want.command {
+        Command::Want {
+            command: WantCommand::Send(WantSendCommand { send, .. }),
+        } => {
+            assert_eq!(send.from, None);
+            assert_eq!(send.to, vec!["cto"]);
         }
         other => panic!("unexpected command: {other:?}"),
     }
@@ -1323,7 +1461,7 @@ fn parses_task_send_with_depends_on() {
                     send, depends_on, ..
                 }),
         } => {
-            assert_eq!(send.from, "ceo");
+            assert_eq!(send.from.as_deref(), Some("ceo"));
             assert_eq!(send.to, vec!["hand-1"]);
             assert_eq!(send.subject, "do this after that");
             assert_eq!(depends_on, vec!["abc123", "def456"]);
@@ -1357,7 +1495,7 @@ fn parses_need_and_want_send_with_depends_on() {
                     send, depends_on, ..
                 }),
         } => {
-            assert_eq!(send.from, "mind");
+            assert_eq!(send.from.as_deref(), Some("mind"));
             assert_eq!(send.subject, "audit wave");
             assert_eq!(depends_on, vec!["abc123"]);
         }

@@ -428,7 +428,8 @@ fn dump_work_items(
 /// the record's need; a refused dispatch never writes priority.
 fn send_need(command: &vivi_core::cli::NeedSendCommand) -> Result<(), VivariumError> {
     vivi_core::mailspace::validate_marks_filter(&command.marks)?;
-    let result = send_local_item_sent(&command.send, "needs", "need", "created", &command.sugar())?;
+    let (result, author) =
+        send_local_item_sent(&command.send, "needs", "need", "created", &command.sugar())?;
     if command.marks.is_empty() && !command.dispatch {
         return Ok(());
     }
@@ -440,7 +441,7 @@ fn send_need(command: &vivi_core::cli::NeedSendCommand) -> Result<(), VivariumEr
         }
         Err(error) => return Err(error),
     };
-    write_send_marks(&mailspace, &command.send.from, &result, &command.marks)?;
+    write_send_marks(&mailspace, &author, &result, &command.marks)?;
     if command.dispatch {
         dispatch_filed_need(&mailspace, &result, command.priority)?;
     }
@@ -559,15 +560,20 @@ fn send_local_item(
     send_local_item_sent(command, role, kind, verb, sugar).map(|_| ())
 }
 
-/// Send one local item and return the handle of the sender's own copy.
+/// Send one local item and return its delivery result together with the
+/// effective canonical author: an explicit `--from` resolved as written, or
+/// the project operator when it is omitted. Resolution happens before the
+/// send, so an unknown author never reaches persistence.
 fn send_local_item_sent(
     command: &LocalSendCommand,
     role: &str,
     kind: &str,
     verb: &str,
     sugar: &Sugar,
-) -> Result<vivi_core::mailspace::DeliveryResult, VivariumError> {
+) -> Result<(vivi_core::mailspace::DeliveryResult, String), VivariumError> {
     let mailspace = Mailspace::discover(command.project.as_deref())?;
+    let from =
+        crate::local_mailspace_command::resolve_send_author(&mailspace, command.from.as_deref())?;
     let body = vivi_core::mailspace::read_body_input(
         command.body.as_deref(),
         command.body_file.as_deref(),
@@ -576,7 +582,7 @@ fn send_local_item_sent(
         sugar::apply(kind, &body, sugar).map_err(|err| VivariumError::Message(err.to_string()))?;
     let body = sugared.body;
     let result = mailspace.send(SendRequest {
-        from: command.from.clone(),
+        from: from.clone(),
         to: command.to.clone(),
         cc: command.cc.clone(),
         bcc: command.bcc.clone(),
@@ -592,7 +598,7 @@ fn send_local_item_sent(
     println!("sent {}", result.sent);
     crate::local_mailspace_command::print_send_node_lines(&result.delivered, &result.sent);
     mailspace.announce_remote(&result.remote);
-    Ok(result)
+    Ok((result, from))
 }
 
 fn move_item(

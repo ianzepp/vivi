@@ -746,8 +746,25 @@ pub(crate) fn print_send_node_lines(delivered: &[DeliveredMessage], sent: &str) 
     }
 }
 
+/// The identity a local send is authored by when `--from` is omitted: the
+/// mailspace operator role.
+pub(crate) const DEFAULT_SEND_AUTHOR: &str = "operator";
+
+/// The effective canonical author of a local send. An explicit `--from` is
+/// resolved as written, so aliases and project-address forms keep working; an
+/// omitted one is the operator role. Both go through project identity
+/// resolution, so an unknown explicit author or a missing operator fails here,
+/// before anything is sent or persisted.
+pub(crate) fn resolve_send_author(
+    mailspace: &Mailspace,
+    from: Option<&str>,
+) -> Result<String, VivariumError> {
+    mailspace.resolve_identity(from.unwrap_or(DEFAULT_SEND_AUTHOR))
+}
+
 fn send_task(command: &TaskSendCommand) -> Result<(), VivariumError> {
     let mailspace = Mailspace::discover(command.send.project.as_deref())?;
+    let from = resolve_send_author(&mailspace, command.send.from.as_deref())?;
     let body = vivi_core::mailspace::read_body_input(
         command.send.body.as_deref(),
         command.send.body_file.as_deref(),
@@ -756,7 +773,7 @@ fn send_task(command: &TaskSendCommand) -> Result<(), VivariumError> {
         .map_err(|err| VivariumError::Message(err.to_string()))?;
     let body = sugared.body;
     let result = mailspace.send(SendRequest {
-        from: command.send.from.clone(),
+        from,
         to: command.send.to.clone(),
         cc: command.send.cc.clone(),
         bcc: command.send.bcc.clone(),
@@ -777,8 +794,9 @@ fn send_task(command: &TaskSendCommand) -> Result<(), VivariumError> {
 
 fn send_local_mail(command: &LocalSendCommand) -> Result<(), VivariumError> {
     let mailspace = Mailspace::discover(command.project.as_deref())?;
+    let from = resolve_send_author(&mailspace, command.from.as_deref())?;
     let result = mailspace.send(SendRequest {
-        from: command.from.clone(),
+        from,
         to: command.to.clone(),
         cc: command.cc.clone(),
         bcc: command.bcc.clone(),
@@ -801,9 +819,10 @@ fn send_local_mail(command: &LocalSendCommand) -> Result<(), VivariumError> {
 
 fn reply_local_mail(command: &MailReplyCommand) -> Result<(), VivariumError> {
     let mailspace = Mailspace::discover(command.project.as_deref())?;
+    let from = resolve_send_author(&mailspace, command.from.as_deref())?;
     let result = mailspace.reply(
         &command.handle,
-        &command.from,
+        &from,
         command.to.clone(),
         command.cc.clone(),
         command.subject.clone(),
