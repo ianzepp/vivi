@@ -55,14 +55,18 @@ impl<S: JobStore, M: FlowMail> StepCollector<S, M> for RepairerCollector {
     ) -> Result<(), VivariumError> {
         let is_correction = job.kind == correct::KIND;
         if job.status == JobStatus::Timeout && !is_correction {
-            return cx.advance_word(step, OVERTIME, json!({"job": job.id}));
+            let payload = terminal_payload(cx, job, json!({"job": job.id}));
+            return cx.advance_word(step, OVERTIME, payload);
         }
         if !is_correction && let Some(env) = runner_env_failure(job) {
             return cx.hold_role_env(job, step, &env);
         }
         match collect::collect(cx.ctx, cx.mail, job, row, class, "") {
             Collected::Outcome(word, payload) if word == "built" => built(cx, job, step, payload),
-            Collected::Outcome(word, payload) => cx.advance_word(step, &word, payload),
+            Collected::Outcome(word, payload) => {
+                let payload = terminal_payload(cx, job, payload);
+                cx.advance_word(step, &word, payload)
+            }
             Collected::Retry if !is_correction => {
                 // A lost job may have pushed: the rerun publishes to a fresh ref.
                 let fresh = format!(
@@ -80,10 +84,42 @@ impl<S: JobStore, M: FlowMail> StepCollector<S, M> for RepairerCollector {
             Collected::BudgetRetry { .. }
             | Collected::Retry
             | Collected::Failed
-            | Collected::Verify => cx.advance_word(step, FAILED, json!({"job": job.id})),
+            | Collected::Verify => {
+                let payload = terminal_payload(cx, job, json!({"job": job.id}));
+                cx.advance_word(step, FAILED, payload)
+            }
             Collected::Correct { error } => cx.correct(job, row, RoleKind::Repairer, &error),
         }
     }
+}
+
+/// A terminal payload carrying the original repairer's bounded account. A
+/// correction resolves through [`correct::base_id`] to the job it corrected;
+/// a missing original keeps that known id and marks its summary and output
+/// unavailable instead of borrowing the correction's prose.
+fn terminal_payload<S: JobStore, M: FlowMail>(
+    cx: &RunCx<'_, S, M>,
+    job: &PoolJob,
+    payload: serde_json::Value,
+) -> serde_json::Value {
+    let source = correct::base_id(&job.id);
+    let original = cx.st.jobs().get(source);
+    attach_context(payload, source, original)
+}
+
+/// Add `prior_context` to `payload`, keeping every key it already has.
+fn attach_context(
+    mut payload: serde_json::Value,
+    source: &str,
+    original: Option<&PoolJob>,
+) -> serde_json::Value {
+    let prior = context::capture(source, original);
+    if let Some(map) = payload.as_object_mut() {
+        map.insert("prior_context".into(), prior);
+    } else {
+        payload = json!({"prior_context": prior});
+    }
+    payload
 }
 
 /// A `built` envelope: the publish receipt decides whether it holds.
@@ -94,15 +130,15 @@ fn built<S: JobStore, M: FlowMail>(
     mut payload: serde_json::Value,
 ) -> Result<(), VivariumError> {
     // A correction job carries no receipt: the machine facts are the original's.
-    let original = cx
-        .st
-        .jobs()
-        .get(correct::base_id(&job.id))
-        .unwrap_or(job)
-        .clone();
-    let Some(facts) = published(&original) else {
-        let (word, reason) = unpublished(&original);
-        return cx.advance_word(step, word, json!({"job": job.id, "reason": reason}));
+    let source = correct::base_id(&job.id);
+    let original = cx.st.jobs().get(source).cloned();
+    let facts_job = original.as_ref().unwrap_or(job);
+    let Some(facts) = published(facts_job) else {
+        let (word, reason) = unpublished(facts_job);
+        payload["job"] = json!(job.id);
+        payload["reason"] = json!(reason);
+        let payload = attach_context(payload, source, original.as_ref());
+        return cx.advance_word(step, word, payload);
     };
     let text = repair::facts_text(&facts);
     cx.mail.reply(
@@ -111,6 +147,7 @@ fn built<S: JobStore, M: FlowMail>(
     )?;
     payload["branch"] = json!(facts.branch);
     payload["commit"] = json!(facts.commit);
+    let payload = attach_context(payload, source, original.as_ref());
     cx.advance_word(step, "built", payload)
 }
 
