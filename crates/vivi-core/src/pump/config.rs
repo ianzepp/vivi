@@ -108,6 +108,62 @@ pub struct PumpConfig {
     /// Slice settings (the `[pump.slice]` table).
     #[serde(skip_serializing_if = "SliceConfig::is_empty")]
     pub slice: SliceConfig,
+    /// Which parts of the tick run (the `[pump.subsystems]` table). Every
+    /// subsystem is on unless switched off here.
+    #[serde(skip_serializing_if = "Subsystems::all_on")]
+    pub subsystems: Subsystems,
+}
+
+/// On/off switches for the parts of a pump tick (the `[pump.subsystems]`
+/// table). Each defaults to on, so a mailspace without the table runs every
+/// part as before. Switching one off skips that part of every tick; the rest
+/// of the tick still runs, so for example `flow = false` with `cadence = true`
+/// runs roles on their declared cadence without the build flow.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Subsystems {
+    /// The need flow: research, plan, admit, slice, build, audit, merge and
+    /// repair of red main rungs.
+    pub flow: bool,
+    /// Auto-runs of roles that declare a cadence.
+    pub cadence: bool,
+    /// The periodic board pass.
+    pub board: bool,
+    /// Creating each target's integration branch when it is missing.
+    pub integration: bool,
+}
+
+impl Default for Subsystems {
+    fn default() -> Self {
+        Self {
+            flow: true,
+            cadence: true,
+            board: true,
+            integration: true,
+        }
+    }
+}
+
+impl Subsystems {
+    /// Whether every subsystem is on (the default, left out of `mailspace.toml`).
+    #[must_use]
+    pub fn all_on(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// The subsystems switched off, by their config key, for logs and status.
+    #[must_use]
+    pub fn off(&self) -> Vec<&'static str> {
+        [
+            ("flow", self.flow),
+            ("cadence", self.cadence),
+            ("board", self.board),
+            ("integration", self.integration),
+        ]
+        .into_iter()
+        .filter_map(|(name, on)| (!on).then_some(name))
+        .collect()
+    }
 }
 
 impl Default for PumpConfig {
@@ -141,6 +197,7 @@ impl Default for PumpConfig {
             rungs: RungsConfig::default(),
             flow: FlowConfig::default(),
             slice: SliceConfig::default(),
+            subsystems: Subsystems::default(),
         }
     }
 }

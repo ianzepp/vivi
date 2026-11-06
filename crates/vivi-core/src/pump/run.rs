@@ -39,18 +39,25 @@ fn tick_phases(
     boardpass: &mut BoardPass,
     phases: &mut Phases,
 ) -> Result<(), VivariumError> {
+    let on = &ctx.cfg.subsystems;
     write_status(ctx, st);
-    boardpass.apply(ctx, st);
-    tick_steps::soft_step(
-        ctx,
-        "integration-branch",
-        crate::pump::integration_branch::ensure_all(ctx),
-    );
+    if on.board {
+        boardpass.apply(ctx, st);
+    }
+    if on.integration {
+        tick_steps::soft_step(
+            ctx,
+            "integration-branch",
+            crate::pump::integration_branch::ensure_all(ctx),
+        );
+    }
     phases.mark("integration");
     collect_phase(ctx, st)?;
     phases.mark("collect");
-    tick_steps::soft_step(ctx, "flow", crate::pump::flow::tick::tick(ctx, st));
-    save(ctx, st)?;
+    if on.flow {
+        tick_steps::soft_step(ctx, "flow", crate::pump::flow::tick::tick(ctx, st));
+        save(ctx, st)?;
+    }
     phases.mark("flow");
     let control = match crate::pump::control::read(&ctx.home) {
         Ok(control) => control,
@@ -69,8 +76,10 @@ fn tick_phases(
         return Ok(());
     }
     if !ctx.mailspace.is_empty() {
-        crate::pump::cadence::prepare_due(ctx, st);
-        save(ctx, st)?;
+        if on.cadence {
+            crate::pump::cadence::prepare_due(ctx, st);
+            save(ctx, st)?;
+        }
         tick_steps::soft_step(
             ctx,
             "dispatch-jobs",
@@ -136,7 +145,9 @@ fn collect_phase(ctx: &Ctx, st: &mut State) -> Result<(), VivariumError> {
 /// request a board pass on the worker thread, then save the state. The pass's
 /// results land on the tick that follows it.
 fn periodic(ctx: &Ctx, st: &mut State, boardpass: &mut BoardPass) -> Result<(), VivariumError> {
-    boardpass.request(ctx, st);
+    if ctx.cfg.subsystems.board {
+        boardpass.request(ctx, st);
+    }
     save(ctx, st)
 }
 

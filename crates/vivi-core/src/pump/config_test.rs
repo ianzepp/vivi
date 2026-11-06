@@ -915,3 +915,29 @@ fn reply_to_prefers_the_board_setting_then_the_first_sender_then_the_operator() 
     cfg.board.reply_to = Some("team".into());
     assert_eq!(cfg.reply_to(), "team");
 }
+
+#[test]
+fn every_subsystem_is_on_unless_switched_off() {
+    let cfg: PumpConfig = toml::from_str("").unwrap();
+    assert!(cfg.subsystems.all_on());
+    assert!(cfg.subsystems.off().is_empty());
+
+    let cfg: PumpConfig = toml::from_str("[subsystems]\nflow = false\n").unwrap();
+    assert!(!cfg.subsystems.flow);
+    assert!(cfg.subsystems.cadence && cfg.subsystems.board && cfg.subsystems.integration);
+    assert_eq!(cfg.subsystems.off(), vec!["flow"]);
+}
+
+#[test]
+fn an_unknown_subsystem_is_refused() {
+    assert!(toml::from_str::<PumpConfig>("[subsystems]\nflows = false\n").is_err());
+}
+
+#[test]
+fn the_subsystems_table_is_written_only_when_one_is_off() {
+    let cfg = PumpConfig::default();
+    assert!(!toml::to_string(&cfg).unwrap().contains("subsystems"));
+    let mut cfg = PumpConfig::default();
+    cfg.subsystems.flow = false;
+    assert!(toml::to_string(&cfg).unwrap().contains("[subsystems]"));
+}
