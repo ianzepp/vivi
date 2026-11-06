@@ -540,6 +540,30 @@ the exact hand-in command; a pump without it sends briefs without that
 section. An orchestrator dispatching by hand puts the command in its own
 brief.
 
+**Per-case outcomes are recorded in a database vivi owns.** A repeated check
+(test corpus run per target, test-ladder stage) reports one row per case, and
+those rows leave the repository: they land in the project's own
+`<project>/.vivi/pump/results.db`, beside `pump.db`, where a later run can be
+judged against an earlier one. The job that runs the check gets
+`vivi-results` on its `PATH` beside `vivi-submit`, a results URL
+(`VIVI_RESULTS_URL`) and one job token (`VIVI_RESULTS_JOB`). The client reads
+JSON lines — `{"case": ..., "status": ..., "phase": ..., "diagnostic": ...,
+"millis": ...}` — from a file or standard input, posts them in batches,
+closes the run, and prints `accepted: <n> rows` or `rejected: <reason>`:
+
+```sh
+vivi-results --suite unit rows.jsonl
+```
+
+One suite is one run; call it again with another `--suite` to record a second
+suite under the same job. `status` is one of `pass`, `fail`, `error`, `skip`,
+`rejected`, `expected-fail`, `not-applicable`; only the first line of a
+diagnostic is kept. The server's `POST /v1/results/open/<job token>` opens the
+run and answers a one-run token, and `POST /v1/results/<run token>` takes the
+rows: it refuses an unknown or closed token, an unknown status, a case
+submitted twice in one run, an unknown field and an oversized value, and the
+client prints the reason it names.
+
 ## Role → pool routing
 
 Roles (`[[identities]]`) and pools (`[pools.<name>]`) are configured
