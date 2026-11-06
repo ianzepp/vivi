@@ -139,35 +139,42 @@ fn live_branch() -> NeedBranchRow {
 }
 
 #[test]
-fn cto_rework_without_need_branch_is_rejected_without_effects() -> R {
+fn cto_rework_without_need_branch_starts_the_restart() -> R {
     let mut rig = rig()?;
     let cto = rig.step("cto")?;
+    assert!(
+        rig.store.need_branch(NEED)?.is_none(),
+        "no need-branch row is seeded"
+    );
     rig.mail.calls.clear();
 
     let mut out = with_word(cto.clone(), "rework");
-    out.payload = json!({"body": "x"});
+    out.payload = json!({"body": "keep what merged"});
     let routed = rig.route(&out, "")?;
 
-    let reason = routed
-        .rejected
-        .clone()
-        .expect("rework without a branch is rejected");
-    assert!(reason.contains(NEED), "{reason}");
-    assert!(reason.contains("rework"), "{reason}");
-    assert!(reason.contains("need-branch row is required"), "{reason}");
-    assert!(reason.contains("research, plan, slice or lock"), "{reason}");
+    assert!(routed.rejected.is_none(), "{:?}", routed.rejected);
     assert!(routed.sent.is_empty());
     assert!(routed.waiting.is_empty());
-    assert!(routed.terminal.is_empty());
-    assert!(rig.mail.calls.is_empty(), "no mail calls on rejection");
-    assert!(rig.store.step_payload(&cto.task)?.is_none(), "no payload");
-    assert_eq!(status(&rig.mail, &cto.task)?, TaskStatus::Open);
+    assert_eq!(routed.terminal.len(), 1);
+    assert_eq!(routed.terminal[0].node, "r_rework");
+    assert_eq!(
+        routed.terminal[0].class,
+        NodeClass::Restart("rework".into())
+    );
+    let row = rig.store.step_payload(&cto.task)?.expect("payload row");
+    assert_eq!(row.class, "cto");
+    assert_eq!(row.payload, json!({"body": "keep what merged"}));
+    let closed = rig
+        .mail
+        .position(|c| matches!(c, Call::CloseTask { handle, .. } if handle == &cto.task));
+    assert!(closed.is_some(), "the accepted CTO closes");
+    assert_eq!(status(&rig.mail, &cto.task)?, TaskStatus::Done);
     assert_eq!(
         rig.store
             .step_by_task(&cto.task)?
             .expect("predecessor row")
             .state,
-        StepState::Running
+        StepState::Done
     );
     Ok(())
 }

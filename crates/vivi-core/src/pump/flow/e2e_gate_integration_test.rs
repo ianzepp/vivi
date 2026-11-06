@@ -128,6 +128,11 @@ fn lose_once(rig: &mut Rig, node: &str) -> R {
     })
 }
 
+/// Main does not hold the need tip: a lost merge therefore did not land.
+fn main_unmoved(rig: &Rig) {
+    rig.project.host.reply("merge-base --is-ancestor", 1, "");
+}
+
 /// Drive the run from `rework1` through a clean second pass to the `merge`
 /// step's job.
 fn to_merge(rig: &mut Rig) -> R {
@@ -216,6 +221,7 @@ fn a_merge_that_fails_goes_to_the_cto() -> R {
 #[test]
 fn a_merge_job_lost_on_every_attempt_with_main_unmoved_goes_to_the_cto() -> R {
     let mut rig = build()?;
+    main_unmoved(&rig);
     to_merge(&mut rig)?;
     for _ in 0..MOVED_RETRIES {
         lose_once(&mut rig, "merge")?;
@@ -296,6 +302,7 @@ fn a_merge2_that_fails_goes_to_the_cto() -> R {
 #[test]
 fn a_merge2_job_lost_on_every_attempt_with_main_unmoved_goes_to_the_cto() -> R {
     let mut rig = build()?;
+    main_unmoved(&rig);
     to_merge2(&mut rig)?;
     for _ in 0..MOVED_RETRIES {
         lose_once(&mut rig, "merge2")?;

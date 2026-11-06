@@ -16,6 +16,8 @@ pub struct IdentityPatch {
     pub harness: Option<Option<String>>,
     pub provider: Option<Option<String>>,
     pub model: Option<Option<String>>,
+    pub command: Option<Option<String>>,
+    pub target: Option<Option<String>>,
     pub models: Option<Vec<String>>,
     pub thinking: Option<Option<String>>,
     pub pid: Option<Option<u32>>,
@@ -99,6 +101,8 @@ fn clears_a_key(patch: &IdentityPatch) -> bool {
         patch.harness.as_ref().is_some_and(Option::is_none),
         patch.provider.as_ref().is_some_and(Option::is_none),
         patch.model.as_ref().is_some_and(Option::is_none),
+        patch.command.as_ref().is_some_and(Option::is_none),
+        patch.target.as_ref().is_some_and(Option::is_none),
         patch.thinking.as_ref().is_some_and(Option::is_none),
         patch.pid.as_ref().is_some_and(Option::is_none),
         patch.host.as_ref().is_some_and(Option::is_none),
@@ -140,6 +144,8 @@ fn apply_patch(table: &mut Table, patch: &IdentityPatch) {
     apply_opt(table, "harness", patch.harness.as_ref());
     apply_opt(table, "provider", patch.provider.as_ref());
     apply_opt(table, "model", patch.model.as_ref());
+    apply_opt(table, "command", patch.command.as_ref());
+    apply_opt(table, "target", patch.target.as_ref());
     apply_opt(table, "thinking", patch.thinking.as_ref());
     apply_opt(table, "host", patch.host.as_ref());
     apply_opt(table, "cadence", patch.cadence.as_ref());

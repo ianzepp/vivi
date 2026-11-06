@@ -125,6 +125,13 @@ PUBLISH_ASKPASS=
 if [ -n "${UNPRIVILEGED:-}" ]; then
   as_hand() { "$@"; }
   AGENT_HOME=$W/home
+  # The job's temporary files live in its own slot, not the machine's shared
+  # temp dir: a macOS worker's default TMPDIR is on the system volume, which
+  # test leftovers filled twice, and the slot's are removed with the slot.
+  # A slot is reused only after its previous job's work was published (the
+  # collector keeps unpublished slots), so that job's temp files, build
+  # output included, are of no further use: start each job with an empty one.
+  rm -rf "$W/tmp" && mkdir -p "$W/tmp" && export TMPDIR="$W/tmp"
   AGENT_USER_HOME=${HOME:-$AGENT_HOME}
   agent_job_pids() {
     grep -lzxF "VIVI_AGENT_JOB=$JOB" /proc/[0-9]*/environ 2>/dev/null | sed 's#/proc/\([0-9]*\)/environ#\1#'
@@ -810,16 +817,81 @@ fi
 HAND_FILES="$AGENT_HOME/brief.md $AGENT_HOME/rules.md"
 [ ! -f "$AGENT_HOME/mcp.json" ] || HAND_FILES="$HAND_FILES $AGENT_HOME/mcp.json"
 [ -n "${UNPRIVILEGED:-}" ] || chown hand:hand $HAND_FILES
+
+# vivi-submit: the agent checks its role reply against the server named in
+# its brief (POST <url>, the pump's own parser) and, once accepted, the reply
+# is kept in $VIVI_REPLY_OUT; after the agent exits the runner takes it as
+# the job's receipt ($J/reply.md) in place of the printed final message.
+REPLY_OUT="$AGENT_HOME/reply.accepted"
+rm -f "$REPLY_OUT" "$J/reply.md"
+mkdir -p "$AGENT_HOME/bin" || finish workdir_missing
+cat > "$AGENT_HOME/bin/vivi-submit" <<'VIVI_SUBMIT_SCRIPT' || finish workdir_missing
+#!/bin/sh
+# vivi-submit <check-url> [file]: check a role reply with the pump's parser
+# and hand it in. The reply comes from [file], else from standard input.
+url=${1:-}
+if [ -z "$url" ]; then
+  echo "usage: vivi-submit <check-url> [file]  (the reply on standard input when no file)" >&2
+  exit 2
+fi
+tmp=$(mktemp "${TMPDIR:-/tmp}/vivi-reply.XXXXXX") || exit 1
+if [ -n "${2:-}" ]; then cat "$2" > "$tmp" || { rm -f "$tmp"; exit 1; }; else cat > "$tmp"; fi
+if [ ! -s "$tmp" ]; then echo "rejected: the reply is empty" >&2; rm -f "$tmp"; exit 1; fi
+code=$(curl -sS --max-time 60 -o "$tmp.out" -w '%{http_code}' --data-binary @"$tmp" "$url")
+rc=$?
+if [ "$rc" -ne 0 ]; then
+  echo "vivi-submit: could not reach $url (curl exit $rc); run it again" >&2
+  rm -f "$tmp" "$tmp.out"; exit 1
+fi
+if [ "$code" = 200 ]; then
+  cp "$tmp" "${VIVI_REPLY_OUT:?}" && cat "$tmp.out"
+  rc=$?
+else
+  cat "$tmp.out" >&2
+  rc=1
+fi
+rm -f "$tmp" "$tmp.out"
+exit "$rc"
+VIVI_SUBMIT_SCRIPT
+chmod 0755 "$AGENT_HOME/bin/vivi-submit" || finish workdir_missing
+# mktemp, ahead of the system one on the agent's PATH: macOS /usr/bin/mktemp
+# ignores TMPDIR and always uses the machine's temp dir on the system volume,
+# so every `mktemp -d` an agent ran escaped its slot. GNU mktemp honours
+# TMPDIR; a BSD-style `-t prefix` (no X's) becomes the template prefix.XXXXXXXX.
+cat > "$AGENT_HOME/bin/mktemp" <<'VIVI_MKTEMP_SCRIPT' || finish workdir_missing
+#!/bin/bash
+real=
+for g in /opt/homebrew/bin/gmktemp /usr/local/bin/gmktemp; do
+  [ -x "$g" ] && { real=$g; break; }
+done
+[ -n "$real" ] || { /usr/bin/mktemp --version >/dev/null 2>&1 && real=/usr/bin/mktemp; }
+[ -n "$real" ] || exec /usr/bin/mktemp "$@"
+args=()
+while [ $# -gt 0 ]; do
+  if [ "$1" = -t ] && [ $# -gt 1 ] && [[ "$2" != *XXX* ]]; then
+    args+=(-t "$2.XXXXXXXX"); shift 2
+  else
+    args+=("$1"); shift
+  fi
+done
+exec "$real" "${args[@]}"
+VIVI_MKTEMP_SCRIPT
+chmod 0755 "$AGENT_HOME/bin/mktemp" || finish workdir_missing
+[ -n "${UNPRIVILEGED:-}" ] || chown -R hand:hand "$AGENT_HOME/bin"
 HARNESS_CMD=$(cat "$J/harness.cmd")
 HARNESS_CMD=${HARNESS_CMD//\/home\/hand\//$AGENT_HOME/}
 
 # Clean environment: HOME, PATH, and only the names the config lists. The
 # pool's commit identity travels under its Git names, so `git merge` and
 # `git commit` work unconfigured; it is not a secret.
-HARNESS_ENV=("HOME=$AGENT_USER_HOME" "PATH=$PATH" "VIVI_AGENT_JOB=$JOB")
+HARNESS_ENV=("HOME=$AGENT_USER_HOME" "PATH=$AGENT_HOME/bin:$PATH" "VIVI_AGENT_JOB=$JOB")
+HARNESS_ENV+=("VIVI_REPLY_OUT=$REPLY_OUT")
 HARNESS_ENV+=("GIT_AUTHOR_NAME=$COMMIT_NAME" "GIT_AUTHOR_EMAIL=$COMMIT_EMAIL")
 HARNESS_ENV+=("GIT_COMMITTER_NAME=$COMMIT_NAME" "GIT_COMMITTER_EMAIL=$COMMIT_EMAIL")
 [ -z "${VIVI_SLOT_ROOT:-}" ] || HARNESS_ENV+=("VIVI_SLOT_ROOT=$VIVI_SLOT_ROOT")
+# The agent starts from an empty environment: without TMPDIR it falls back to
+# the machine's temp dir (the system volume on macOS), so pass the slot's own.
+[ -z "${TMPDIR:-}" ] || HARNESS_ENV+=("TMPDIR=$TMPDIR")
 for name in $ENV_NAMES; do
   [ -n "${!name+x}" ] && HARNESS_ENV+=("$name=${!name}")
 done
@@ -886,6 +958,10 @@ as_hand env -i "${HARNESS_ENV[@]}" timeout -k 15 "$BUDGET" bash -c "$HARNESS_CMD
 AGENT_RC=$?
 AGENT_S=$(( $(now) - A0 ))
 echo "agent_rc $AGENT_RC agent_s $AGENT_S"
+# An accepted vivi-submit reply is the job's receipt (see COLLECT_SCRIPT).
+if [ -s "$REPLY_OUT" ]; then
+  cp "$REPLY_OUT" "$J/reply.md" && echo "reply submitted"
+fi
 
 # Nothing the agent started may outlive it into the commit and push below.
 kill_agent

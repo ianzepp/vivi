@@ -73,22 +73,15 @@ async fn serve(config: ServerConfig) {
         Ok(listener) => listener,
         Err(err) => die(1, &format!("cannot bind {addr}: {err}")),
     };
+    // Pool slots check role replies against this server; a wildcard bind
+    // names no address a slot could reach, so it offers none.
+    if !config.bind.is_unspecified() {
+        vivi_core::pump::service::set_reply_check_base(format!("http://{addr}"));
+    }
 
     check_store_and_warn(&config);
 
-    let mut state = crate::server::app_state(
-        config.data_dir.clone(),
-        config.store_encryption_key.clone(),
-        config.moderation_token.clone(),
-    )
-    .unwrap_or_else(|err| die(2, &err));
-    if let Some(identity) = &config.hosted_default_identity {
-        state.hosted_default_identity = identity.as_str().into();
-    }
-    state.limiter = crate::server::safety::RateLimiter::new(config.send_rate_per_minute);
-    state.host_operator_token = config.host_operator_token.as_deref().map(Into::into);
-    crate::server::mcp::host::HostConfig::set_current(config.host.clone());
-    state.host = config.host.clone();
+    let state = load_state(&config);
     // Serve the projects the host registry lists, now and whenever it
     // changes. The first pass finishes before the server accepts a request.
     let _hosted = crate::server::hosted::start(state.projects.clone(), state.identities.clone());
@@ -121,6 +114,26 @@ async fn serve(config: ServerConfig) {
         Ok(_) => tracing::info!("project pumps stopped; server exiting"),
         Err(_) => tracing::warn!("project pumps did not stop within 30s; server exiting anyway"),
     }
+}
+
+/// The server state the config describes: the data store, the hosted default
+/// identity, the write rate limit, the host operator token and host settings.
+/// A store that cannot be opened exits before any request is served.
+fn load_state(config: &ServerConfig) -> crate::server::AppState {
+    let mut state = crate::server::app_state(
+        config.data_dir.clone(),
+        config.store_encryption_key.clone(),
+        config.moderation_token.clone(),
+    )
+    .unwrap_or_else(|err| die(2, &err));
+    if let Some(identity) = &config.hosted_default_identity {
+        state.hosted_default_identity = identity.as_str().into();
+    }
+    state.limiter = crate::server::safety::RateLimiter::new(config.send_rate_per_minute);
+    state.host_operator_token = config.host_operator_token.as_deref().map(Into::into);
+    crate::server::mcp::host::HostConfig::set_current(config.host.clone());
+    state.host = config.host.clone();
+    state
 }
 
 /// The boot-time key verifier (U5) and the warnings for unset optional

@@ -1,11 +1,14 @@
 //! Reslice: split, rework and follow-up slicer jobs on an existing slice.
 
 use crate::mailspace::shipped::SLICER_ROLE;
+use crate::pump::envelope::refusal;
 use crate::pump::flow::advance::start::SENTINEL_NODE;
 use crate::pump::flow::budget_retry;
 use crate::pump::flow::collect_slice::runner_env_failure;
 use crate::pump::flow::def::NodeClass;
-use crate::pump::flow::fanout::{SLICE_NODE_PREFIX, SLICES_INVALID, check_batch, parse_reply};
+use crate::pump::flow::fanout::{
+    SLICE_NODE_PREFIX, SLICES_INVALID, check_batch, parse_reply, target_of,
+};
 use crate::pump::flow::handlers::{FlowMail, Registry, TickPhase};
 use crate::pump::flow::index::run_state;
 use crate::pump::flow::index::{JOB_STALE, PayloadIdentity, RunRow, StepRow, StepState};
@@ -13,6 +16,7 @@ use crate::pump::flow::reslice_apply;
 use crate::pump::flow::step_error::{self, STEP_ERROR_HELD, STEP_ERROR_LIMIT};
 use crate::pump::flow::step_inputs::{read_only_job, targets};
 use crate::pump::flow::tick::{OPERATOR_HOLD, raise_once};
+use crate::pump::flow::verify_inputs::{self, SlicerBase, SlicerSource};
 use crate::pump::host::Ctx;
 use crate::pump::jobs::rung_result::{ENV_FAILURE, EnvFailure};
 use crate::pump::jobs::{self, JobSpec, JobStatus, JobStore, PoolJob};
@@ -31,6 +35,30 @@ pub const KIND: &str = "reslice";
 
 /// Exception kind of a reslice job that gave no usable slicer reply.
 pub const RESLICE_FAILED: &str = "flow-reslice-failed";
+
+/// The reply format, restated at the end of every reslice brief. Without it
+/// models answered with Markdown (`## sliced`) and the reply was refused.
+pub const REPLY_FORMAT: &str = "## reply format (required)\n\n\
+Your whole reply is one document that opens with a line containing only `+++`, \
+then TOML front matter, then a closing `+++` line, then optional short notes. \
+Never Markdown headings or lists in place of the front matter: a reply that \
+does not open with `+++` is refused and the work is lost. Write free text as \
+TOML literal strings ('''...'''). Example:\n\n\
++++\n\
+answer = \"sliced\"\n\
+mode = \"<the mode above>\"\n\n\
+[[slice]]\n\
+id = \"<id>\"\n\
+title = 'One line title'\n\
+brief = '''\n\
+What to change, where, and the test to add.\n\
+'''\n\
+target = \"<target>\"\n\
+write_scope = [\"path/to/file.rs\", \"path/to/file_test.rs\"]\n\
+deps = []\n\
++++\n\n\
+When the work is not this need's, answer `escalate` instead, with `reason = '...'` \
+and no `[[slice]]` table.";
 
 /// What a reslice job asks the slicer to do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,6 +98,26 @@ impl Mode {
             Self::FollowUp => "follow-up",
         }
     }
+
+    /// The instruction the dispatched brief opens with: the slicer returns a
+    /// slice list, it does not implement anything.
+    #[must_use]
+    pub fn instruction(self) -> &'static str {
+        match self {
+            Self::Split => {
+                "Return a slice list for this slice (sliced) or escalate. Do not implement it; \
+                 your checkout is read-only."
+            }
+            Self::Rework => {
+                "Return a slice list for this blocked-scope rework (sliced) or escalate. Do not \
+                 implement it; your checkout is read-only."
+            }
+            Self::FollowUp => {
+                "Return a slice list for this follow-up (sliced) or escalate. Do not implement \
+                 it; your checkout is read-only."
+            }
+        }
+    }
 }
 
 /// Send a slicer job on one slice, in `mode`, with `input` as the ask; returns
@@ -106,6 +154,8 @@ pub(crate) fn request<S: JobStore, M: FlowMail>(
             return Ok(row.task.clone());
         }
     }
+    let hint = target_of(&mail.task_body(&slice.task)?);
+    let base = verify_inputs::slicer_base(ctx, store, &run.need, hint.as_deref())?;
     let node = format!("{prefix}{}", earlier.len() + 1);
     let body = render(&TaskFront::step(&run.need, run.run, &node), &tail)
         .map_err(|err| VivariumError::Message(format!("reslice body for {node}: {err}")))?;
@@ -123,8 +173,8 @@ pub(crate) fn request<S: JobStore, M: FlowMail>(
     store.insert_run_step(run, &row)?;
     let fanout = store.slice_link(&slice.task)?.and_then(|link| link.fanout);
     store.link_slice(&SliceLink::for_run(run, &task, fanout, Vec::new()))?;
-    let brief = brief(ctx, mail, slice, mode, input)?;
-    let spec = job(ctx, run, &row, slice, mode, &brief)?;
+    let brief = brief(ctx, mail, slice, mode, input, &base)?;
+    let spec = job(ctx, run, &row, slice, mode, &brief, &base)?;
     jobs::enqueue(st, spec)?;
     Ok(task)
 }
@@ -149,8 +199,11 @@ fn job(
     slice: &StepRow,
     mode: Mode,
     brief: &str,
+    base: &SlicerBase,
 ) -> Result<JobSpec, VivariumError> {
     let mut spec = read_only_job(ctx, run, row, &NodeClass::Slicer, SLICER_ROLE, brief)?;
+    spec.target = Some(base.target.clone());
+    spec.from_ref = Some(base.sha.clone());
     spec.id = format!("reslice-{}-a1", row.task);
     spec.kind = KIND.to_owned();
     spec.task = Some(row.task.clone());
@@ -182,20 +235,47 @@ fn body_tail(body: &str) -> &str {
     body.find("mode: ").map_or("", |at| &body[at..])
 }
 
+/// The heading the dispatched request is rendered under.
+const REQUEST_HEADING: &str = "## request";
+
+/// The dispatched slicer brief: the slicing instruction first, then the mode
+/// and sizing metadata, then the labelled request, then the filtered history.
 fn brief<M: FlowMail>(
     ctx: &Ctx,
     mail: &M,
     slice: &StepRow,
     mode: Mode,
     input: &str,
+    base: &SlicerBase,
 ) -> Result<String, VivariumError> {
+    let context = reslice_context::quoted_context(&mail.task_body(&slice.task)?);
+    let fallback = base
+        .fallback_reason
+        .as_ref()
+        .map_or_else(String::new, |reason| format!("base fallback: {reason}\n"));
     Ok(format!(
-        "mode: {}\nslice size: aim for 5 to {} minutes\ntargets: {}\n{input}\noriginal slice task:\n{}",
+        "{}\n\nmode: {}\nslice size: aim for 5 to {} minutes\ntargets: {}\n\
+         base source: {}\nbase target: {}\nbase ref: {}\nbase sha: {}\n{}\n\
+         {REQUEST_HEADING}\n\n{input}\n\n{}\n\n{context}\n\n{REPLY_FORMAT}",
+        mode.instruction(),
         mode.word(),
         ctx.cfg.slice.minutes(),
         targets(ctx).join(", "),
-        mail.task_body(&slice.task)?
+        source_word(base.source),
+        base.target,
+        base.reference,
+        base.sha,
+        fallback,
+        reslice_context::CONTEXT_HEADING,
     ))
+}
+
+/// The brief word for a resolved base's source.
+fn source_word(source: SlicerSource) -> &'static str {
+    match source {
+        SlicerSource::NeedBranch => "need-branch",
+        SlicerSource::TargetMain => "target-main",
+    }
 }
 
 /// Registry hook: the reslices phase.
@@ -476,7 +556,10 @@ fn reply_of(
     let message = crate::pump::attempt_record::hand_message(&outcome.receipt);
     let slicer = match parse_reply(&message) {
         Ok(slicer) => slicer,
-        Err(error) => return fail(format!("unusable reply: {error}")),
+        Err(error) => {
+            let why = refusal::describe(job, &error);
+            return fail(format!("unusable reply: {why}"));
+        }
     };
     let wanted = if mode == Mode::Split {
         SlicerMode::Split
@@ -493,6 +576,9 @@ fn reply_of(
     }
     Ok(Some(slicer))
 }
+
+#[path = "reslice_context.rs"]
+mod reslice_context;
 
 #[path = "reslice_retry.rs"]
 mod retry;

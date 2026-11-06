@@ -765,7 +765,7 @@ fn tools_list() -> Value {
                 "required": ["name"],
                 "additionalProperties": false
             })),
-            tool("role_list", "Hosted projects only, operator only. Read-only `vivi role list --json`: one view per role — address, aliases, kind, status, harness, provider, model, cadence, pool, models, and whether a charter is set. Same authorization as pump_control.", json!({
+            tool("role_list", "Hosted projects only, operator only. Read-only `vivi role list --json`: one view per role — address, aliases, kind, status, harness, provider, model, command, target, cadence, pool, models, and whether a charter is set. Same authorization as pump_control.", json!({
                 "type": "object",
                 "properties": {},
                 "additionalProperties": false
@@ -778,7 +778,7 @@ fn tools_list() -> Value {
                 "required": ["role"],
                 "additionalProperties": false
             })),
-            tool("role_add", "Hosted projects only, operator only. `vivi role add` (through `Mailspace::add_role`, a guarded write): the same arguments the CLI takes — kind (the pump's hand role, `[pump] to`, defaults to kind hand when absent), harness, provider, model, thinking, status, labels, cadence, pool, read_only, models. Same authorization as pump_control. A duplicate name is refused; refused while the pump runs; a write that adds a new config error is rolled back. Rate limited as a write. Letters held under the new name are adopted, as the CLI does. Returns {added, adopted, role} with the same view `role_show` answers.", json!({
+            tool("role_add", "Hosted projects only, operator only. `vivi role add` (through `Mailspace::add_role`, a guarded write): the same arguments the CLI takes — kind (the pump's hand role, `[pump] to`, defaults to kind hand when absent), harness, provider, model, command, target, thinking, status, labels, cadence, pool, read_only, models. `command` is the shell text the role runs, taken verbatim (a blank or NUL-bearing command is refused); `target` must be a pump repository target. Same authorization as pump_control. A duplicate name is refused; refused while the pump runs; a write that adds a new config error is rolled back. Rate limited as a write. Letters held under the new name are adopted, as the CLI does. Returns {added, adopted, role} with the same view `role_show` answers.", json!({
                 "type": "object",
                 "properties": {
                     "role": { "type": "string", "description": "Role name (local-part), e.g. hand-1 or head-ceo" },
@@ -786,6 +786,8 @@ fn tools_list() -> Value {
                     "harness": { "type": "string", "description": "Execution home (subagent, tmux, vivi_pty, …)" },
                     "provider": { "type": "string", "description": "Inference provider / account lane" },
                     "model": { "type": "string", "description": "Model id" },
+                    "command": { "type": "string", "description": "Shell command the role runs when dispatched, taken verbatim (blank or NUL is refused)" },
+                    "target": { "type": "string", "description": "Pump repository target id this role's work lands on" },
                     "thinking": { "type": "string", "description": "Thinking / reasoning effort" },
                     "status": { "type": "string", "description": "Lifecycle status (active, parked, retired, or freeform)" },
                     "labels": { "type": "array", "items": { "type": "string" }, "description": "Freeform label slugs" },
@@ -797,7 +799,7 @@ fn tools_list() -> Value {
                 "required": ["role"],
                 "additionalProperties": false
             })),
-            tool("role_set", "Hosted projects only, operator only. `vivi role set` (through `Mailspace::set_role`, a guarded write): the CLI's configuration fields, each as a set and a clear_<field> form — kind, harness, provider, model, thinking, cadence, pool, read_only, models — plus status, labels and clear_labels. At least one field must be named. The CLI's --pid/--host (a live seat's runtime binding, an unguarded write) is not exposed. Same authorization as pump_control. An unknown role is refused; refused while the pump runs; a write that adds a new config error is rolled back. Rate limited as a write. Returns the same view `role_show` answers.", role_set_schema()),
+            tool("role_set", "Hosted projects only, operator only. `vivi role set` (through `Mailspace::set_role`, a guarded write): the CLI's configuration fields, each as a set and a clear_<field> form — kind, harness, provider, model, command, target, thinking, cadence, pool, read_only, models — plus status, labels and clear_labels. command is taken verbatim, and clear_command wins over command; clear_target likewise wins over target, which must be a pump repository target. At least one field must be named. The CLI's --pid/--host (a live seat's runtime binding, an unguarded write) is not exposed. Same authorization as pump_control. An unknown role is refused; refused while the pump runs; a write that adds a new config error is rolled back. Rate limited as a write. Returns the same view `role_show` answers.", role_set_schema()),
             tool("charter_show", "Hosted projects only, operator only. Read-only `vivi role charter show <role> --json`: the role's charter body (an empty string when it has none), by name or alias, with its name, address and has_charter. Same authorization as pump_control.", json!({
                 "type": "object",
                 "properties": {
@@ -857,7 +859,7 @@ fn tools_list() -> Value {
 }
 
 /// The `role_set` schema: the set fields as a literal, then one generated
-/// `clear_<field>` boolean per clearable field — one 22-property `json!`
+/// `clear_<field>` boolean per clearable field — one 26-property `json!`
 /// literal exceeds the macro's default recursion limit.
 fn role_set_schema() -> Value {
     let mut schema = json!({
@@ -868,6 +870,8 @@ fn role_set_schema() -> Value {
             "harness": { "type": "string", "description": "Execution home" },
             "provider": { "type": "string", "description": "Inference provider" },
             "model": { "type": "string", "description": "Model id" },
+            "command": { "type": "string", "description": "Shell command the role runs when dispatched, taken verbatim" },
+            "target": { "type": "string", "description": "Pump repository target id this role's work lands on" },
             "thinking": { "type": "string", "description": "Thinking / reasoning effort" },
             "cadence": { "type": "string", "description": "Desired maximum silence between outbound signals (e.g. 15m, 1h)" },
             "status": { "type": "string", "description": "Lifecycle status" },
@@ -888,6 +892,8 @@ fn role_set_schema() -> Value {
         ("harness", "Clear harness"),
         ("provider", "Clear provider"),
         ("model", "Clear model"),
+        ("command", "Clear the role's command (it runs no command)"),
+        ("target", "Clear the assigned target"),
         ("thinking", "Clear thinking"),
         ("cadence", "Clear cadence (the role is not on a schedule)"),
         ("pool", "Clear the assigned pool"),

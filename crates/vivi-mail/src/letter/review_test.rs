@@ -144,7 +144,7 @@ fn a_merge_envelope_carries_judgment_only() {
     assert_eq!(parsed.answer, "conflict");
     assert_eq!(parsed.front["conflicts"][0], "src/tick.rs");
     assert_eq!(parsed.front["design_change"], true);
-    assert_eq!(parsed.front["check"][0]["seconds"], 41);
+    assert_eq!(parsed.front["check"][0]["seconds"], 41.0);
 
     let plain = parse_for(RoleKind::Merge, &env("answer = \"merged\"\n")).unwrap();
     assert_eq!(plain.front["design_change"], false);

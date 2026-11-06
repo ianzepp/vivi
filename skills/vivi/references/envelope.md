@@ -311,8 +311,16 @@ An envelope carries judgment and reports only. No field is a SHA, a published
 ref, a merged flag, an exit code or a commit that the pump acts on. Those come
 from the runner and from the repository history.
 
-The `[[check]]` table is `{cmd, result, seconds}` with `result` one of `pass`,
-`fail` or `skipped`, and `seconds` an integer.
+The `[[check]]` table is `{cmd, result, seconds}` with `result` one of the
+exact words `pass`, `fail` or `skipped`, and `seconds` a duration: any finite,
+non-negative number, written as an integer or a decimal, fractional seconds
+retained, e.g. `seconds = 41.5`.
+
+Durations are typed as floating-point numbers: an envelope carried in typed or
+JSON form serializes `seconds` as a float, while older whole-number inputs
+remain readable unchanged. Kept strict on purpose: need priority stays a
+signed i64 ordering, `step.run` stays a u32 execution identity, and `pump.t`
+stays a positive i64 microsecond stamp.
 
 | Role | `answer` | Other fields | Prose body |
 | --- | --- | --- | --- |

@@ -643,6 +643,7 @@ fn a_cleanup_the_remote_refuses_says_push_refused() {
     git(&rig.f.repo, &["branch", "vivi/need/refused", &expected]);
     let hooks = git(&rig.f.repo, &["rev-parse", "--absolute-git-dir"]);
     let hook = Path::new(hooks.trim()).join("hooks/pre-receive");
+    std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
     std::fs::write(&hook, "#!/bin/sh\necho refused >&2\nexit 1\n").unwrap();
     std::fs::set_permissions(&hook, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     let controls =

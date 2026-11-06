@@ -188,8 +188,49 @@ fn table_below_fence(pieces: &Pieces<'_>) -> Option<LetterError> {
     })
 }
 
+/// A reply whose front-matter tables sit below the closing fence, with those
+/// tables moved back into the front matter: the envelope when the combined
+/// front matter parses and validates, else none. The prose is what preceded
+/// the first moved table.
+fn rescue_tables_below_fence<T: DeserializeOwned + Validate>(
+    pieces: &Pieces<'_>,
+) -> Option<Envelope<T>> {
+    let mut offset = 0;
+    let mut start = None;
+    for line in pieces.body.split_inclusive('\n') {
+        let trimmed = line.trim();
+        if FRONT_TABLES.iter().any(|table| trimmed.starts_with(*table)) {
+            start = Some(offset);
+            break;
+        }
+        offset += line.len();
+    }
+    let start = start?;
+    let (prose, tables) = pieces.body.split_at(start);
+    // Some replies wrap the late tables in a second `+++` block: drop bare
+    // fence lines from what is moved, and from the end of the prose.
+    let not_fence = |line: &&str| line.trim() != FENCE;
+    let tables: Vec<&str> = tables.lines().filter(not_fence).collect();
+    let mut prose: Vec<&str> = prose.lines().collect();
+    while prose
+        .last()
+        .is_some_and(|line| line.trim().is_empty() || line.trim() == FENCE)
+    {
+        prose.pop();
+    }
+    let prose = prose.join("\n");
+    let front_text = format!("{}\n{}\n", pieces.front, tables.join("\n"));
+    let front: T = toml::from_str(&front_text).ok()?;
+    front.validate().ok()?;
+    Some(Envelope {
+        front,
+        body: prose.trim().to_string(),
+    })
+}
+
 /// Parse a role reply into a typed envelope and run its conditional rules.
-/// A `[[follow_up]]` or `[[check]]` table below the closing fence is refused.
+/// A `[[follow_up]]` or `[[check]]` table below the closing fence is moved
+/// into the front matter when that parses; otherwise it is refused.
 ///
 /// # Errors
 ///
@@ -216,7 +257,11 @@ fn parse_with<T: DeserializeOwned + Validate>(
 ) -> Result<Envelope<T>, LetterError> {
     let pieces = split_pieces(text)?;
     if tables && let Some(err) = table_below_fence(&pieces) {
-        return Err(err);
+        // Models often put `[[check]]` / `[[follow_up]]` tables after the
+        // closing fence. Move everything from the first such table into the
+        // front matter and accept the reply when that parses and validates;
+        // otherwise keep the original "move it inside" error.
+        return rescue_tables_below_fence(&pieces).ok_or(err);
     }
     let front: T = toml::from_str(pieces.front).map_err(|err| {
         let before = err.span().map_or(0, |span| {

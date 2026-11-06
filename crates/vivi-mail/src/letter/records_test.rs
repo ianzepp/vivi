@@ -300,6 +300,26 @@ fn mail_refusals() {
 }
 
 #[test]
+fn decimal_pump_t_is_refused() {
+    for t in ["t = 1.5", "t = 1700000000000000.0"] {
+        let text = format!("+++\n[pump]\nnote = \"attempt\"\n{t}\n+++\n");
+        assert!(
+            matches!(refused::<MailFront>(&text), LetterError::Toml { .. }),
+            "{t}"
+        );
+    }
+    let exact = MailFront {
+        pump: Some(PumpNote {
+            note: NoteWord::Attempt,
+            t: 1_700_000_000_000_000,
+            reference: None,
+        }),
+        ..MailFront::default()
+    };
+    assert_eq!(round_trip(&exact), exact);
+}
+
+#[test]
 fn brief_note_carries_a_job() {
     let brief = MailFront {
         pump: Some(PumpNote {

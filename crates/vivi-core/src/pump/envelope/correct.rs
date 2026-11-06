@@ -64,19 +64,22 @@ pub fn spec(
     budget: u64,
 ) -> JobSpec {
     let id = format!("{}-c{n}", base_id(&original.id));
+    let diagnosis = super::refusal::describe(original, error);
     let body = format!(
         "Correction for pump step {need} r{} {}.\n\n\
          Your last reply did not parse as a reply envelope.\n\
-         Parse error: {error}\n\n\
+         Diagnosis for job {}: {diagnosis}\n\n\
          Rewrite only the envelope; do not redo the work; keep every fact. \
          Answer with the corrected reply and nothing else.\n\n\
          The envelope rules and this role's fields:\n{}\n\n\
          The reply to correct:\n{}",
         row.run,
         row.node,
+        original.id,
         role_row(kind),
         capped(&final_text(original)),
     );
+    let body = super::submit::with_section(&body, kind);
     let mut spec = JobSpec::new(id, KIND, role, format!("envelope fix: {}", row.node), body);
     spec.target.clone_from(&original.target);
     spec.pool_candidates.clone_from(&original.pool_candidates);

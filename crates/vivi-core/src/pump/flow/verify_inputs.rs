@@ -7,10 +7,11 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::pump::flow::need_branch;
+use crate::pump::flow::need_branch::{self, DELETING, FRESH, LIVE, PRUNED, RENAMING};
+use crate::pump::flow::verify::{commit_contains, fetch, remote_tip};
 use crate::pump::host::{Ctx, shell_quote};
-use crate::pump::store::PumpStore;
 use crate::pump::store::step_payload::StepPayloadRow;
+use crate::pump::store::{NeedBranchRow, PumpStore};
 use vivi_error::VivariumError;
 
 /// The planner verdict that marks an admitted plan.
@@ -182,6 +183,206 @@ pub(crate) fn branch_range(
         tip,
         target: row.target,
     })
+}
+
+/// Where a slicer's immutable base comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SlicerSource {
+    /// Commits published on the need branch that main does not hold yet.
+    NeedBranch,
+    /// The current tip of the target's main.
+    TargetMain,
+}
+
+/// The immutable base a slicer, reslice, rework or split starts from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SlicerBase {
+    /// The target whose repository the SHA belongs to.
+    pub target: String,
+    /// The commit to start from.
+    pub sha: String,
+    /// Which ref kind the SHA came from.
+    pub source: SlicerSource,
+    /// The remote ref the SHA was read from: `refs/heads/<need branch>` for a
+    /// need-branch base, `refs/heads/<main>` for a main base.
+    pub reference: String,
+    /// Why main was chosen over a need branch tip; `None` when the base is
+    /// the need branch's published tip.
+    pub fallback_reason: Option<String>,
+}
+
+/// The base a slicer starts from, resolved without recording a base, writing
+/// a branch row or moving a published ref.
+///
+/// The target is the stored row's, else `target_hint`, else the root need's
+/// front matter, else the config's primary target. A live row's published tip
+/// is the base only when it holds work outside the target's current main;
+/// every other case (no row, an unpublished ref, a fresh or pruned row, a tip
+/// still at its recorded base, a tip equal to or already in main) starts from
+/// the current main tip.
+///
+/// # Errors
+/// Returns [`VivariumError`] for a moving or unknown row status, an unknown or
+/// ambiguous target, a missing main ref, and a failed store, thread, decode,
+/// ls-remote, fetch or ancestry query.
+pub(crate) fn slicer_base(
+    ctx: &Ctx,
+    store: &PumpStore,
+    need: &str,
+    target_hint: Option<&str>,
+) -> Result<SlicerBase, VivariumError> {
+    let row = store.need_branch(need)?;
+    if let Some(row) = &row {
+        match row.status.as_str() {
+            LIVE | FRESH | PRUNED => {}
+            RENAMING | DELETING => {
+                return Err(VivariumError::Other(format!(
+                    "need branch of {need} is {}: the old branch is still being moved",
+                    row.status
+                )));
+            }
+            other => {
+                return Err(VivariumError::Other(format!(
+                    "need branch of {need} has unknown status {other}"
+                )));
+            }
+        }
+    }
+    let target = resolve_target(ctx, need, row.as_ref(), target_hint)?;
+    let tctx = ctx
+        .for_target(&target)
+        .ok_or_else(|| VivariumError::Config(format!("unknown target {target}")))?;
+    let main = tctx.cfg.main.clone();
+    let main_ref = format!("refs/heads/{main}");
+    let main_sha = remote_tip(&tctx, &tctx.cfg.remote, &main_ref)
+        .map_err(VivariumError::Other)?
+        .ok_or_else(|| {
+            VivariumError::Other(format!("main ref {main} does not exist on target {target}"))
+        })?;
+    match &row {
+        None => Ok(from_main(
+            &target,
+            &main_sha,
+            &main_ref,
+            "the need has no need branch row",
+        )),
+        Some(row) if row.status != LIVE => Ok(from_main(
+            &target,
+            &main_sha,
+            &main_ref,
+            format!("the need branch row is {}", row.status),
+        )),
+        Some(row) => published_base(ctx, &tctx, row, &main_sha, &main_ref),
+    }
+}
+
+/// The target a slicer works on: the stored row's, else the hint, else the
+/// root need's front matter, else the config's primary target.
+fn resolve_target(
+    ctx: &Ctx,
+    need: &str,
+    row: Option<&NeedBranchRow>,
+    hint: Option<&str>,
+) -> Result<String, VivariumError> {
+    if let Some(row) = row {
+        return Ok(row.target.clone());
+    }
+    if let Some(hint) = hint.filter(|hint| !hint.is_empty()) {
+        return Ok(hint.to_owned());
+    }
+    if let Some(target) = root_target(ctx, need)? {
+        return Ok(target);
+    }
+    if ctx.cfg.targets.is_empty() {
+        return Ok(String::from("default"));
+    }
+    ctx.cfg.primary_target().ok_or_else(|| {
+        VivariumError::Config(format!(
+            "need {need} declares no target and the {} explicit targets have no primary",
+            ctx.cfg.targets.len()
+        ))
+    })
+}
+
+/// The `target` of the need's root message, read through the typed need
+/// parser. `None` when the root declares no target.
+fn root_target(ctx: &Ctx, need: &str) -> Result<Option<String>, VivariumError> {
+    let messages = need_thread(ctx, need)?;
+    let root = messages
+        .iter()
+        .find(|message| message["handle"].as_str() == Some(need))
+        .ok_or_else(|| {
+            VivariumError::Message(format!("need show returned no root message for {need}"))
+        })?;
+    let body = root["body"].as_str().unwrap_or("");
+    let envelope = vivi_mail::letter::read::need_of(need, body)
+        .map_err(|error| VivariumError::Message(format!("need {need}: {error}")))?;
+    Ok(envelope.front.target.filter(|target| !target.is_empty()))
+}
+
+/// The base of a live row: its published tip when that holds a commit outside
+/// main, else main.
+fn published_base(
+    ctx: &Ctx,
+    tctx: &Ctx,
+    row: &NeedBranchRow,
+    main_sha: &str,
+    main_ref: &str,
+) -> Result<SlicerBase, VivariumError> {
+    let target = tctx.target_id.clone();
+    let remote = tctx.cfg.remote.clone();
+    let branch_ref = format!("refs/heads/{}", row.branch);
+    let Some(tip) = remote_tip(tctx, &remote, &branch_ref).map_err(VivariumError::Other)? else {
+        return Ok(from_main(
+            &target,
+            main_sha,
+            main_ref,
+            format!("{} is not published", row.branch),
+        ));
+    };
+    if row.base.as_deref() == Some(tip.as_str()) {
+        return Ok(from_main(
+            &target,
+            main_sha,
+            main_ref,
+            format!("{} is still at its recorded base", row.branch),
+        ));
+    }
+    if tip == main_sha {
+        return Ok(from_main(
+            &target,
+            main_sha,
+            main_ref,
+            format!("{} is at {main_ref}", row.branch),
+        ));
+    }
+    fetch(tctx, &remote, &branch_ref).map_err(VivariumError::Other)?;
+    if commit_contains(ctx, &target, main_ref, main_sha, &tip).map_err(VivariumError::Other)? {
+        return Ok(from_main(
+            &target,
+            main_sha,
+            main_ref,
+            format!("{} holds no commit beyond {main_ref}", row.branch),
+        ));
+    }
+    Ok(SlicerBase {
+        target,
+        sha: tip,
+        source: SlicerSource::NeedBranch,
+        reference: branch_ref,
+        fallback_reason: None,
+    })
+}
+
+/// A base read from the target's main, carrying why main was chosen.
+fn from_main(target: &str, sha: &str, reference: &str, reason: impl Into<String>) -> SlicerBase {
+    SlicerBase {
+        target: target.to_owned(),
+        sha: sha.to_owned(),
+        source: SlicerSource::TargetMain,
+        reference: reference.to_owned(),
+        fallback_reason: Some(reason.into()),
+    }
 }
 
 /// The newest row of a class.

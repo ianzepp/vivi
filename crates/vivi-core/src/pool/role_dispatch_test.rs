@@ -426,7 +426,7 @@ fn a_charter_gives_the_headings_in_order_over_the_pool_rules() {
     assert_eq!(
         prompt,
         "# Standing charter (role scribe)\n\nWrite the letters.\n\n---\n\n\
-         You run in a pool slot with no `vivi` command and no mailspace. Where the charter tells you to read or settle your handle with `vivi`, read your brief instead and end with your receipt on standard output; the runner records your result and whoever dispatched the job settles the handle.\n\n\
+         You run in a pool slot with no `vivi` command and no mailspace. Where the charter tells you to read or settle your handle with `vivi`, read your brief instead and end with your receipt on standard output; the runner records your result and whoever dispatched the job settles the handle. When the charter or the brief defines a reply envelope (a document that opens with a line containing only `+++`), that envelope is your receipt: write it in exactly that format, never as Markdown headings or lists.\n\n\
          # Pool rules (these bound the charter)\n\nWork the brief. Never weaken a test.\n"
     );
     let charter = prompt.find("# Standing charter (role scribe)").unwrap();

@@ -4,7 +4,7 @@ use std::fs;
 
 use tempfile::{TempDir, tempdir};
 
-use super::{AGENT_SILENT, BUDGET_UNRAISABLE, Collected, collect};
+use super::{AGENT_SILENT, BUDGET_UNRAISABLE, Collected, ENVELOPE_FAILED, collect};
 use crate::pool::dispatch::BUDGET_RANGE;
 use crate::pump::config::PumpConfig;
 use crate::pump::envelope::EnvelopeError;
@@ -76,6 +76,29 @@ fn run(f: &mut Fixture, job: &PoolJob, attempt: u32, class: &NodeClass) -> Colle
 const PLANNED: &str = "+++\nanswer = \"planned\"\n+++\nThe plan.";
 const BROKEN: &str = "+++\nanswer = \"planned\"\nproof = 'x'\n+++\nThe plan.";
 
+/// A read-only job's receipt: the runner summary reports `total` discarded
+/// changes and samples `path` as the first one; the agent printed `body`.
+fn discarded(total: u64, path: &str, body: &str) -> String {
+    format!(
+        "result: read_only_discarded {total}\ndiscarded paths (1 of {total}):\n  {path}\n\n\
+         --- receipt\n{body}"
+    )
+}
+
+/// A read-only `id` job that finished with `receipt`.
+fn read_only(id: &str, receipt: &str) -> PoolJob {
+    let mut read_only = job(id, JobStatus::Finished, receipt);
+    read_only.read_only = true;
+    read_only
+}
+
+fn count_exceptions(f: &Fixture, id: &str) -> usize {
+    exceptions(f)
+        .lines()
+        .filter(|line| line.contains(ENVELOPE_FAILED) && line.contains(&format!("job {id}:")))
+        .count()
+}
+
 #[test]
 fn a_valid_envelope_is_the_outcome() {
     let mut f = fixture();
@@ -120,6 +143,111 @@ fn a_missing_envelope_gives_a_correction() {
             error: EnvelopeError::NoOpening
         }
     );
+}
+
+#[test]
+fn a_missing_envelope_raises_while_a_correction_is_available() {
+    // A generic role that printed no envelope is an alarm in its own right:
+    // the correction still runs, but the operator hears about the missing
+    // envelope and the read-only changes the runner discarded.
+    for (class, body) in [
+        (NodeClass::Planner, "ANSWER: planned"),
+        (NodeClass::Researcher, "ANSWER: READY"),
+    ] {
+        let mut f = fixture();
+        let j = read_only("j1", &discarded(3, "src/a.rs", body));
+        assert_eq!(
+            run(&mut f, &j, 1, &class),
+            Collected::Correct {
+                error: EnvelopeError::NoOpening
+            },
+            "{class:?}"
+        );
+        let log = exceptions(&f);
+        assert_eq!(count_exceptions(&f, "j1"), 1, "{class:?}: {log}");
+        assert!(log.contains("reply has no envelope"), "{class:?}: {log}");
+        assert!(
+            log.contains("the read-only job changed 3 files (first: src/a.rs)"),
+            "{class:?}: {log}"
+        );
+    }
+}
+
+#[test]
+fn a_recollected_missing_envelope_raises_one_exception() {
+    let mut f = fixture();
+    let j = read_only("j1", &discarded(2, "src/b.rs", "still no envelope"));
+    for _ in 0..2 {
+        assert!(matches!(
+            run(&mut f, &j, 1, &NodeClass::Planner),
+            Collected::Correct { .. }
+        ));
+    }
+    assert_eq!(count_exceptions(&f, "j1"), 1, "{}", exceptions(&f));
+}
+
+#[test]
+fn each_job_in_a_correction_chain_raises_at_most_one_exception() {
+    let mut f = fixture();
+    for (id, total, path, expected) in [
+        ("j1", 3, "src/a.rs", true),
+        ("j1-c1", 1, "src/c.rs", true),
+        ("j1-c2", 2, "src/d.rs", false),
+    ] {
+        let j = read_only(id, &discarded(total, path, "no envelope"));
+        let got = run(&mut f, &j, 1, &NodeClass::Planner);
+        assert_eq!(matches!(got, Collected::Correct { .. }), expected, "{id}");
+        assert_eq!(count_exceptions(&f, id), 1, "{id}: {}", exceptions(&f));
+        let log = exceptions(&f);
+        assert!(
+            log.contains(&format!("changed {total} file")),
+            "{id}: {log}"
+        );
+    }
+    assert_eq!(exceptions(&f).matches(ENVELOPE_FAILED).count(), 3);
+}
+
+#[test]
+fn malformed_front_matter_keeps_the_exhaustion_timing() {
+    let mut f = fixture();
+    for id in ["j1", "j1-c1"] {
+        let got = run(
+            &mut f,
+            &job(id, JobStatus::Finished, BROKEN),
+            1,
+            &NodeClass::Planner,
+        );
+        assert!(matches!(got, Collected::Correct { .. }), "{id}");
+        assert!(exceptions(&f).is_empty(), "{id}: {}", exceptions(&f));
+    }
+    let third = run(
+        &mut f,
+        &job("j1-c2", JobStatus::Finished, BROKEN),
+        1,
+        &NodeClass::Planner,
+    );
+    assert_eq!(third, Collected::Failed);
+    assert_eq!(count_exceptions(&f, "j1-c2"), 1, "{}", exceptions(&f));
+}
+
+#[test]
+fn a_writable_job_reports_no_discarded_evidence() {
+    let mut f = fixture();
+    let receipt = format!(
+        "push: pushed vivi/work/x abcdef0123\n{}",
+        discarded(3, "src/a.rs", "ANSWER: planned")
+    );
+    let got = run(
+        &mut f,
+        &job("j1", JobStatus::Finished, &receipt),
+        1,
+        &NodeClass::Planner,
+    );
+    assert!(matches!(got, Collected::Correct { .. }));
+    let log = exceptions(&f);
+    assert_eq!(count_exceptions(&f, "j1"), 1, "{log}");
+    assert!(!log.contains("changed"), "{log}");
+    assert!(!log.contains("(first:"), "{log}");
 }
 
 #[test]
@@ -401,6 +529,56 @@ fn a_merge_with_no_decisive_receipt_is_verified_against_git() {
         &NodeClass::Merge,
     );
     assert_eq!(got, Collected::Verify);
+}
+
+#[test]
+fn a_merge_with_a_missing_envelope_reports_the_shared_diagnosis() {
+    let mut f = fixture();
+    let receipt = merge_receipt(Some(&published(REF)), "no envelope here");
+    let got = run(
+        &mut f,
+        &job("m1", JobStatus::Finished, &receipt),
+        1,
+        &NodeClass::Merge,
+    );
+    assert!(
+        matches!(&got, Collected::Outcome(word, payload) if word == "merged" && payload["sha"] == SHA),
+        "{got:?}"
+    );
+    let log = exceptions(&f);
+    assert_eq!(count_exceptions(&f, "m1"), 1, "{log}");
+    assert!(log.contains("reply has no envelope"), "{log}");
+    assert!(!log.contains("changed"), "{log}");
+    let replied = f.mail.calls.iter().any(|call| {
+        matches!(call, Call::Reply { handle, body }
+            if *handle == f.task
+                && body.starts_with("pump-envelope-error: reply has no envelope"))
+    });
+    assert!(replied, "{:?}", f.mail.calls);
+}
+
+#[test]
+fn a_merge_with_malformed_front_matter_keeps_its_receipt_outcome() {
+    let mut f = fixture();
+    let receipt = merge_receipt(Some(&published(REF)), BROKEN);
+    let got = run(
+        &mut f,
+        &job("m1", JobStatus::Finished, &receipt),
+        1,
+        &NodeClass::Merge,
+    );
+    assert!(
+        matches!(&got, Collected::Outcome(word, payload) if word == "merged" && payload["sha"] == SHA),
+        "{got:?}"
+    );
+    let log = exceptions(&f);
+    assert_eq!(count_exceptions(&f, "m1"), 1, "{log}");
+    assert!(!log.contains("reply has no envelope"), "{log}");
+    let replied = f.mail.calls.iter().any(|call| {
+        matches!(call, Call::Reply { handle, body }
+            if *handle == f.task && body.starts_with("pump-envelope-error:"))
+    });
+    assert!(replied, "{:?}", f.mail.calls);
 }
 
 #[test]

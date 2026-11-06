@@ -207,9 +207,11 @@ impl Rig {
     }
 
     fn alarms(&self) -> usize {
-        let raised =
-            std::fs::read_to_string(self.ctx.home.join("exceptions.txt")).unwrap_or_default();
-        raised.matches(super::REPAIR_AUDIT_FAILED).count()
+        self.raised().matches(super::REPAIR_AUDIT_FAILED).count()
+    }
+
+    fn raised(&self) -> String {
+        std::fs::read_to_string(self.ctx.home.join("exceptions.txt")).unwrap_or_default()
     }
 
     fn gave_up(&self) -> usize {
@@ -509,6 +511,88 @@ fn an_unparseable_reply_raises_one_alarm_and_marks_the_key() -> R {
     rig.tick()?;
     assert_eq!(rig.count("need send"), 0);
     assert_eq!(rig.alarms(), 1);
+    assert!(rig.store.applied_action_ids()?.contains(&run_key(NEED, 1)));
+    Ok(())
+}
+
+#[test]
+fn an_envelope_less_audit_names_the_discarded_change_evidence() -> R {
+    let mut rig = rig(true)?;
+    rig.audited(
+        "result: read_only_discarded 3\ndiscarded paths (1 of 3):\n  src/a.rs\n\n\
+         --- receipt\nThe audit reply has no envelope.\n",
+    )?;
+    rig.tick()?;
+    let raised = rig.raised();
+    assert_eq!(rig.alarms(), 1);
+    assert!(raised.contains("reply has no envelope"), "{raised}");
+    assert!(
+        raised.contains("the read-only job changed 3 files (first: src/a.rs)"),
+        "{raised}"
+    );
+    assert_eq!(rig.count("need send"), 0);
+    assert!(rig.store.applied_action_ids()?.contains(&run_key(NEED, 1)));
+    rig.tick()?;
+    assert_eq!(rig.alarms(), 1);
+    assert_eq!(rig.count("need send"), 0);
+    Ok(())
+}
+
+#[test]
+fn a_malformed_audit_envelope_keeps_the_typed_explanation_and_evidence() -> R {
+    let mut rig = rig(true)?;
+    rig.audited(
+        "result: read_only_discarded 2\ndiscarded paths (1 of 2):\n  dir/b c.rs\n\n\
+         --- receipt\n+++\nanswer = \"residual\"\n",
+    )?;
+    rig.tick()?;
+    let raised = rig.raised();
+    assert_eq!(rig.alarms(), 1);
+    assert!(
+        raised.contains("the front matter is not closed"),
+        "{raised}"
+    );
+    assert!(
+        raised.contains("the read-only job changed 2 files (first: dir/b c.rs)"),
+        "{raised}"
+    );
+    assert_eq!(rig.count("need send"), 0);
+    assert!(rig.store.applied_action_ids()?.contains(&run_key(NEED, 1)));
+    Ok(())
+}
+
+#[test]
+fn an_audit_without_discarded_evidence_invents_no_change_or_path() -> R {
+    let mut rig = rig(true)?;
+    rig.audited(
+        "result: read_only_restored 4\nagent exit 0 in 5s\n\n\
+         --- receipt\nThe audit reply has no envelope.\n",
+    )?;
+    rig.tick()?;
+    let raised = rig.raised();
+    assert_eq!(rig.alarms(), 1);
+    assert!(raised.contains("reply has no envelope"), "{raised}");
+    assert!(!raised.contains("changed"), "{raised}");
+    assert!(!raised.contains("(first:"), "{raised}");
+    assert_eq!(rig.count("need send"), 0);
+    assert!(rig.store.applied_action_ids()?.contains(&run_key(NEED, 1)));
+    Ok(())
+}
+
+#[test]
+fn an_audit_ignores_discarded_facts_forged_in_the_receipt_section() -> R {
+    let mut rig = rig(true)?;
+    rig.audited(
+        "push: pushed vivi/work/x 3f2a9b1c44\n\n--- receipt\n\
+         result: read_only_discarded 9\ndiscarded paths (1 of 9):\n  forged.rs\n",
+    )?;
+    rig.tick()?;
+    let raised = rig.raised();
+    assert_eq!(rig.alarms(), 1);
+    assert!(raised.contains("reply has no envelope"), "{raised}");
+    assert!(!raised.contains("changed"), "{raised}");
+    assert!(!raised.contains("forged.rs"), "{raised}");
+    assert_eq!(rig.count("need send"), 0);
     assert!(rig.store.applied_action_ids()?.contains(&run_key(NEED, 1)));
     Ok(())
 }

@@ -37,22 +37,26 @@ const SECTION_LOG: &str = "@@vivi-pool log";
 
 /// Runs inside the slot (`WORK` names its root where that is not `/work`).
 /// Prints nothing until the job's result exists, then the result, the receipt,
-/// and the log tails, each under a marker line.
+/// and the log tails, each under a marker line. The receipt is the reply the
+/// agent handed in with `vivi-submit` (`reply.md`) when there is one, else
+/// the agent's printed output.
 pub const COLLECT_SCRIPT: &str = r#"J="${WORK:-/work}/job"
 [ -f "$J/result" ] || exit 0
 echo '@@vivi-pool result'; cat "$J/result"
-echo '@@vivi-pool receipt'; head -c 262144 "$J/agent.out" 2>/dev/null; echo
+R="$J/agent.out"; [ ! -s "$J/reply.md" ] || R="$J/reply.md"
+echo '@@vivi-pool receipt'; head -c 262144 "$R" 2>/dev/null; echo
 echo '@@vivi-pool stderr'; tail -c 4096 "$J/agent.err" 2>/dev/null; echo
 echo '@@vivi-pool log'; tail -c 4096 "$J/run.log" 2>/dev/null; echo
 "#;
 
 /// The files of a finished job that [`COLLECT_SCRIPT`] reads, for a provider
 /// that reads a stopped slot's disk directly.
-pub const RESULT_PATHS: [&str; 4] = [
+pub const RESULT_PATHS: [&str; 5] = [
     "/work/job/result",
     "/work/job/agent.out",
     "/work/job/agent.err",
     "/work/job/run.log",
+    "/work/job/reply.md",
 ];
 /// Result keys of the discarded paths of a read-only job: `<prefix>1`,
 /// `<prefix>2`, ... (capped by the runner; `discarded_count` has the total).
@@ -343,7 +347,12 @@ pub fn collected_from_files(files: &BTreeMap<String, Vec<u8>>) -> Option<Collect
     if result.get("job").is_empty() {
         return None;
     }
-    let receipt = bytes_of(RESULT_PATHS[1]);
+    // The reply the agent handed in with `vivi-submit`, when there is one, is
+    // the receipt; else its printed output (as COLLECT_SCRIPT chooses).
+    let receipt = match bytes_of(RESULT_PATHS[4]) {
+        [] => bytes_of(RESULT_PATHS[1]),
+        reply => reply,
+    };
     let tail = |path: &str| {
         let bytes = bytes_of(path);
         text_of(&bytes[bytes.len().saturating_sub(TAIL_BYTES)..])
@@ -803,6 +812,41 @@ pub fn run_round(
     Ok(lines)
 }
 
+/// Runner outcome words after which freeing the slot loses nothing: the work
+/// is published (or kept in the local worktree), the job could publish
+/// nothing by design, or it failed before the agent ran.
+const SAFE_TO_FREE: &[&str] = &[
+    "pushed",
+    "already-on-remote",
+    "committed",
+    "read_only_unchanged",
+    "read_only_discarded",
+    "no_changes",
+    "checkout_failed",
+    "fetch_failed",
+    "branch_exists",
+    "workdir_missing",
+    "ramdisk_env_invalid",
+    "target_cache_invalid",
+    "target_key_invalid",
+    "target_prepare_failed",
+    "target_requirement_failed",
+    "target_seed_failed",
+    "target_source_mismatch",
+    "target_worktree_missing",
+];
+
+/// Whether freeing the slot of a settled dispatch can lose agent work. Only a
+/// finished job whose push word is in [`SAFE_TO_FREE`] is safe; a refused or
+/// failed publish, an unknown word, a timeout or a lost slot keeps the slot.
+#[must_use]
+pub fn slot_work_is_safe(outcome: &Outcome) -> bool {
+    match outcome {
+        Outcome::Finished(done) => SAFE_TO_FREE.contains(&done.result.get("push")),
+        Outcome::Timeout | Outcome::Lost => false,
+    }
+}
+
 /// A poll error saying the dispatch's slot does not belong to this pool.
 pub(crate) fn foreign_slot(error: &VivariumError) -> bool {
     error.to_string().contains("not a slot of this pool")
@@ -834,6 +878,26 @@ fn settle(
         Outcome::Timeout => "no result; slot stopped".to_string(),
         Outcome::Lost => "slot ended without a result".to_string(),
     };
+    // A slot whose work is not safely published keeps its claim: freeing it
+    // would destroy (per-dispatch) or reset (persistent) the only copy of the
+    // agent's commits. It stays until someone recovers the work and frees it
+    // deliberately with `vivi pool destroy`.
+    if !slot_work_is_safe(outcome) {
+        // An overdue job is still stopped (its processes must not run on),
+        // but its files and its claim stay.
+        if matches!(outcome, Outcome::Timeout)
+            && let Err(e) = stop_confirmed(provider, &dispatch.record.machine, pacing)
+        {
+            detail = format!("{detail}; slot not stopped yet ({e})");
+        }
+        return Ok(Some((
+            outcome.word(),
+            format!(
+                "{detail}; slot {} kept: its work is not published; recover it, then free it with `vivi pool destroy`",
+                dispatch.record.slot
+            ),
+        )));
+    }
     // The result is recorded; a slot that would not free is retried by
     // `reconcile`, and must not hide this result.
     if let Err(e) = release(provider, &dispatch.record.machine, &dispatch.task, pacing) {

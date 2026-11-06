@@ -33,6 +33,47 @@ impl RunnerPublishReceipt {
     }
 }
 
+/// Whether a summary line is a result line the runner itself writes.
+fn is_result_marker(line: &str) -> bool {
+    let line = line.trim();
+    line.starts_with("result: ") || line.starts_with("push: ")
+}
+
+/// The exact discarded total of a `result: read_only_discarded N` (current)
+/// or `push: read_only_discarded N` (historical) marker. A marker of any other
+/// outcome, or a total that is absent, malformed or overflows, is no evidence:
+/// it never becomes an invented count.
+fn discarded_marker_total(line: &str) -> Option<u64> {
+    let line = line.trim();
+    let rest = line
+        .strip_prefix("result: ")
+        .or_else(|| line.strip_prefix("push: "))?;
+    let count = rest.trim_end().strip_prefix("read_only_discarded ")?;
+    let count = count.trim_end();
+    if count.is_empty() || !count.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    match count.parse() {
+        Ok(total) => Some(total),
+        Err(_) => None,
+    }
+}
+
+/// The first path of the summary's `discarded paths (N of TOTAL):` sample, the
+/// rest of the head's lines read from just after the marker. Spacing and
+/// Unicode inside a path are kept; a missing or malformed sample leaves the
+/// path absent rather than guessed.
+fn sampled_first_path(lines: &mut std::str::Lines<'_>) -> Option<String> {
+    for line in lines.by_ref() {
+        if !(line.starts_with("discarded paths (") && line.trim_end().ends_with("):")) {
+            continue;
+        }
+        let path = lines.next()?.strip_prefix("  ")?;
+        return (!path.is_empty()).then(|| path.to_owned());
+    }
+    None
+}
+
 impl JobOutcome {
     /// Whether the pool receipt explicitly reports a successful worker exit.
     #[must_use]
@@ -126,6 +167,32 @@ impl JobOutcome {
             .map_or(self.receipt.as_str(), |(summary, _)| summary)
     }
 
+    /// The runner-recorded discarded evidence of a read-only job: the exact
+    /// total it discarded and, when the summary sampled one, the first sampled
+    /// path. Only the summary head counts — the agent's own message and the
+    /// rendered sections never supply either value.
+    #[must_use]
+    pub fn read_only_discarded(&self) -> Option<(u64, Option<String>)> {
+        let head = self.summary_head();
+        let mut lines = head.lines();
+        let total = loop {
+            let line = lines.next()?;
+            if !is_result_marker(line) {
+                continue;
+            }
+            break discarded_marker_total(line)?;
+        };
+        Some((total, sampled_first_path(&mut lines)))
+    }
+
+    /// The pool summary lines only: cut at the first rendered section heading
+    /// and at the legacy `hand's final message:` boundary.
+    fn summary_head(&self) -> &str {
+        let head = crate::pool::record::split_sections(&self.receipt).0;
+        head.split_once("hand's final message:")
+            .map_or(head, |(summary, _)| summary)
+    }
+
     #[must_use]
     pub fn runner_sources(&self) -> Vec<RunnerSourceReceipt> {
         self.runner_section()
@@ -142,3 +209,7 @@ impl JobOutcome {
             .collect()
     }
 }
+
+#[cfg(test)]
+#[path = "receipts_test.rs"]
+mod tests;

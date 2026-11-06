@@ -4,10 +4,11 @@ use std::collections::BTreeMap;
 
 use crate::mailspace::MailspaceConfig;
 use crate::routing::{
-    Issue, MigrateInputs, RoleRouting, RoutedPool, RoutedRole, Severity, apply_plan_to_document,
-    default_read_only, from_mailspace, merge_lane_count, plan_migrate, require_ok, unified_diff,
-    validate,
+    Issue, MigrateInputs, RoleRouting, RoutedPool, RoutedRole, Severity, UNKNOWN_ROLE_TARGET,
+    apply_plan_to_document, default_read_only, from_mailspace, merge_lane_count, plan_migrate,
+    require_ok, unified_diff, validate,
 };
+use vivi_error::VivariumError;
 
 fn cfg(text: &str) -> MailspaceConfig {
     toml::from_str(text).expect("mailspace toml")
@@ -534,11 +535,13 @@ fn issues_distinguish_error_warning_and_not_ready() {
         severity: Severity::Error,
         message: "bad".into(),
         item: None,
+        code: None,
     };
     let warning = Issue {
         severity: Severity::Warning,
         message: "old".into(),
         item: None,
+        code: None,
     };
     let missing = Issue::not_ready("gate pool", "no gate pool");
     assert_eq!(error.severity, Severity::Error);
@@ -585,4 +588,88 @@ fn faber_fixture_migrates_hand_to_glm_and_merge_to_host() {
     let migrated: MailspaceConfig = toml::from_str(&doc.to_string()).unwrap();
     let issues = validate(&migrated);
     assert!(require_ok(&issues).is_ok(), "{issues:?}");
+}
+
+fn unknown_target_issues(config: &MailspaceConfig) -> Vec<Issue> {
+    validate(config)
+        .into_iter()
+        .filter(|issue| issue.is(UNKNOWN_ROLE_TARGET))
+        .collect()
+}
+
+#[test]
+fn a_role_target_a_named_pump_target_configures_is_accepted() {
+    let config = cfg(r#"
+name = "t"
+[[identities]]
+name = "hand"
+kind = "hand"
+target = "repo"
+[pump.targets.repo]
+path = "repo"
+"#);
+    assert!(unknown_target_issues(&config).is_empty());
+}
+
+#[test]
+fn the_implicit_default_target_is_accepted_when_the_pump_names_none() {
+    let config = cfg(r#"
+name = "t"
+[[identities]]
+name = "hand"
+kind = "hand"
+target = "default"
+[pump]
+main = "main"
+"#);
+    assert!(unknown_target_issues(&config).is_empty());
+}
+
+#[test]
+fn the_implicit_default_target_is_refused_once_the_pump_names_targets() {
+    let config = cfg(r#"
+name = "t"
+[[identities]]
+name = "hand"
+kind = "hand"
+target = "default"
+[pump.targets.repo]
+path = "repo"
+"#);
+    assert_eq!(unknown_target_issues(&config).len(), 1);
+}
+
+#[test]
+fn an_unknown_role_target_is_an_error_identified_apart_from_command_and_cadence() {
+    let config = cfg(r#"
+name = "t"
+[[identities]]
+name = "hand"
+kind = "hand"
+target = "missing"
+[pump]
+main = "main"
+"#);
+    let found = unknown_target_issues(&config);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].severity, Severity::Error);
+    assert_eq!(found[0].code, Some(UNKNOWN_ROLE_TARGET));
+    assert!(found[0].message.contains("missing"), "{}", found[0].message);
+    let issues = validate(&config);
+    assert!(
+        matches!(require_ok(&issues), Err(VivariumError::Config(_))),
+        "{issues:?}"
+    );
+}
+
+#[test]
+fn a_role_target_without_a_pump_table_is_refused() {
+    let config = cfg(r#"
+name = "t"
+[[identities]]
+name = "hand"
+kind = "hand"
+target = "default"
+"#);
+    assert_eq!(unknown_target_issues(&config).len(), 1);
 }

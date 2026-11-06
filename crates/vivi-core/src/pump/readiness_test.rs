@@ -319,3 +319,41 @@ fn a_role_with_no_charter_file_is_no_error() {
     let issues = assess(&reopen(tmp.path()));
     assert!(charter_errors(&issues).is_empty(), "{issues:?}");
 }
+
+fn coded_errors<'a>(issues: &'a [Issue], code: &str) -> Vec<&'a Issue> {
+    issues
+        .iter()
+        .filter(|issue| issue.is(code) && issue.severity == Severity::Error)
+        .collect()
+}
+
+#[test]
+fn a_role_target_the_pump_does_not_configure_is_one_error() {
+    let tmp = tempfile::tempdir().unwrap();
+    fresh(tmp.path());
+    edit(tmp.path(), |text| {
+        format!("{text}\n[[identities]]\nname = \"carrier\"\ntarget = \"missing\"\n")
+    });
+    let issues = assess(&reopen(tmp.path()));
+    let found = coded_errors(&issues, crate::routing::UNKNOWN_ROLE_TARGET);
+    assert_eq!(found.len(), 1, "{issues:?}");
+    assert!(found[0].message.contains("missing"), "{}", found[0].message);
+    assert!(!is_ready(&issues));
+}
+
+#[test]
+fn a_role_target_a_configured_pump_target_names_is_no_error() {
+    let tmp = tempfile::tempdir().unwrap();
+    fresh(tmp.path());
+    edit(tmp.path(), |text| {
+        format!(
+            "{text}\n[pump.targets.repo]\npath = \"repo\"\n\n[[identities]]\n\
+             name = \"carrier\"\ntarget = \"repo\"\n"
+        )
+    });
+    let issues = assess(&reopen(tmp.path()));
+    assert!(
+        coded_errors(&issues, crate::routing::UNKNOWN_ROLE_TARGET).is_empty(),
+        "{issues:?}"
+    );
+}

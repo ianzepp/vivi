@@ -358,7 +358,10 @@ pub fn standing_prompt(
          Where the charter tells you to read or settle your handle with \
          `vivi`, read your brief instead and end with your receipt on \
          standard output; the runner records your result and whoever \
-         dispatched the job settles the handle."
+         dispatched the job settles the handle. When the charter or the \
+         brief defines a reply envelope (a document that opens with a line \
+         containing only `+++`), that envelope is your receipt: write it in \
+         exactly that format, never as Markdown headings or lists."
     };
     let prompt = format!(
         "# Standing charter (role {role})\n\n{charter}\n\n---\n\n{note}\n\n\

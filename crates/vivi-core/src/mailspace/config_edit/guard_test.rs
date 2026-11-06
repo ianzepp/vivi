@@ -225,3 +225,25 @@ fn a_write_that_leaves_the_load_error_is_rolled_back() {
     assert!(err.contains("does not load"), "{err}");
     assert_eq!(fs::read(&config).unwrap(), before);
 }
+
+#[test]
+fn removing_a_target_a_role_names_is_rolled_back_byte_for_byte() {
+    let (tmp, config) = project();
+    append(
+        &config,
+        "\n[pump.targets.repo]\npath = \"repo\"\n\n[[identities]]\nname = \"carrier\"\n\
+         target = \"repo\"\n",
+    );
+    let before = fs::read(&config).unwrap();
+    let err = guarded(tmp.path(), |doc| {
+        if let Some(targets) = doc.get_mut("pump").and_then(|pump| pump.get_mut("targets")) {
+            targets.as_table_like_mut().unwrap().remove("repo");
+        }
+        Ok(())
+    })
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("rolled back"), "{err}");
+    assert!(err.contains("unknown pump target `repo`"), "{err}");
+    assert_eq!(fs::read(&config).unwrap(), before);
+}

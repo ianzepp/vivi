@@ -287,6 +287,134 @@ fn parses_role_set_pid_host_and_status() {
 }
 
 #[test]
+fn parses_role_command_and_target_controls() {
+    use vivi_core::cli::RoleCommand;
+
+    let script = "set -e\nprintf '%s\\n' \"hello world\"\n";
+    let add = Cli::try_parse_from([
+        "vivi",
+        "role",
+        "add",
+        "hand-1",
+        "--command",
+        script,
+        "--target",
+        "default",
+    ])
+    .unwrap();
+    match add.command {
+        Command::Role {
+            command:
+                RoleCommand::Add {
+                    name,
+                    command,
+                    target,
+                    ..
+                },
+        } => {
+            assert_eq!(name, "hand-1");
+            assert_eq!(command.as_deref(), Some(script));
+            assert_eq!(target.as_deref(), Some("default"));
+        }
+        other => panic!("unexpected command: {other:?}"),
+    }
+
+    let set = Cli::try_parse_from([
+        "vivi",
+        "role",
+        "set",
+        "hand-1",
+        "--command",
+        script,
+        "--target",
+        "default",
+    ])
+    .unwrap();
+    match set.command {
+        Command::Role {
+            command:
+                RoleCommand::Set {
+                    name,
+                    command,
+                    clear_command,
+                    target,
+                    clear_target,
+                    ..
+                },
+        } => {
+            assert_eq!(name, "hand-1");
+            assert_eq!(command.as_deref(), Some(script));
+            assert_eq!(target.as_deref(), Some("default"));
+            assert!(!clear_command);
+            assert!(!clear_target);
+        }
+        other => panic!("unexpected command: {other:?}"),
+    }
+
+    let clear = Cli::try_parse_from([
+        "vivi",
+        "role",
+        "set",
+        "hand-1",
+        "--clear-command",
+        "--clear-target",
+    ])
+    .unwrap();
+    match clear.command {
+        Command::Role {
+            command:
+                RoleCommand::Set {
+                    command,
+                    clear_command,
+                    target,
+                    clear_target,
+                    ..
+                },
+        } => {
+            assert!(command.is_none());
+            assert!(clear_command);
+            assert!(target.is_none());
+            assert!(clear_target);
+        }
+        other => panic!("unexpected command: {other:?}"),
+    }
+
+    // Both forms may be given; the parser keeps both and the update builder
+    // resolves the clear-wins precedence.
+    let both = Cli::try_parse_from([
+        "vivi",
+        "role",
+        "set",
+        "hand-1",
+        "--command",
+        "true",
+        "--clear-command",
+        "--target",
+        "default",
+        "--clear-target",
+    ])
+    .unwrap();
+    match both.command {
+        Command::Role {
+            command:
+                RoleCommand::Set {
+                    command,
+                    clear_command,
+                    target,
+                    clear_target,
+                    ..
+                },
+        } => {
+            assert_eq!(command.as_deref(), Some("true"));
+            assert!(clear_command);
+            assert_eq!(target.as_deref(), Some("default"));
+            assert!(clear_target);
+        }
+        other => panic!("unexpected command: {other:?}"),
+    }
+}
+
+#[test]
 fn parses_mailspace_import_dry_run() {
     let cli = Cli::try_parse_from([
         "vivi",

@@ -25,6 +25,7 @@ pub mod project_wake;
 pub mod projects;
 pub mod projects_api;
 pub mod pump_health;
+pub mod reply_check;
 pub mod rooms;
 pub mod safety;
 
@@ -184,6 +185,11 @@ fn service_routes(router: Router<AppState>) -> Router<AppState> {
         // One server endpoint: a server key (or the host operator token)
         // reaches every granted project. `project` is required on project tools.
         .route("/v1/mcp", post(mcp::server::server_mcp_handler))
+        // Pool agents check a role reply here before handing it in; stateless.
+        .route(
+            "/v1/reply/check/{kind}",
+            post(reply_check::reply_check_handler),
+        )
         .route(
             "/v1/auth/machine/challenge",
             post(machine_auth::challenge_handler),

@@ -21,6 +21,7 @@ use crate::pump::attempt_record::{Ending, hand_message, post_on_task};
 use crate::pump::brief::hand_rules;
 use crate::pump::envelope::EnvelopeError;
 use crate::pump::envelope::correct::correction_n;
+use crate::pump::envelope::refusal;
 use crate::pump::flow::collect::{ENVELOPE_DISAGREES, ENVELOPE_FAILED, MAX_CORRECTIONS};
 use crate::pump::flow::fanout::{VERDICT_MERGED, is_slice_row, mark_exhausted, target_of};
 use crate::pump::flow::index::{StepRow, StepState};
@@ -28,6 +29,7 @@ use crate::pump::flow::mail::{MailReader, MailspacePort, TaskStatus};
 use crate::pump::flow::need_branch;
 use crate::pump::flow::scope::{BlockedScope, ScopeState};
 use crate::pump::flow::slice_repair::Repair;
+use crate::pump::flow::tick::raise_once;
 use crate::pump::host::Ctx;
 use crate::pump::jobs::{self, JobSpec, JobStatus, JobStore, PoolJob};
 use crate::pump::need::unit_branch;
@@ -93,7 +95,7 @@ const CONTRACT_RULES: &str = "Rules:
 - If you find nothing to change, change nothing and answer `built`; the runner sees that no files changed.
 - `failed` means you could not finish; say what is left in `remaining`.
 - Put surprises a later slice must know in `deviations`, and work outside this slice in `[[follow_up]]` (`paths`, `need`).
-- `[[check]]` lists the checks you ran on the final tree, each with the result it gave there: `result` is exactly `pass`, `fail` or `skipped`, and any detail goes in the prose. With `answer = \"built\"`, any `fail` among them fails the attempt. A failure you reproduced before your change is prose, never a `[[check]]` entry.
+- `[[check]]` lists the checks you ran on the final tree, each with the result it gave there: `result` is exactly `pass`, `fail` or `skipped`, `seconds` is the check's duration — a finite, non-negative number, integer or float alike, with the fraction kept (`seconds = 12.5` is fine) — and any detail goes in the prose. With `answer = \"built\"`, any `fail` among them fails the attempt. A failure you reproduced before your change is prose, never a `[[check]]` entry.
 - `change` is a report only. The pump decides the outcome from the runner's exit code and push result, so do not claim SHAs, refs, merges or exit codes.";
 
 /// What a finished hand job amounts to.
@@ -480,7 +482,10 @@ fn hand_spec<M: SliceMail>(
         KIND,
         &role.name,
         format!("{} a{attempt} ({need})", slice.node),
-        body,
+        crate::pump::envelope::submit::with_section(
+            &body,
+            vivi_mail::letter::roles::RoleKind::Hand,
+        ),
     );
     spec.task = Some(slice.task.clone());
     spec.target = Some(target.to_owned());
@@ -763,14 +768,21 @@ fn broken(
     if !agent_ok {
         return AttemptResult::Failed;
     }
+    // One alarm per reply job, raised as soon as the envelope is refused. The
+    // exhaustion path below re-raises nothing for a job already reported.
+    raise_once(
+        ctx,
+        ENVELOPE_FAILED,
+        &reply.id,
+        &format!(
+            "hand job {} of slice {task}: {}",
+            reply.id,
+            refusal::describe(reply, &error)
+        ),
+    );
     if correction_n(&reply.id) < MAX_CORRECTIONS {
         return AttemptResult::Correct { error };
     }
-    ctx.exception(
-        ENVELOPE_FAILED,
-        task,
-        &format!("hand job {}: {error}", reply.id),
-    );
     AttemptResult::Failed
 }
 

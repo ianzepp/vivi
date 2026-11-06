@@ -32,6 +32,7 @@ type R = Result<(), VivariumError>;
 const NEED: &str = "need-1";
 const BASE: &str = "1111111111111111111111111111111111111111";
 const TIP: &str = "2222222222222222222222222222222222222222";
+const MAIN: &str = "3333333333333333333333333333333333333333";
 
 const SLICED: &str = "+++\nanswer = \"sliced\"\n\n[[slice]]\nid = \"a\"\ntitle = \"first\"\n\
                       brief = \"do it\"\ntarget = \"default\"\nwrite_scope = [\"src/a.rs\"]\n+++\ncut";
@@ -99,6 +100,14 @@ fn script_host(host: &Arc<FakeHost>) {
         0,
         &format!("{TIP}\trefs/heads/vivi/need/{NEED}\n"),
     );
+    // The rework slicer resolves its base from the published need branch tip
+    // only when that tip holds work main does not.
+    host.reply(
+        "ls-remote origin refs/heads/main",
+        0,
+        &format!("{MAIN}\trefs/heads/main\n"),
+    );
+    host.reply(&format!("merge-base --is-ancestor {TIP} {MAIN}"), 1, "");
     host.reply(
         "need show",
         0,
@@ -290,7 +299,13 @@ fn a_failed_rung_goes_to_the_judge_and_a_residual_ruling_raises_the_rung() -> R 
     assert_eq!(rig.step("rework1")?.state, StepState::Running);
     let rework = rig.job_of("rework1")?;
     assert_eq!(rework.role, "slicer");
-    assert!(rework.body.starts_with("mode: rework"), "{}", rework.body);
+    assert!(
+        rework.body.starts_with("Return rework slices"),
+        "{}",
+        rework.body
+    );
+    assert!(rework.body.contains("read-only"), "{}", rework.body);
+    assert!(rework.body.contains("mode: rework"), "{}", rework.body);
     assert!(!rig.has_step("build2")?);
 
     // A rework reply `sliced` opens build2 (stubbed to built at once).
@@ -317,7 +332,12 @@ fn a_judge_block_goes_straight_to_rework() -> R {
     assert_eq!(rig.step("rework1")?.state, StepState::Running);
     let rework = rig.job_of("rework1")?;
     assert_eq!(rework.role, "slicer");
-    assert!(rework.body.starts_with("mode: rework"), "{}", rework.body);
+    assert!(
+        rework.body.starts_with("Return rework slices"),
+        "{}",
+        rework.body
+    );
+    assert!(rework.body.contains("read-only"), "{}", rework.body);
     assert!(
         rework.body.contains("the rung failure is real"),
         "the judge reason reaches the rework brief: {}",
