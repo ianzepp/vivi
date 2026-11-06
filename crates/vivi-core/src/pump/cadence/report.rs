@@ -245,9 +245,8 @@ impl Report<'_> {
 
     fn subject(&self) -> String {
         format!(
-            "{}: {} red on {} at {}",
+            "{} red on {} at {}",
             self.role(),
-            self.latest.command,
             self.target_label(),
             self.short_commit()
         )
@@ -348,10 +347,9 @@ impl Report<'_> {
         args.push_str(&format!(
             " --done-when {}",
             shell_quote(&format!(
-                "the {} check passes on {} ({})",
+                "the {} check passes on {}",
                 self.role(),
-                self.latest.main,
-                self.latest.command
+                self.latest.main
             ))
         ));
         self.store.set_main_state(&key(SENDING, self.name), job)?;

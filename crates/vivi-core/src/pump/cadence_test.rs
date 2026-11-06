@@ -1417,13 +1417,13 @@ fn command_red_files_one_need_and_records_its_handle() {
     let to = crate::pump::host::shell_quote(&bench.ctx.cfg.reply_to());
     assert!(send.contains(&format!("--to {to}")), "{send}");
     assert!(
-        send.contains("--subject 'checker: make check red on app at dddddddddd'"),
+        send.contains("--subject 'checker red on app at dddddddddd'"),
         "{send}"
     );
     assert!(send.contains("--mark cadence"), "{send}");
     assert!(send.contains("--target app"), "{send}");
     assert!(
-        send.contains("--done-when 'the checker check passes on staging (make check)'"),
+        send.contains("--done-when 'the checker check passes on staging'"),
         "{send}"
     );
     let body_path = send
@@ -1586,7 +1586,7 @@ fn command_sending_marker_from_a_crash_never_sends_twice() {
             to: vec!["pump".into()],
             cc: Vec::new(),
             bcc: Vec::new(),
-            subject: String::from("checker: make check red on app at dddddddddd"),
+            subject: String::from("checker red on app at dddddddddd"),
             body: need_body_with(&front, "red"),
             role: String::from("needs"),
             kind: Some(String::from("need")),
