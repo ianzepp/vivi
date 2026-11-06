@@ -153,6 +153,28 @@ impl Storage {
         Ok(true)
     }
 
+    /// Whether any live row is bound to `provider`'s `mailbox`. The hosted
+    /// indexer reads this before its first pass on a new server: a mailspace
+    /// that already has bindings was indexed before, so only rows newer than
+    /// the current change watermark need a visit.
+    ///
+    /// # Errors
+    /// Returns a [`VivariumError`] if the database query fails.
+    pub fn has_remote_binding_for(
+        &self,
+        provider: &str,
+        mailbox: &str,
+    ) -> Result<bool, VivariumError> {
+        self.conn
+            .borrow()
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM remote_bindings WHERE provider = ?1 AND remote_mailbox = ?2)",
+                params![provider, mailbox],
+                |row| row.get(0),
+            )
+            .map_err(|e| VivariumError::Other(format!("failed to check remote bindings: {e}")))
+    }
+
     /// The message that holds the remote position `remote` names, if any. A
     /// position belongs to one row: binding it to another fails.
     ///

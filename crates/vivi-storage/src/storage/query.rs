@@ -286,6 +286,21 @@ impl Storage {
         self.list_messages_by_query("WHERE m.deleted_at IS NULL", [])
     }
 
+    /// List all non-deleted messages whose `messages.rowid` is greater than
+    /// `rowid`, oldest row first by the same query as [`Storage::list_messages`].
+    /// Callers that keep a durable rowid checkpoint use this to avoid
+    /// rescanning a mailspace that has not changed.
+    ///
+    /// # Errors
+    /// Returns a [`VivariumError`] if the database query or handle
+    /// decoration fails.
+    pub fn list_messages_since(&self, rowid: i64) -> Result<Vec<StoredMessageView>, VivariumError> {
+        self.list_messages_by_query(
+            "WHERE m.deleted_at IS NULL AND m.rowid > ?1",
+            params![rowid],
+        )
+    }
+
     /// Latest non-memo message whose `from_addr` matches any of `addresses`.
     ///
     /// # Errors

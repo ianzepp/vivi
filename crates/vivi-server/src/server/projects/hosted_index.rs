@@ -15,10 +15,13 @@
 //! list, lookup, or fetch read whose mailspace `change_watermark` moved
 //! since the last pass. It skips when another pass for the project is
 //! running, when the host's own CLI holds the mailspace's sync lock, and
-//! when the watermark has not moved. The cost of a pass that has work or
-//! whose watermark moved is one `select`: it lists every message row and
-//! classifies each unbound letter, so it grows with the mailspace, not with
-//! the number of new letters.
+//! when the watermark has not moved. Each completed pass records its
+//! watermark and highest `messages.rowid` in `sync/index.json` beside the
+//! hosted state, so a restart with nothing new waits instead of walking the
+//! mailspace again; a pass with work reads only rows newer than that
+//! checkpoint. On the first pass after an upgrade, a mailspace already
+//! carrying bindings skips its old local-only rows and revisits an old row
+//! only when its stored recipients show it could travel.
 //!
 //! **Member appends (S5).** The append path (already serialized under the
 //! append mutex) takes the next sequence, files the letter through
@@ -34,8 +37,10 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions, TryLockError};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
+
+use serde::{Deserialize, Serialize};
 
 use vivi_core::mailspace::Mailspace;
 use vivi_core::sync::pull::{QuarantinedRecord, file_records};
@@ -44,7 +49,7 @@ use vivi_core::sync::state::SyncState;
 use vivi_core::sync::transport::{
     AppendFailure, Appended, Envelope, ListQuery, Page, Record, Transport,
 };
-use vivi_core::sync::{SendFilter, SyncSettings, push, sync_dir};
+use vivi_core::sync::{PROVIDER, SendFilter, SyncSettings, push, sync_dir};
 use vivi_error::VivariumError;
 use vivi_storage::storage::ChangeWatermark;
 use vivi_util::b64;
@@ -94,8 +99,23 @@ pub enum IndexOutcome {
 pub(super) struct PassState {
     /// The mailspace root and watermark the last complete pass saw.
     mark: Option<(std::path::PathBuf, ChangeWatermark)>,
+    /// Highest `messages.rowid` a complete pass covered. A restart resumes
+    /// from here instead of reclassifying the whole mailspace.
+    seen_messages: Option<i64>,
+    /// Whether the durable checkpoint beside `state.json` has been read.
+    checkpoint_loaded: bool,
     /// Handles refused by the last pass, so each is logged once.
     refused: HashSet<String>,
+}
+
+/// The durable half of [`PassState`], written beside the hosted sync state.
+#[derive(Debug, Deserialize, Serialize)]
+struct IndexCheckpoint {
+    root: PathBuf,
+    messages: i64,
+    events: i64,
+    graph_events: i64,
+    seen_messages: i64,
 }
 
 /// A registered hosted project: who its letters are from, and its pass state.
@@ -185,6 +205,10 @@ impl ProjectStore {
         };
         let mailspace = open_host(&root)?;
         let mark = host_watermark(&mailspace)?;
+        if !state.checkpoint_loaded {
+            load_checkpoint(&dir, &root, &mut state);
+            state.checkpoint_loaded = true;
+        }
         if state
             .mark
             .as_ref()
@@ -196,6 +220,7 @@ impl ProjectStore {
             return Ok(IndexOutcome::Skipped(IndexSkip::SyncLocked));
         };
         let settings = host_settings(&mailspace, &id, &entry.sender)?;
+        let (scan_from, bootstrapped) = scan_start(&mailspace, &id, &settings, mark, &state)?;
         let transport = IndexTransport {
             project: RefCell::new(Project::open(&dir, &meta.mailspace_dir(&dir))?),
             sender: &entry.sender,
@@ -203,26 +228,18 @@ impl ProjectStore {
             clock: &self.clock,
             appended: Cell::new(0),
         };
-        let report = push::push(&mailspace, &settings, &transport)
+        let report = push::push_since_row(&mailspace, &settings, &transport, None, scan_from)
             .map_err(storage_err("hosted index pass failed"))?;
-        let refused: HashSet<String> = report.refused.iter().map(|r| r.handle.clone()).collect();
-        for letter in report
-            .refused
-            .iter()
-            .filter(|r| !state.refused.contains(&r.handle))
-        {
-            tracing::warn!(
-                "hosted project {id}: letter {} not indexed: {}",
-                letter.handle,
-                letter.reason
-            );
-        }
-        state.refused = refused;
-        let stopped = report.stopped.map(|stop| stop.reason);
-        if stopped.is_none() {
-            // The mark read before the pass: a change during it runs again.
-            state.mark = Some((root, mark));
-        }
+        let stopped = finish_pass(
+            &id,
+            &dir,
+            &root,
+            mark,
+            scan_from,
+            bootstrapped,
+            &mut state,
+            &report,
+        )?;
         if report.sent > 0 {
             self.wake.notify(&id);
         }
@@ -417,6 +434,181 @@ fn refusal(item: &AppendItem, reason: &str) -> ProjectError {
 fn open_host(root: &Path) -> Result<Mailspace, ProjectError> {
     Mailspace::open_root(root.to_path_buf())
         .map_err(storage_err("failed to open the host mailspace"))
+}
+
+/// Record one pass's refusals and checkpoint. Returns the report's stop
+/// reason, if the pass did not finish.
+fn finish_pass(
+    project_id: &str,
+    dir: &Path,
+    root: &Path,
+    mark: ChangeWatermark,
+    scan_from: i64,
+    bootstrapped: bool,
+    state: &mut PassState,
+    report: &push::PushReport,
+) -> Result<Option<String>, ProjectError> {
+    let refused: HashSet<String> = report.refused.iter().map(|r| r.handle.clone()).collect();
+    for letter in report
+        .refused
+        .iter()
+        .filter(|r| !state.refused.contains(&r.handle))
+    {
+        tracing::warn!(
+            "hosted project {project_id}: letter {} not indexed: {}",
+            letter.handle,
+            letter.reason
+        );
+    }
+    state.refused = refused;
+    let stopped = report.stopped.as_ref().map(|stop| stop.reason.clone());
+    if stopped.is_none() {
+        // The mark read before the pass: a change during it runs again.
+        state.mark = Some((root.to_path_buf(), mark));
+        state.seen_messages = Some(mark.messages);
+        save_checkpoint(dir, root, Some(mark), mark.messages)?;
+    } else if bootstrapped {
+        // The first pass skipped old rows deliberately; remember that
+        // boundary so the stopped new rows are retried, not lost.
+        state.seen_messages = Some(scan_from);
+        save_checkpoint(
+            dir,
+            root,
+            state.mark.as_ref().map(|(_, mark)| *mark),
+            scan_from,
+        )?;
+    }
+    Ok(stopped)
+}
+
+/// Where the indexer resumes: the rowid of the last completed pass. A server
+/// with no checkpoint but an already-bound mailspace starts at the current
+/// watermark, so the first restart after an upgrade does not reclassify the
+/// whole mailspace; a mailspace never indexed before starts from row zero.
+fn scan_start(
+    mailspace: &Mailspace,
+    project_id: &str,
+    settings: &SyncSettings,
+    mark: ChangeWatermark,
+    state: &PassState,
+) -> Result<(i64, bool), ProjectError> {
+    if let Some(seen) = state.seen_messages.filter(|seen| *seen <= mark.messages) {
+        return Ok((seen, false));
+    }
+    let storage = mailspace
+        .storage()
+        .map_err(storage_err("failed to open the host mailspace"))?;
+    let bound = storage
+        .has_remote_binding_for(PROVIDER, project_id)
+        .map_err(storage_err("failed to read the host bindings"))?;
+    if !bound {
+        return Ok((0, true));
+    }
+    // An already-bound mailspace was indexed before. On a new server, skip
+    // its old rows unless one that could travel is still unbound; those are
+    // the only old rows a pass could newly add. Local-only mail is not read
+    // again.
+    let pending = storage
+        .list_messages_since(0)
+        .map_err(storage_err("failed to read the host messages"))?;
+    let travels = pending.iter().any(|row| {
+        !bound_to(row, project_id)
+            && !excluded_role(&row.local_role)
+            && (settings.send == SendFilter::All
+                || names_another_machine(&row.to_addr, &row.cc_addr, settings.address_prefix()))
+    });
+    Ok((if travels { 0 } else { mark.messages }, true))
+}
+
+fn bound_to(row: &vivi_storage::storage::StoredMessageView, project_id: &str) -> bool {
+    row.remote
+        .as_ref()
+        .is_some_and(|remote| remote.provider == PROVIDER && remote.remote_mailbox == project_id)
+}
+
+fn excluded_role(role: &str) -> bool {
+    matches!(role, "memos" | "drafts" | "trash")
+}
+
+/// Whether stored To/Cc metadata names an address outside this mailspace.
+/// Metadata keeps the addresses the message arrived with, so this is a cheap
+/// filter; the full header parse still decides what travels.
+fn names_another_machine(to: &str, cc: &str, own_prefix: &str) -> bool {
+    let own = format!("{own_prefix}.local");
+    [to, cc].into_iter().any(|text| {
+        text.split(|c: char| c == ',' || c == ';' || c.is_whitespace())
+            .filter_map(|token| {
+                let token =
+                    token.trim_matches(|c: char| matches!(c, '<' | '>' | '"' | '(' | ')' | '\''));
+                token.rsplit_once('@').map(|(_, domain)| domain)
+            })
+            .map(|domain| {
+                domain.trim_matches(|c: char| !(c.is_ascii_alphanumeric() || c == '.' || c == '-'))
+            })
+            .any(|domain| !domain.is_empty() && domain != "local" && domain != own)
+    })
+}
+
+fn checkpoint_path(dir: &Path) -> PathBuf {
+    dir.join(SYNC_STATE_DIR).join("index.json")
+}
+
+/// Load the checkpoint of the project at `root`; an unreadable or foreign
+/// checkpoint is ignored rather than stopping the pass.
+fn load_checkpoint(dir: &Path, root: &Path, state: &mut PassState) {
+    let path = checkpoint_path(dir);
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+        Err(error) => {
+            tracing::warn!("cannot read index checkpoint {}: {error}", path.display());
+            return;
+        }
+    };
+    match serde_json::from_slice::<IndexCheckpoint>(&bytes) {
+        Ok(checkpoint) if checkpoint.root == root => {
+            state.mark = Some((
+                root.to_path_buf(),
+                ChangeWatermark {
+                    messages: checkpoint.messages,
+                    events: checkpoint.events,
+                    graph_events: checkpoint.graph_events,
+                },
+            ));
+            state.seen_messages = Some(checkpoint.seen_messages);
+        }
+        Ok(_) => {}
+        Err(error) => tracing::warn!(
+            "ignoring index checkpoint {} (not a checkpoint: {error})",
+            path.display()
+        ),
+    }
+}
+
+fn save_checkpoint(
+    dir: &Path,
+    root: &Path,
+    mark: Option<ChangeWatermark>,
+    seen_messages: i64,
+) -> Result<(), ProjectError> {
+    let mark = mark.unwrap_or_default();
+    let checkpoint = IndexCheckpoint {
+        root: root.to_path_buf(),
+        messages: mark.messages,
+        events: mark.events,
+        graph_events: mark.graph_events,
+        seen_messages,
+    };
+    let path = checkpoint_path(dir);
+    if let Some(parent) = path.parent() {
+        vivi_storage::store::secure_create_dir_all(parent)
+            .map_err(storage_err("failed to create the index checkpoint dir"))?;
+    }
+    let bytes = serde_json::to_vec(&checkpoint)
+        .map_err(storage_err("failed to encode the index checkpoint"))?;
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, bytes).map_err(storage_err("failed to write the index checkpoint"))?;
+    std::fs::rename(&tmp, &path).map_err(storage_err("failed to install the index checkpoint"))
 }
 
 fn host_watermark(mailspace: &Mailspace) -> Result<ChangeWatermark, ProjectError> {

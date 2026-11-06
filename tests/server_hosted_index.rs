@@ -362,16 +362,49 @@ fn indexing_again_adds_nothing() {
         IndexOutcome::Ran { indexed, .. } => assert_eq!(indexed, 0),
         other => panic!("{other:?}"),
     }
-    // A fresh store over the same data (a restart) has no pass memory and
-    // still adds nothing: the mailspace's own bindings say it is indexed.
+    // A fresh store over the same data (a restart) reads the durable pass
+    // checkpoint and waits: nothing changed, so the whole mailspace is not
+    // walked again.
     let restarted = ProjectStore::new(&env.base.join("data"));
     hosted::reconcile(
         &restarted,
         &env.identities,
         &BTreeSet::from([host.root.clone()]),
     );
-    assert_eq!(ran(restarted.index_hosted(&host.id).unwrap()).0, 0);
+    match restarted.index_hosted(&host.id).unwrap() {
+        IndexOutcome::Skipped(IndexSkip::Unchanged) => {}
+        other => panic!("an idle pass did not wait: {other:?}"),
+    }
     assert_eq!(page(&env, &host.id, &host.viewer(&prefix)), first);
+
+    // New mail is still indexed with the checkpoint in place.
+    send(
+        &ms,
+        "mind",
+        &peer.mailspace.address_for("mind"),
+        Some("need"),
+        "twice",
+    );
+    assert_eq!(ran(restarted.index_hosted(&host.id).unwrap()).0, 1);
+    assert_eq!(page(&env, &host.id, &host.viewer(&prefix)).len(), 2);
+}
+
+#[test]
+fn an_idle_indexer_waits_after_a_restart() {
+    let env = env("idle-restart");
+    let host = host(&env, Some("addressed"));
+    assert_eq!(ran(env.projects.index_hosted(&host.id).unwrap()).0, 0);
+
+    let restarted = ProjectStore::new(&env.base.join("data"));
+    hosted::reconcile(
+        &restarted,
+        &env.identities,
+        &BTreeSet::from([host.root.clone()]),
+    );
+    match restarted.index_hosted(&host.id).unwrap() {
+        IndexOutcome::Skipped(IndexSkip::Unchanged) => {}
+        other => panic!("an idle indexer did not wait: {other:?}"),
+    }
 }
 
 #[test]

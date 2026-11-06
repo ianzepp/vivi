@@ -190,8 +190,27 @@ pub fn select(
     kept: &KeptLocal,
     window: Option<DateTime<Utc>>,
 ) -> Result<Selection, VivariumError> {
+    select_since(storage, settings, kept, window, 0)
+}
+
+/// [`select`], restricted to message rows newer than `since_rowid`.
+///
+/// The hosted indexer records the highest rowid of a completed pass and
+/// passes it here, so a restart looks only at what arrived since then instead
+/// of reclassifying the whole mailspace. Zero means every row, the behavior
+/// of [`select`].
+///
+/// # Errors
+/// Returns an error on a storage failure.
+pub fn select_since(
+    storage: &Storage,
+    settings: &SyncSettings,
+    kept: &KeptLocal,
+    window: Option<DateTime<Utc>>,
+    since_rowid: i64,
+) -> Result<Selection, VivariumError> {
     let mut groups: BTreeMap<String, Vec<StoredMessageView>> = BTreeMap::new();
-    for row in storage.list_messages()? {
+    for row in storage.list_messages_since(since_rowid)? {
         groups.entry(row.content_id.clone()).or_default().push(row);
     }
     let mut groups: Vec<Vec<StoredMessageView>> = groups.into_values().collect();

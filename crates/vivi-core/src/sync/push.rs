@@ -218,12 +218,30 @@ pub fn push_since(
     transport: &dyn Transport,
     window: Option<DateTime<Utc>>,
 ) -> Result<PushReport, VivariumError> {
+    push_since_row(mailspace, settings, transport, window, 0)
+}
+
+/// [`push_since`] starting at message rows newer than `since_rowid`. The
+/// hosted indexer uses this to resume from its durable checkpoint instead of
+/// walking the whole mailspace on every pass.
+///
+/// # Errors
+/// Returns an error on a storage failure. Server refusals and stops are in
+/// the report, not errors.
+pub fn push_since_row(
+    mailspace: &Mailspace,
+    settings: &SyncSettings,
+    transport: &dyn Transport,
+    window: Option<DateTime<Utc>>,
+    since_rowid: i64,
+) -> Result<PushReport, VivariumError> {
     let storage = mailspace.storage()?;
-    let selection = select::select(
+    let selection = select::select_since(
         &storage,
         settings,
         &KeptLocal::load(&sync_dir(&mailspace.dir))?,
         window,
+        since_rowid,
     )?;
     send_all(&storage, mailspace, settings, transport, selection)
 }

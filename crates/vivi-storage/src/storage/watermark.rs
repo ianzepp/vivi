@@ -16,7 +16,7 @@ use super::{Storage, VivariumError};
 /// It does not cover in-place edits that log no event (for example a bare
 /// read-state flip or a metadata overwrite). The ordering of values is
 /// meaningless; compare for equality only.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct ChangeWatermark {
     /// Highest `messages` rowid, or 0 when the table is empty.
     pub messages: i64,
