@@ -110,13 +110,16 @@ pub fn gate_due(ctx: &Ctx, cadence: &mut CadenceState, scan: &RoleScan, now: u64
             true
         }
         TipGate::Unchanged(tip) => {
-            entry.waiting_main = Some(tip.clone());
+            // Logged once per tip: the gate is asked again on every tick.
+            if entry.waiting_main.as_deref() != Some(tip.as_str()) {
+                ctx.log(&format!(
+                    "cadence command {} waits for main to move past {}",
+                    scan.name,
+                    tip.get(..12).unwrap_or(&tip)
+                ));
+            }
+            entry.waiting_main = Some(tip);
             entry.exception = None;
-            ctx.log(&format!(
-                "cadence command {} waits for main to move past {}",
-                scan.name,
-                tip.get(..12).unwrap_or(&tip)
-            ));
             false
         }
         TipGate::Failed(reason) => {
