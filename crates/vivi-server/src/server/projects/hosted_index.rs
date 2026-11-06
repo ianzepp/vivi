@@ -235,6 +235,7 @@ impl ProjectStore {
             &dir,
             &root,
             mark,
+            host_watermark(&mailspace)?,
             scan_from,
             bootstrapped,
             &mut state,
@@ -438,11 +439,20 @@ fn open_host(root: &Path) -> Result<Mailspace, ProjectError> {
 
 /// Record one pass's refusals and checkpoint. Returns the report's stop
 /// reason, if the pass did not finish.
+///
+/// `mark` is the watermark read before the pass; a pass settles everything up
+/// to it, and anything later runs another pass. `settled` is the watermark
+/// read after it: binding letters moves the mailspace's event watermark, so
+/// the comparison mark keeps the pre-pass message row (the scan boundary)
+/// with the post-pass event counts. Otherwise every pass would find its own
+/// bindings a change and start again, and a restart could never see an idle
+/// mailspace as unchanged.
 fn finish_pass(
     project_id: &str,
     dir: &Path,
     root: &Path,
     mark: ChangeWatermark,
+    settled: ChangeWatermark,
     scan_from: i64,
     bootstrapped: bool,
     state: &mut PassState,
@@ -463,10 +473,16 @@ fn finish_pass(
     state.refused = refused;
     let stopped = report.stopped.as_ref().map(|stop| stop.reason.clone());
     if stopped.is_none() {
-        // The mark read before the pass: a change during it runs again.
-        state.mark = Some((root.to_path_buf(), mark));
+        // The message row is the one read before the pass: a letter that
+        // arrives during it is still newer, so it runs again.
+        let comparison = ChangeWatermark {
+            messages: mark.messages,
+            events: settled.events,
+            graph_events: settled.graph_events,
+        };
+        state.mark = Some((root.to_path_buf(), comparison));
         state.seen_messages = Some(mark.messages);
-        save_checkpoint(dir, root, Some(mark), mark.messages)?;
+        save_checkpoint(dir, root, Some(comparison), mark.messages)?;
     } else if bootstrapped {
         // The first pass skipped old rows deliberately; remember that
         // boundary so the stopped new rows are retried, not lost.

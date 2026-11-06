@@ -407,6 +407,80 @@ fn an_idle_indexer_waits_after_a_restart() {
     }
 }
 
+/// Forget every letter's bytes on disk, keeping the rows: a pass that
+/// classifies an old letter again reads its blob, so it fails; a pass that
+/// starts at its checkpoint never looks at one.
+fn forget_letter_bytes(ms: &Mailspace) {
+    std::fs::remove_dir_all(ms.dir.join("blobs")).unwrap();
+    std::fs::create_dir_all(ms.dir.join("blobs")).unwrap();
+}
+
+#[test]
+fn a_steady_pass_reads_only_the_letters_it_has_not_seen() {
+    let env = env("steady-rows");
+    let host = host(&env, Some("addressed"));
+    let peer = peer(&env, &host.id, "pat");
+    let ms = host.mailspace();
+    // Two letters that stay on this machine: classifying either one reads
+    // its bytes on every pass that walks the whole mailspace.
+    send(&ms, "mind", &ms.address_for("hand"), None, "one");
+    send(&ms, "mind", &ms.address_for("hand"), None, "two");
+    assert_eq!(ran(env.projects.index_hosted(&host.id).unwrap()).0, 0);
+
+    forget_letter_bytes(&ms);
+    send(
+        &ms,
+        "mind",
+        &peer.mailspace.address_for("mind"),
+        Some("need"),
+        "goes",
+    );
+    // The pass indexes the new letter and never opens the two old ones, so
+    // a mailspace the indexer has already covered costs a pass only what
+    // arrived since: the loop waits between passes instead of walking the
+    // mailspace again.
+    assert_eq!(ran(env.projects.index_hosted(&host.id).unwrap()).0, 1);
+}
+
+#[test]
+fn the_first_pass_after_an_upgrade_reads_only_new_letters() {
+    let env = env("upgrade-rows");
+    let host = host(&env, Some("addressed"));
+    let peer = peer(&env, &host.id, "pat");
+    let ms = host.mailspace();
+    send(&ms, "mind", &ms.address_for("hand"), None, "stays home");
+    send(
+        &ms,
+        "mind",
+        &peer.mailspace.address_for("mind"),
+        Some("need"),
+        "left already",
+    );
+    assert_eq!(ran(env.projects.index_hosted(&host.id).unwrap()).0, 1);
+
+    // A server starting without a pass checkpoint over a mailspace that
+    // already carries bindings skips its covered rows instead of reading
+    // every letter once more; new mail still goes.
+    let data = env.base.join("data");
+    std::fs::remove_file(data.join("projects").join(&host.id).join("sync").join("index.json"))
+        .unwrap();
+    forget_letter_bytes(&ms);
+    send(
+        &ms,
+        "mind",
+        &peer.mailspace.address_for("mind"),
+        Some("need"),
+        "arrives after",
+    );
+    let upgraded = ProjectStore::new(&data);
+    hosted::reconcile(
+        &upgraded,
+        &env.identities,
+        &BTreeSet::from([host.root.clone()]),
+    );
+    assert_eq!(ran(upgraded.index_hosted(&host.id).unwrap()).0, 1);
+}
+
 #[test]
 fn a_member_need_lands_in_the_roles_needs_folder_and_is_indexed_once() {
     let env = env("memberneed");
