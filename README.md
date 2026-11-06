@@ -13,6 +13,13 @@ Optional parts build on it: `vivi sync` replicates letters through a project
 server, `vivi pool` runs tasks on remote machines, and `vivi pump` is an
 unattended dispatcher built on pools.
 
+There are two ways to run work through Vivi. The pump can take a need through
+its whole flow (research, plan, slice, build, verify, merge) on its own. Or
+Vivi is infrastructure for an orchestrator outside it, a person or an agent,
+that files needs, dispatches bounded units to pools and lands the work itself;
+see [Running work without the pump](#running-work-without-the-pump). The two
+mix: the pump's subsystems switch off one at a time.
+
 The local pool provider can reset its slot to the dispatch base before launch.
 Remote jobs fetch the job's `FROM` with their job-scoped credential, then check
 out and clean that revision before the harness starts; remote dispatch does
@@ -41,8 +48,8 @@ verifies the archive SHA-256, writes a versioned binary, and points a
 relative `vivi` symlink at it:
 
 ```text
-~/.local/bin/vivi-20.0.0
-~/.local/bin/vivi -> vivi-20.0.0
+~/.local/bin/vivi-23.0.2
+~/.local/bin/vivi -> vivi-23.0.2
 ```
 
 The prefix is `~/.local`, so binaries live in `~/.local/bin` (usually
@@ -52,11 +59,11 @@ already on `PATH`). That is not `~/.vivi`, which is a mailspace
 ```sh
 curl -fsSL https://raw.githubusercontent.com/ianzepp/vivi/main/install.sh | sh
 # or pin a release / prefix:
-curl -fsSL https://raw.githubusercontent.com/ianzepp/vivi/main/install.sh | sh -s -- --version 20.0.0 --prefix "$HOME/.local"
+curl -fsSL https://raw.githubusercontent.com/ianzepp/vivi/main/install.sh | sh -s -- --version 23.0.2 --prefix "$HOME/.local"
 ```
 
 The script defaults to the release it shipped with (`VIVI_VERSION`, currently
-20.0.0) and `~/.local` (`VIVI_PREFIX`). `VIVI_BASE_URL` or `--base-url`
+23.0.2) and `~/.local` (`VIVI_PREFIX`). `VIVI_BASE_URL` or `--base-url`
 can point at a local mirror. Optional `GITHUB_TOKEN` / `GH_TOKEN` raises
 the GitHub rate limit. Archives are built for `aarch64-apple-darwin`,
 `x86_64-apple-darwin`, and `x86_64-unknown-linux-gnu`.
@@ -225,7 +232,9 @@ pid/host-only set is left alone. A target the pump does not configure is
 refused before the write, leaving the config unchanged. `vivi role status <name>`
 computes liveness fresh on each call and reports schedule health (`none`,
 `never`, `ok`, `due`, `overdue`) from the cadence; a role bound to another host
-reports `remote` instead of being probed locally.
+reports `remote` instead of being probed locally. A role with both a `command`
+and a `cadence` is a command check: the pump runs the command on its own clock,
+with no model (see [Command cadence roles](#command-cadence-roles)).
 
 **Goals.** `vivi goal add --path <file>` registers the path of a goal document.
 Vivi stores the pointer, not the file; `board` and `boot` list registered goals.
@@ -252,12 +261,15 @@ the same state on every checkout.
 
 **Pools.** **vivi pool** manages preseeded machines ("slots") that each run
 one task and publish a branch. Providers are **fly**, **docker**, **ssh**,
-**local** and **runpod**. **pool dispatch <task>** claims a free slot and
-starts the configured harness; **pool wait** and **pool reconcile** collect
-results. **pool clean** and **pool reset** reclaim eligible local worktrees and
-build output. A local dispatch refuses when the
-volume stays under 10 GiB free. A role's band (**P0** to **P5**) selects a
-model from the pool's bands table.
+**local**, **runpod**, **worker** (an SSH machine that builds one bounded
+workspace per job) and **ticket** (jobs handed out by a Vivi server).
+**pool dispatch <task>** claims a free slot and starts the configured harness;
+**pool wait** and **pool reconcile** collect results. Collection frees a slot
+only once its work is published, so finished work is never lost to cleanup
+(see [Jobs, slots and replies](#jobs-slots-and-replies)). **pool clean** and
+**pool reset** reclaim eligible local worktrees and build output. A local
+dispatch refuses when the volume stays under 10 GiB free. A role's band
+(**P0** to **P5**) selects a model from the pool's bands table.
 
 **Pump.** `vivi pump` is an unattended Mind written as a state machine; see
 [The pump](#the-pump).
@@ -287,7 +299,7 @@ The `vivi` skill (see [Agent skills](#agent-skills)) documents usage patterns.
 | `cycle` | `cycle intake --for <role>`: cycle intake for a role, with an optional cursor file |
 | `sync` | Needs a server: `push`, `pull`, `resync`, `fetch`, `join`, `create`, `directory`, `vouch`, `api-key mint\|list\|revoke`. Local: `status`, `key`, `prune`, `keep-local` |
 | `mcp` | Needs a server: a stdio bridge to the server-level MCP endpoint (`<server>/v1/mcp`); `tools` lists its tools and `call <tool> [json]` runs one |
-| `pool` | `list`, `show`, `add`, `set`, `unset`, `remove`, `bands`, `create`, `status`, `destroy`, `scale`, `dispatch`, `wait`, `reconcile`, `clean`, `reset`, `doctor` |
+| `pool` | `list`, `show`, `add`, `set`, `unset`, `remove`, `bands`, `create`, `status`, `destroy`, `scale`, `dispatch`, `wait`, `reconcile`, `clean`, `reset`, `doctor`, `run` (a worker runs one server job) |
 | `config` | `show [--resolved]`, `validate`, `migrate [--write]`, `set <key> <value>`, `unset <key>` |
 | `pump` | `run`, `health`, `once`, `start`, `pause`, `resume`, `stop`, `reset`, `log` (`-n`, `-f`, `--unit`, `--grep`, `--exceptions`), `priority`, `target list\|add\|remove`, `rungs show\|set`, `service`, `send --need <need>`, the actions on a need's open pump record (`requeue <step-task>...` or `requeue --job <job>`, `withdraw <need>...`, `replan <need>`, `answer <step-task> <word>`, `unlock <need>`) and the pump record verbs `list`, `show`, `done`, `reopen`, `history` |
 | `flow` | `list`; `show <kind> [--need <need>]`: the shipped flows, and a need's runs through one (read-only) |
@@ -368,7 +380,7 @@ mailspaces with one id collide at `vivi sync join`.
 | `[absorb]` | `quiet_hours` (default 24, `0` turns the wait off): how long an item's newest event must stand before a role that may close it can absorb it |
 | `[judgment]` | Optional shadow screens on `vivi step --apply`: `provider` (only `typesafe`), `endpoint`, `model`, `timeout_ms` (default 4000) and `key_cmd` (a shell command whose stdout is the API key; required when `provider` is set). Provider answers never gate a completion |
 | `[sync]` | `server` (base URL), `project` (the server-side project id), `name` (this checkout's member name), `send` (`all`, the default, or `addressed`) |
-| `[pump]`, `[pump.*]` | The pump; see below |
+| `[pump]`, `[pump.*]` | The pump; see below. `[pump.subsystems]` switches parts of its tick off ([The pump](#pump-subsystems)) |
 | `[pools.<name>]` | One table per remote lane pool; see below |
 
 Memo retention can be set per tag. On a tagged memo save, Vivi checks only that
@@ -473,6 +485,61 @@ email = "vivi@example.invalid"
 The full key reference, the other providers, requirements and facts, read-only
 dispatch and the MCP bridge are in the `vivi` skill (`vivi skills show vivi`).
 
+### Jobs, slots and replies
+
+**A slot is kept until its work is published.** `vivi pool wait` and
+`vivi pool reconcile` free a slot only when the runner's result says the work
+was pushed, the job was read-only, or it never started. A refused or failed
+publish, an unknown push result, a timeout or a lost slot keeps the slot, its
+files and its claim (an overdue job is still stopped, so nothing runs on), and
+the result line says so. Recover the commits from the slot, then free it
+deliberately with `vivi pool destroy --slot <slot> --yes`. Freeing earlier
+would destroy (per-dispatch slots) or reset (persistent slots) the only copy of
+the agent's work.
+
+**Each job has its own temp directory.** On providers whose jobs run as an
+ordinary user (`local`, `ssh`, `worker`, `ticket`), the runner sets `TMPDIR` to
+a `tmp/` directory inside the slot, passes it into the agent's otherwise empty
+environment, and empties it when the next job on that slot starts (a slot is
+reused only after its previous job's work was published). The slot is on the
+worker's job disk, so test scratch and build output stay off the machine's
+system volume. macOS `/usr/bin/mktemp` ignores `TMPDIR`, so the agent's `PATH`
+starts with a `mktemp` wrapper that runs GNU `mktemp` (Homebrew's `gmktemp`, or
+a GNU system `mktemp`) and turns a BSD-style `-t prefix` into a template; on a
+machine with no GNU `mktemp` the wrapper runs the system one unchanged.
+
+**Structured replies are validated at hand-in, not parsed afterwards.** Every
+slot also gets `vivi-submit` on its `PATH`. A role whose answer is a reply
+envelope hands it in with:
+
+```sh
+vivi-submit <server>/v1/reply/check/<kind> <<'VIVI_REPLY'
++++
+answer = "built"
+...
++++
+
+The report as prose.
+VIVI_REPLY
+```
+
+`vivi-submit` posts the reply to the server's `POST /v1/reply/check/<kind>`,
+which runs the pump's own parser for that role (`researcher`, `planner`,
+`admitter`, `slicer`, `auditor`, `judge`, `cto`, `merge`, `hand`, `repairer`,
+`head-ceo`) and answers `accepted: answer <word>` or `rejected: <reason>`. The
+endpoint stores nothing and needs no key. An accepted reply is kept, and after
+the agent exits the runner takes it as the job's receipt in place of the
+agent's last printed message; a stopped slot's receipt is read the same way.
+When nothing was handed in, the printed output is the receipt, as before. The
+point is timing: a reply that would fail to parse is refused while the agent
+that wrote it is still running and can fix it and submit again, instead of
+being found malformed after the agent has exited. When the pump runs as a
+child of `vivi server`, the server passes its address as
+`VIVI_REPLY_CHECK_URL`, and role step, slice and correction briefs end with
+the exact hand-in command; a pump without it sends briefs without that
+section. An orchestrator dispatching by hand puts the command in its own
+brief.
+
 ## Role → pool routing
 
 Roles (`[[identities]]`) and pools (`[pools.<name>]`) are configured
@@ -493,6 +560,7 @@ candidate has a free slot.
 | Proof rungs | the pools in `[pump.rungs] pools` |
 | Repair attempts | `repairer` |
 | Cadence, digest | the role whose schedule is due |
+| Command check | the command role whose cadence is due, on its own pool |
 
 `vivi flow show build` prints the steps in order; see [The pump](#the-pump).
 
@@ -551,6 +619,49 @@ routing. `vivi role pool` and `vivi role set` assign role settings.
 `vivi pool bands set|unset` sets model bands. `vivi pool clean` and `reset`
 manage slot checkouts. Writers preserve comments and only write keys that were
 set.
+
+## Running work without the pump
+
+The pump's flow suits needs it can plan, slice and verify unattended. When a
+person or an agent outside Vivi does the deciding, Vivi still supplies the
+rest: the needs and their graph, the pools, the slot runner that publishes and
+verifies a branch, and the receipts. The orchestrator works one bounded unit at
+a time:
+
+```sh
+# File the need, with what done means.
+vivi need send --from orchestrator --to hand-1 --subject "Refuse empty names" \
+  --body "..." --done-when "an empty name is refused with a message" \
+  --done-when "a test covers it"
+vivi graph ready                       # what can start now
+
+# One bounded unit: a task whose body is the brief.
+vivi task send --from orchestrator --to hand-1 --subject "Refuse empty names in the parser" \
+  --body "..."
+vivi pool dispatch <task> --pool workers --role hand-1 \
+  --from main --with feature/names --branch unit/empty-names \
+  --budget 2700 --porcelain
+
+# Collect finished jobs (and stop overdue ones), then read the result.
+vivi pool reconcile --porcelain
+```
+
+`vivi pool dispatch` returns at once. `--from` is the commit or branch the job
+starts from, `--with <ref>` (repeatable, at most 8) fetches another ref into
+the slot for the agent to merge, and the result records whether each one ended
+up in the published commit. `--role` picks the charter, band and publish
+rights, `--budget` is the agent's hard limit in seconds (default 1800),
+`--read-only` publishes nothing, and `--command <cmd>` runs a shell command
+instead of a model. `vivi pool reconcile` (or `vivi pool wait <task>`) collects
+each finished dispatch, records its result on the task, and frees the slot only
+when the work is published. The orchestrator then lands the branch itself
+(merge, check, push) and closes the need with
+`vivi need done <need> --for <role> --branch <b> --commit <sha>`. `vivi monitor`
+shows the slots and jobs throughout.
+
+This mode and the pump mix. With `[pump.subsystems] flow = false` the pump
+leaves needs alone but still runs command checks on their cadence and the
+board pass (see [Pump subsystems](#pump-subsystems)).
 
 ## The pump
 
@@ -612,6 +723,27 @@ contract](skills/vivi/references/pump-contract.md) has control, routing and
 restart behavior, and [the job protocols](skills/vivi/references/pump-protocols.md)
 have job identity, briefs, recovery and publication.
 
+### Pump subsystems
+
+`[pump.subsystems]` switches parts of the tick off. Each key defaults to
+`true`, so a config without the table runs everything; an unknown key is
+refused. A switched-off part is skipped on every tick, while collecting pool
+jobs and dispatching queued jobs still run.
+
+| Key | Part of the tick |
+| --- | --- |
+| `flow` | The need flow: research, plan, admit, slice, build, audit, merge, and repair of a red main rung |
+| `cadence` | Auto-runs of roles that declare a cadence, command checks included |
+| `board` | The periodic board pass |
+| `integration` | Creating each target's integration branch when it is missing |
+
+```toml
+[pump.subsystems]
+flow = false      # an outside orchestrator handles needs; cadence and board still run
+```
+
+### Role cadence
+
 Role cadence uses each role's latest durable outbound signal. Due runs appear
 on the board. To look into an unclear want, head-ceo files a research need:
 `vivi need send --mark research --explores <want-handle> --done-when "..."`,
@@ -619,6 +751,47 @@ then starts it with `vivi pump send --need <need>` (mark first). The researcher
 role posts its analysis on the want. The cadence prompt tells head-ceo to file
 at most two research needs for one want, then to send serving needs
 (`vivi need send --serves <want-handle> --done-when "..."`) or drop it.
+
+### Command cadence roles
+
+A role with a `command`, a `cadence` and optionally a `target` is a command
+check: a lint, a test suite, a wide check against the integration branch.
+
+```sh
+vivi role add nightly-tests --cadence 1h --pool workers \
+  --command "./scripts/check" --target default
+```
+
+The pump runs the command as a read-only pool job with no model (the harness
+is the command, as with `vivi pool dispatch --command`), starting from the
+selected target's main: the role's `target`; else, on a pump with no target
+tables, the implicit `default` target; else the pump's primary target. A
+command role needs no charter, ignores the
+open want and need caps and the outbound-signal clock: its first run is due at
+once, and the next waits its cadence from the previous run's end. One run per
+role is in flight at a time, and a role whose `status` is `paused`, `parked`
+or `retired` does not run.
+
+- **Green skip.** Before a launch the pump reads the target's main tip. When it
+  is the commit this check last passed on, nothing runs; the role waits for
+  main to move (status `command-waiting-main-change`). A changed command,
+  target or main ref is a different check and inherits neither its green nor
+  its red.
+- **Environment failures retry.** A green needs exit 0 on a commit the runner
+  recorded as the job's start. A missing tool, a host setup failure, a job
+  that timed out or was lost, a receipt with no exit code, an unreadable main
+  tip or an ambiguous target is the environment, not the code: the pump
+  raises a `cadence-command-*` exception, files no need, and retries with
+  backoff from 60 seconds, doubling up to 32 minutes.
+- **Red is a code failure.** Only a non-zero exit of the command itself on a
+  recorded commit is red.
+
+Not yet implemented at this version: a red result is recorded and staged
+(status `command-staged-report`), but filing a need for it is not built, and
+neither is the recovery report a green owes after a red. Both stay staged and
+hold the role's single run, so a check that went red does not run again until
+that reporting lands. Each cadence role's state is written to `status.txt`
+in the pump home on every tick.
 
 The pump home defaults to `<project>/.vivi/pump`. It stores `pump.db`,
 `log.txt`, `exceptions.txt`, job briefs, the integration clone and bounded tick
@@ -884,6 +1057,9 @@ vivi skills install ~/.agents/skills     # writes vivi/, tugboat/, speedboat/
   copy it to a machine you do not trust.
 - `vivi pool dispatch` runs an agent with the account and environment the pool
   gives it. A `local` pool has no isolation: the worker runs as you.
+- `POST /v1/reply/check/<kind>` on `vivi server` takes no key: it only parses
+  the posted text and stores nothing. Serve it where your pool workers, and
+  not the public, can reach it.
 
 ## License
 
