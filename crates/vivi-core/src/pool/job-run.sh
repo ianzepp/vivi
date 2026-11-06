@@ -854,6 +854,29 @@ rm -f "$tmp" "$tmp.out"
 exit "$rc"
 VIVI_SUBMIT_SCRIPT
 chmod 0755 "$AGENT_HOME/bin/vivi-submit" || finish workdir_missing
+# mktemp, ahead of the system one on the agent's PATH: macOS /usr/bin/mktemp
+# ignores TMPDIR and always uses the machine's temp dir on the system volume,
+# so every `mktemp -d` an agent ran escaped its slot. GNU mktemp honours
+# TMPDIR; a BSD-style `-t prefix` (no X's) becomes the template prefix.XXXXXXXX.
+cat > "$AGENT_HOME/bin/mktemp" <<'VIVI_MKTEMP_SCRIPT' || finish workdir_missing
+#!/bin/bash
+real=
+for g in /opt/homebrew/bin/gmktemp /usr/local/bin/gmktemp; do
+  [ -x "$g" ] && { real=$g; break; }
+done
+[ -n "$real" ] || { /usr/bin/mktemp --version >/dev/null 2>&1 && real=/usr/bin/mktemp; }
+[ -n "$real" ] || exec /usr/bin/mktemp "$@"
+args=()
+while [ $# -gt 0 ]; do
+  if [ "$1" = -t ] && [ $# -gt 1 ] && [[ "$2" != *XXX* ]]; then
+    args+=(-t "$2.XXXXXXXX"); shift 2
+  else
+    args+=("$1"); shift
+  fi
+done
+exec "$real" "${args[@]}"
+VIVI_MKTEMP_SCRIPT
+chmod 0755 "$AGENT_HOME/bin/mktemp" || finish workdir_missing
 [ -n "${UNPRIVILEGED:-}" ] || chown -R hand:hand "$AGENT_HOME/bin"
 HARNESS_CMD=$(cat "$J/harness.cmd")
 HARNESS_CMD=${HARNESS_CMD//\/home\/hand\//$AGENT_HOME/}
