@@ -863,6 +863,9 @@ HARNESS_ENV+=("VIVI_REPLY_OUT=$REPLY_OUT")
 HARNESS_ENV+=("GIT_AUTHOR_NAME=$COMMIT_NAME" "GIT_AUTHOR_EMAIL=$COMMIT_EMAIL")
 HARNESS_ENV+=("GIT_COMMITTER_NAME=$COMMIT_NAME" "GIT_COMMITTER_EMAIL=$COMMIT_EMAIL")
 [ -z "${VIVI_SLOT_ROOT:-}" ] || HARNESS_ENV+=("VIVI_SLOT_ROOT=$VIVI_SLOT_ROOT")
+# The agent starts from an empty environment: without TMPDIR it falls back to
+# the machine's temp dir (the system volume on macOS), so pass the slot's own.
+[ -z "${TMPDIR:-}" ] || HARNESS_ENV+=("TMPDIR=$TMPDIR")
 for name in $ENV_NAMES; do
   [ -n "${!name+x}" ] && HARNESS_ENV+=("$name=${!name}")
 done
