@@ -128,7 +128,10 @@ if [ -n "${UNPRIVILEGED:-}" ]; then
   # The job's temporary files live in its own slot, not the machine's shared
   # temp dir: a macOS worker's default TMPDIR is on the system volume, which
   # test leftovers filled twice, and the slot's are removed with the slot.
-  mkdir -p "$W/tmp" && export TMPDIR="$W/tmp"
+  # A slot is reused only after its previous job's work was published (the
+  # collector keeps unpublished slots), so that job's temp files, build
+  # output included, are of no further use: start each job with an empty one.
+  rm -rf "$W/tmp" && mkdir -p "$W/tmp" && export TMPDIR="$W/tmp"
   AGENT_USER_HOME=${HOME:-$AGENT_HOME}
   agent_job_pids() {
     grep -lzxF "VIVI_AGENT_JOB=$JOB" /proc/[0-9]*/environ 2>/dev/null | sed 's#/proc/\([0-9]*\)/environ#\1#'
