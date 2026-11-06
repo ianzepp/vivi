@@ -939,3 +939,34 @@ fn a_slot_is_freed_only_when_its_work_is_safe() {
         "a lost slot may hold work"
     );
 }
+
+#[test]
+fn a_stopped_slot_reports_the_handed_in_reply_as_its_receipt() {
+    let mut files = BTreeMap::new();
+    files.insert(
+        RESULT_PATHS[0].to_string(),
+        b"job=j7\nstate=done\n".to_vec(),
+    );
+    files.insert(
+        RESULT_PATHS[1].to_string(),
+        b"Submitted successfully.\n".to_vec(),
+    );
+    files.insert(
+        RESULT_PATHS[4].to_string(),
+        b"+++\nanswer = \"built\"\n+++\n".to_vec(),
+    );
+    let done = collected_from_files(&files).expect("collected");
+    assert!(
+        done.receipt.contains("answer = \"built\""),
+        "{}",
+        done.receipt
+    );
+
+    files.remove(RESULT_PATHS[4]);
+    let done = collected_from_files(&files).expect("collected");
+    assert!(
+        done.receipt.starts_with("Submitted successfully."),
+        "{}",
+        done.receipt
+    );
+}

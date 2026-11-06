@@ -51,11 +51,12 @@ echo '@@vivi-pool log'; tail -c 4096 "$J/run.log" 2>/dev/null; echo
 
 /// The files of a finished job that [`COLLECT_SCRIPT`] reads, for a provider
 /// that reads a stopped slot's disk directly.
-pub const RESULT_PATHS: [&str; 4] = [
+pub const RESULT_PATHS: [&str; 5] = [
     "/work/job/result",
     "/work/job/agent.out",
     "/work/job/agent.err",
     "/work/job/run.log",
+    "/work/job/reply.md",
 ];
 /// Result keys of the discarded paths of a read-only job: `<prefix>1`,
 /// `<prefix>2`, ... (capped by the runner; `discarded_count` has the total).
@@ -346,7 +347,12 @@ pub fn collected_from_files(files: &BTreeMap<String, Vec<u8>>) -> Option<Collect
     if result.get("job").is_empty() {
         return None;
     }
-    let receipt = bytes_of(RESULT_PATHS[1]);
+    // The reply the agent handed in with `vivi-submit`, when there is one, is
+    // the receipt; else its printed output (as COLLECT_SCRIPT chooses).
+    let receipt = match bytes_of(RESULT_PATHS[4]) {
+        [] => bytes_of(RESULT_PATHS[1]),
+        reply => reply,
+    };
     let tail = |path: &str| {
         let bytes = bytes_of(path);
         text_of(&bytes[bytes.len().saturating_sub(TAIL_BYTES)..])
