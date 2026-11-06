@@ -16,7 +16,9 @@ const DELIMITER: &str = "VIVI_REPLY";
 /// [`REPLY_CHECK_ENV`]; none when the pump runs without a server.
 #[must_use]
 pub fn check_url(kind: RoleKind) -> Option<String> {
-    let base = std::env::var(REPLY_CHECK_ENV).ok()?;
+    let Ok(base) = std::env::var(REPLY_CHECK_ENV) else {
+        return None;
+    };
     let base = base.trim().trim_end_matches('/');
     if base.is_empty() {
         return None;

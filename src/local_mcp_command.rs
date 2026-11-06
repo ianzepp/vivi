@@ -258,8 +258,15 @@ fn local_server_url() -> Option<String> {
         bind: Option<String>,
         port: Option<u16>,
     }
-    let path = vivi_util::home::server_home().ok()?.join("config.toml");
-    let config: Config = toml::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
+    let Ok(home) = vivi_util::home::server_home() else {
+        return None;
+    };
+    let Ok(text) = std::fs::read_to_string(home.join("config.toml")) else {
+        return None;
+    };
+    let Ok(config) = toml::from_str::<Config>(&text) else {
+        return None;
+    };
     let bind = match config.bind.as_deref() {
         None | Some("" | "0.0.0.0" | "::" | "[::]") => "127.0.0.1".to_string(),
         Some(bind) if bind.contains(':') && !bind.starts_with('[') => format!("[{bind}]"),
