@@ -221,7 +221,9 @@ pub(crate) fn parse_collected(latest: &str) -> Option<(String, String)> {
     lines.find(|line| *line == "event = \"pool_collected\"")?;
     let record = lines.find_map(|line| line.strip_prefix("record = '"))?;
     let record = record.strip_suffix('\'')?;
-    let value: serde_json::Value = serde_json::from_str(record).ok()?;
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(record) else {
+        return None;
+    };
     let outcome = value.get("outcome")?.as_str()?.to_owned();
     if !matches!(outcome.as_str(), "finished" | "timeout" | "lost") {
         return None;
