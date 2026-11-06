@@ -12,6 +12,8 @@ fn role(name: &str, kind: Option<&str>, pid: Option<u32>, cadence: Option<&str>)
         harness: None,
         provider: None,
         model: None,
+        command: None,
+        target: None,
         thinking: None,
         pid,
         host: None,

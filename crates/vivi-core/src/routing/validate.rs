@@ -1,6 +1,6 @@
 //! Combined roles + pools + pump validation.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::mailspace::MailspaceConfig;
 use crate::pool::bands::parse_band;
@@ -25,6 +25,11 @@ pub enum Severity {
     NotReady,
 }
 
+/// The stable code of the finding about a role naming a target the pump does
+/// not configure. Callers that must recognise it apart from its wording compare
+/// [`Issue::is`] with this code, never the message text.
+pub const UNKNOWN_ROLE_TARGET: &str = "unknown-role-target";
+
 /// One validate finding.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Issue {
@@ -33,6 +38,9 @@ pub struct Issue {
     /// The named missing item, set on a [`Severity::NotReady`] finding. Two
     /// findings with the same item are one thing missing.
     pub item: Option<String>,
+    /// The stable code of a finding a caller must identify on its own, such as
+    /// [`UNKNOWN_ROLE_TARGET`]. Most findings have none.
+    pub code: Option<&'static str>,
 }
 
 impl Issue {
@@ -41,6 +49,16 @@ impl Issue {
             severity: Severity::Error,
             message: message.into(),
             item: None,
+            code: None,
+        }
+    }
+
+    fn coded(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            severity: Severity::Error,
+            message: message.into(),
+            item: None,
+            code: Some(code),
         }
     }
 
@@ -49,6 +67,7 @@ impl Issue {
             severity: Severity::NotReady,
             message: message.into(),
             item: Some(item.into()),
+            code: None,
         }
     }
 
@@ -57,8 +76,55 @@ impl Issue {
             severity: Severity::Warning,
             message: message.into(),
             item: None,
+            code: None,
         }
     }
+
+    /// Whether this finding carries the stable code `code`.
+    #[must_use]
+    pub fn is(&self, code: &str) -> bool {
+        self.code.is_some_and(|own| own == code)
+    }
+}
+
+/// The repository targets a role's `target` may name: the `[pump.targets.<id>]`
+/// keys, or the implicit `default` target when the pump sets none. A project
+/// with no `[pump]` table has no valid target id.
+#[must_use]
+pub fn role_target_ids(config: &MailspaceConfig) -> BTreeSet<String> {
+    config
+        .pump
+        .as_ref()
+        .map(|pump| pump.target_configs().into_keys().collect())
+        .unwrap_or_default()
+}
+
+/// Whether a role may name `target` on its `target` field.
+#[must_use]
+pub fn is_valid_role_target(config: &MailspaceConfig, target: &str) -> bool {
+    role_target_ids(config).contains(target)
+}
+
+/// The finding about `role` naming a target the pump does not configure, or
+/// `None` when the pump does configure it.
+#[must_use]
+pub fn role_target_issue(config: &MailspaceConfig, role: &str, target: &str) -> Option<Issue> {
+    let ids = role_target_ids(config);
+    if ids.contains(target) {
+        return None;
+    }
+    let message = if ids.is_empty() {
+        format!(
+            "role {role} names target `{target}` but this project has no [pump] table; \
+             add one or clear the target"
+        )
+    } else {
+        format!(
+            "role {role} names unknown pump target `{target}`; configured targets: {}",
+            ids.into_iter().collect::<Vec<_>>().join(", ")
+        )
+    };
+    Some(Issue::coded(UNKNOWN_ROLE_TARGET, message))
 }
 
 /// Check roles, pools and pump together.
@@ -66,6 +132,7 @@ impl Issue {
 pub fn validate(config: &MailspaceConfig) -> Vec<Issue> {
     let routing = from_mailspace(config);
     let mut issues = Vec::new();
+    check_role_targets(config, &mut issues);
     check_role_pools(&routing, &mut issues);
     check_pool_fallbacks(&routing, &mut issues);
     check_pool_tables(config, &mut issues);
@@ -129,6 +196,19 @@ pub fn require_ok(issues: &[Issue]) -> Result<(), VivariumError> {
         Ok(())
     } else {
         Err(VivariumError::Config(errors.join("; ")))
+    }
+}
+
+/// A role's `target` names a repository target the pump must work on, so a
+/// value the pump does not configure is wrong whether the role was written by
+/// a command or by hand. A role that names no target is fine; explicit targets
+/// are checked on every role, model and operator seats alike.
+fn check_role_targets(config: &MailspaceConfig, issues: &mut Vec<Issue>) {
+    for identity in &config.identities {
+        let Some(target) = identity.target.as_deref() else {
+            continue;
+        };
+        issues.extend(role_target_issue(config, &identity.name, target));
     }
 }
 

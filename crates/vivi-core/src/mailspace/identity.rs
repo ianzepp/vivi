@@ -49,6 +49,12 @@ pub struct LocalIdentity {
     /// Model id for the provider.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Shell command the seat runs, preserved verbatim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    /// Backlog item this role is bound to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
     /// Reasoning / thinking effort level.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking: Option<String>,
@@ -84,6 +90,8 @@ pub struct RoleUpdate {
     pub harness: Option<Option<String>>,
     pub provider: Option<Option<String>>,
     pub model: Option<Option<String>>,
+    pub command: Option<Option<String>>,
+    pub target: Option<Option<String>>,
     pub thinking: Option<Option<String>>,
     pub pid: Option<Option<u32>>,
     pub host: Option<Option<String>>,
@@ -107,6 +115,8 @@ pub struct RoleView {
     pub harness: Option<String>,
     pub provider: Option<String>,
     pub model: Option<String>,
+    pub command: Option<String>,
+    pub target: Option<String>,
     pub thinking: Option<String>,
     pub pid: Option<u32>,
     pub host: Option<String>,
@@ -129,6 +139,8 @@ impl LocalIdentity {
             harness: None,
             provider: None,
             model: None,
+            command: None,
+            target: None,
             thinking: None,
             pid: None,
             host: None,
@@ -183,6 +195,7 @@ impl Mailspace {
         }
         let mut role = LocalIdentity::new(name.clone());
         apply_role_update(&mut role, update.clone())?;
+        self.check_role_target(&role, update.target.is_some())?;
         config_edit::apply(&self.config_path(), |doc| {
             config_edit::insert_identity(doc, &name, &identity_patch(&update, &role))
         })?;
@@ -199,11 +212,13 @@ impl Mailspace {
     pub fn set_role(&mut self, name: &str, update: RoleUpdate) -> Result<RoleView, VivariumError> {
         let name = sanitize_identity(name)?;
         let index = self.require_role_index(&name)?;
-        apply_role_update(&mut self.config.identities[index], update.clone())?;
-        let role = self.config.identities[index].clone();
+        let mut role = self.config.identities[index].clone();
+        apply_role_update(&mut role, update.clone())?;
+        self.check_role_target(&role, update.target.is_some())?;
         config_edit::apply(&self.config_path(), |doc| {
             config_edit::upsert_identity(doc, &role.name, &identity_patch(&update, &role))
         })?;
+        self.config.identities[index] = role.clone();
         self.role_view(&role.name)
     }
 
@@ -513,6 +528,8 @@ impl Mailspace {
             harness: role.harness.clone(),
             provider: role.provider.clone(),
             model: role.model.clone(),
+            command: role.command.clone(),
+            target: role.target.clone(),
             thinking: role.thinking.clone(),
             pid: role.pid,
             host: role.host.clone(),
@@ -644,6 +661,25 @@ impl Mailspace {
             .sort_by(|left, right| left.name.cmp(&right.name));
     }
 
+    /// Refuse a proposed `target` the pump does not configure, before either
+    /// the file or the in-memory roster changes. Only a target the update
+    /// itself sets is checked: an inherited one is left alone here and reported
+    /// by the shared readiness validation instead, so overriding an inherited
+    /// role's other fields still works.
+    fn check_role_target(
+        &self,
+        role: &LocalIdentity,
+        sets_target: bool,
+    ) -> Result<(), VivariumError> {
+        let Some(target) = role.target.as_deref().filter(|_| sets_target) else {
+            return Ok(());
+        };
+        match crate::routing::role_target_issue(&self.config, &role.name, target) {
+            Some(issue) => Err(VivariumError::Config(issue.message)),
+            None => Ok(()),
+        }
+    }
+
     fn find_role_index(&self, name_or_alias: &str) -> Option<usize> {
         self.config.identities.iter().position(|known| {
             known.name == name_or_alias || known.aliases.iter().any(|a| a == name_or_alias)
@@ -693,6 +729,12 @@ fn apply_role_update(role: &mut LocalIdentity, update: RoleUpdate) -> Result<(),
     }
     if let Some(model) = update.model {
         role.model = optional_field("model", model)?;
+    }
+    if let Some(command) = update.command {
+        role.command = optional_command(command)?;
+    }
+    if let Some(target) = update.target {
+        role.target = optional_field("target", target)?;
     }
     if let Some(thinking) = update.thinking {
         role.thinking = optional_field("thinking", thinking)?;
@@ -744,6 +786,8 @@ fn identity_patch(update: &RoleUpdate, role: &LocalIdentity) -> IdentityPatch {
         harness: update.harness.clone(),
         provider: update.provider.clone(),
         model: update.model.clone(),
+        command: update.command.clone(),
+        target: update.target.clone(),
         models: update.models.clone(),
         thinking: update.thinking.clone(),
         pid: update.pid,
@@ -766,6 +810,19 @@ fn optional_field(field: &str, value: Option<String>) -> Result<Option<String>, 
             Ok(Some(sanitize_freeform_field(field, &value)?))
         }
         _ => Ok(None),
+    }
+}
+
+fn optional_command(value: Option<String>) -> Result<Option<String>, VivariumError> {
+    match value {
+        Some(value) if value.trim().is_empty() => Err(VivariumError::Message(
+            "role command cannot be empty".into(),
+        )),
+        Some(value) if value.contains('\0') => Err(VivariumError::Message(
+            "role command cannot contain NUL".into(),
+        )),
+        Some(value) => Ok(Some(value)),
+        None => Ok(None),
     }
 }
 

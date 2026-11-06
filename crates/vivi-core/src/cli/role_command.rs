@@ -79,6 +79,14 @@ pub enum RoleCommand {
         #[arg(long = "models")]
         models: Vec<String>,
 
+        /// Shell command the seat runs, preserved verbatim (multiline allowed)
+        #[arg(long)]
+        command: Option<String>,
+
+        /// Repository target the seat works in (`[pump.targets.<id>]`, default `default`)
+        #[arg(long)]
+        target: Option<String>,
+
         /// Project root to update
         #[arg(long)]
         project: Option<PathBuf>,
@@ -188,6 +196,22 @@ pub enum RoleCommand {
         /// Clear the models list
         #[arg(long)]
         clear_models: bool,
+
+        /// Shell command the seat runs, preserved verbatim (multiline allowed)
+        #[arg(long)]
+        command: Option<String>,
+
+        /// Clear the command
+        #[arg(long)]
+        clear_command: bool,
+
+        /// Repository target the seat works in (`[pump.targets.<id>]`)
+        #[arg(long)]
+        target: Option<String>,
+
+        /// Clear the repository target
+        #[arg(long)]
+        clear_target: bool,
 
         /// Project root to update
         #[arg(long)]

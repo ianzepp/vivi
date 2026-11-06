@@ -190,3 +190,173 @@ fn role_add_of_another_name_gets_no_default_kind() {
     ok(&run(root, &["role", "add", "mind"]));
     assert!(role_kind(root, "mind").is_null());
 }
+
+fn role_view(project: &Path, name: &str) -> serde_json::Value {
+    let shown = ok(&run(project, &["role", "show", name, "--json"]));
+    serde_json::from_str(&shown).unwrap()
+}
+
+fn role_field(project: &Path, name: &str, field: &str) -> serde_json::Value {
+    role_view(project, name)[field].clone()
+}
+
+#[test]
+fn role_add_exposes_the_command_and_target_in_show_and_list() {
+    let project = project();
+    let root = project.path();
+    let script = "set -e\nprintf '%s\\n' \"hello world\"\n";
+    ok(&run(
+        root,
+        &[
+            "role",
+            "add",
+            "hand-1",
+            "--command",
+            script,
+            "--target",
+            "default",
+        ],
+    ));
+    assert_eq!(role_field(root, "hand-1", "command"), script);
+    assert_eq!(role_field(root, "hand-1", "target"), "default");
+
+    let listed = ok(&run(root, &["role", "list", "--json"]));
+    let views: serde_json::Value = serde_json::from_str(&listed).unwrap();
+    let entry = views
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|view| view["name"] == "hand-1")
+        .expect("hand-1 is listed");
+    assert_eq!(entry["command"], script);
+    assert_eq!(entry["target"], "default");
+
+    let text = ok(&run(root, &["role", "show", "hand-1"]));
+    assert!(text.contains("command:"), "{text}");
+    assert!(text.contains("hello world"), "{text}");
+    assert!(text.contains("target:    default"), "{text}");
+}
+
+#[test]
+fn a_command_only_and_a_target_only_set_are_real_guarded_writes() {
+    let project = project();
+    let root = project.path();
+    let script = "printf '%s\\n' one\nprintf '%s\\n' two\n";
+    let out = run(root, &["role", "set", "operator", "--command", script]);
+    ok(&out);
+    assert!(stderr(&out).contains("backup"), "{}", stderr(&out));
+    assert_eq!(role_field(root, "operator", "command"), script);
+    assert_eq!(backups(&root.join(".vivi")).len(), 1);
+
+    ok(&run(
+        root,
+        &["role", "set", "operator", "--target", "default"],
+    ));
+    assert_eq!(role_field(root, "operator", "target"), "default");
+    assert_eq!(role_field(root, "operator", "command"), script);
+    assert_eq!(backups(&root.join(".vivi")).len(), 2);
+}
+
+#[test]
+fn clearing_the_command_and_target_wins_over_setting_them() {
+    let project = project();
+    let root = project.path();
+    ok(&run(
+        root,
+        &[
+            "role",
+            "set",
+            "operator",
+            "--command",
+            "true",
+            "--target",
+            "default",
+        ],
+    ));
+    assert_eq!(role_field(root, "operator", "command"), "true");
+
+    ok(&run(
+        root,
+        &[
+            "role",
+            "set",
+            "operator",
+            "--command",
+            "false",
+            "--clear-command",
+            "--target",
+            "default",
+            "--clear-target",
+        ],
+    ));
+    let view = role_view(root, "operator");
+    assert!(view["command"].is_null(), "{view}");
+    assert!(view["target"].is_null(), "{view}");
+
+    let text = ok(&run(root, &["role", "show", "operator"]));
+    assert!(text.contains("command:   (unset)"), "{text}");
+    assert!(text.contains("target:    (unset)"), "{text}");
+}
+
+#[test]
+fn an_unknown_target_is_refused_and_changes_nothing() {
+    let project = project();
+    let root = project.path();
+    let before = fs::read(config_path(root)).unwrap();
+    let err = refused(&run(
+        root,
+        &["role", "set", "operator", "--target", "nosuch"],
+    ));
+    assert!(!err.is_empty(), "{err}");
+    assert_eq!(fs::read(config_path(root)).unwrap(), before);
+    assert!(role_field(root, "operator", "target").is_null());
+
+    let before = fs::read(config_path(root)).unwrap();
+    refused(&run(root, &["role", "add", "hand-1", "--target", "nosuch"]));
+    assert_eq!(fs::read(config_path(root)).unwrap(), before);
+}
+
+#[test]
+fn command_and_target_updates_are_refused_while_the_pump_runs() {
+    let project = project();
+    let root = project.path();
+    ok(&run(root, &["pump", "resume"]));
+    let _lock = hold_lock(root);
+    let before = fs::read(config_path(root)).unwrap();
+
+    let err = refused(&run(
+        root,
+        &["role", "set", "operator", "--command", "true"],
+    ));
+    assert!(err.contains("the pump is running"), "{err}");
+    let err = refused(&run(
+        root,
+        &["role", "set", "operator", "--target", "default"],
+    ));
+    assert!(err.contains("the pump is running"), "{err}");
+    let err = refused(&run(root, &["role", "set", "operator", "--clear-command"]));
+    assert!(err.contains("the pump is running"), "{err}");
+    let err = refused(&run(root, &["role", "set", "operator", "--clear-target"]));
+    assert!(err.contains("the pump is running"), "{err}");
+
+    // A mixed pid/command update is configuration, so the guard applies.
+    let pid = std::process::id().to_string();
+    let err = refused(&run(
+        root,
+        &[
+            "role",
+            "set",
+            "operator",
+            "--pid",
+            &pid,
+            "--command",
+            "true",
+        ],
+    ));
+    assert!(err.contains("the pump is running"), "{err}");
+    assert_eq!(fs::read(config_path(root)).unwrap(), before);
+
+    // The pid/host-only exception is retained.
+    ok(&run(root, &["role", "set", "operator", "--pid", &pid]));
+    assert!(backups(&root.join(".vivi")).is_empty());
+}

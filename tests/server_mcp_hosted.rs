@@ -1631,3 +1631,266 @@ async fn depend_adds_and_removes_prerequisites_as_the_cli_would() {
         .await;
     assert!(empty.contains("--add or --remove"), "{empty}");
 }
+
+/// A `[pump]` table, so the implicit `default` repository target exists and a
+/// role's `target` has something to name, as a pumped project has.
+fn with_a_pump_table(root: &std::path::Path) {
+    vivi_core::mailspace::config_edit::set_key(root, "pump.tick", "30").unwrap();
+}
+
+/// The host's mailspace config as it stands, for nonmutation checks.
+fn config_text(fx: &Fx) -> String {
+    std::fs::read_to_string(fx.root.join(".vivi").join("mailspace.toml")).unwrap()
+}
+
+/// Hold the pump's lock, as a running pump does.
+fn hold_pump_lock(root: &std::path::Path) -> std::fs::File {
+    let home = root.join(".vivi").join("pump");
+    std::fs::create_dir_all(&home).unwrap();
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(home.join("lock"))
+        .unwrap();
+    lock.try_lock().unwrap();
+    lock
+}
+
+#[tokio::test]
+async fn role_command_and_target_travel_through_add_set_show_and_list() {
+    let fx = fixture("role-command");
+    with_a_pump_table(&fx.root);
+    let operator = fx.key(None);
+    // The shell text is kept exactly: quoting, indentation, the trailing
+    // spaces and the empty last line all survive the write.
+    let command =
+        "set -eu\nvivi hand run --target 'api x' \\\n  && echo \"done: ok\"\n# trailing  ";
+
+    let added = fx
+        .call(
+            &operator,
+            "role_add",
+            json!({"role": "runner", "kind": "hand", "command": command, "target": "default"}),
+        )
+        .await;
+    assert_eq!(added["role"]["command"], command);
+    assert_eq!(added["role"]["target"], "default");
+    assert_eq!(added["role"]["kind"], "hand");
+
+    // Show and list carry the same two fields.
+    let shown = fx
+        .call(&operator, "role_show", json!({"role": "runner"}))
+        .await;
+    assert_eq!(shown["command"], command);
+    assert_eq!(shown["target"], "default");
+    let listed = fx.call(&operator, "role_list", json!({})).await;
+    let runner = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["name"] == "runner")
+        .unwrap();
+    assert_eq!(runner["command"], command);
+    assert_eq!(runner["target"], "default");
+
+    // A command-only set is not an empty update, and is not trimmed.
+    let set = fx
+        .call(
+            &operator,
+            "role_set",
+            json!({"role": "hand", "command": command}),
+        )
+        .await;
+    assert_eq!(set["command"], command);
+    assert_eq!(set["target"], Value::Null);
+
+    // A target-only set is not an empty update either.
+    let set = fx
+        .call(
+            &operator,
+            "role_set",
+            json!({"role": "hand", "target": "default"}),
+        )
+        .await;
+    assert_eq!(set["target"], "default");
+    assert_eq!(set["command"], command);
+
+    // Each clear stands alone and leaves the other field in place.
+    let cleared = fx
+        .call(
+            &operator,
+            "role_set",
+            json!({"role": "hand", "clear_command": true}),
+        )
+        .await;
+    assert_eq!(cleared["command"], Value::Null);
+    assert_eq!(cleared["target"], "default");
+    let cleared = fx
+        .call(
+            &operator,
+            "role_set",
+            json!({"role": "hand", "clear_target": true}),
+        )
+        .await;
+    assert_eq!(cleared["target"], Value::Null);
+    assert_eq!(cleared["command"], Value::Null);
+
+    // Clear wins over set when both are named.
+    let both = fx
+        .call(
+            &operator,
+            "role_set",
+            json!({
+                "role": "hand",
+                "command": "echo hi",
+                "clear_command": true,
+                "target": "default",
+                "clear_target": true,
+            }),
+        )
+        .await;
+    assert_eq!(both["command"], Value::Null);
+    assert_eq!(both["target"], Value::Null);
+}
+
+#[tokio::test]
+async fn a_role_write_refuses_an_unknown_target_and_an_invalid_command() {
+    let fx = fixture("role-invalid");
+    with_a_pump_table(&fx.root);
+    let operator = fx.key(None);
+    let before = config_text(&fx);
+
+    // A target the pump does not configure is refused before any mutation.
+    let unknown = fx
+        .call_err(
+            &operator,
+            "role_set",
+            json!({"role": "hand", "target": "ghost"}),
+        )
+        .await;
+    assert!(unknown.contains("ghost"), "{unknown}");
+    assert_eq!(config_text(&fx), before, "the target refusal wrote");
+    let shown = fx
+        .call(&operator, "role_show", json!({"role": "hand"}))
+        .await;
+    assert_eq!(shown["target"], Value::Null);
+
+    // Blank and NUL commands are refused by the library, not dropped as
+    // absent; a wrong JSON type is refused before the write.
+    for (arguments, expected) in [
+        (json!({"role": "hand", "command": ""}), "cannot be empty"),
+        (json!({"role": "hand", "command": "   "}), "cannot be empty"),
+        (
+            json!({"role": "hand", "command": "ls\0-la"}),
+            "cannot contain NUL",
+        ),
+        (
+            json!({"role": "hand", "command": 42}),
+            "command must be a string",
+        ),
+        (
+            json!({"role": "runner", "command": "", "target": "default"}),
+            "cannot be empty",
+        ),
+    ] {
+        let message = fx.call_err(&operator, "role_set", arguments.clone()).await;
+        if message.contains("unknown local role") {
+            // The add case names a role that must not exist: try it as an add.
+            let message = fx.call_err(&operator, "role_add", arguments).await;
+            assert!(message.contains(expected), "{message}");
+        } else {
+            assert!(message.contains(expected), "{message}");
+        }
+    }
+    assert_eq!(config_text(&fx), before, "an invalid command wrote");
+    let exists = fx.call(&operator, "role_list", json!({})).await;
+    assert!(
+        exists
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row["name"] != "runner"),
+        "a refused add created the role"
+    );
+}
+
+#[tokio::test]
+async fn role_writes_need_the_operator_and_refuse_while_the_pump_runs() {
+    let fx = fixture("role-guard");
+    with_a_pump_table(&fx.root);
+    let writes = [
+        (
+            "role_add",
+            json!({"role": "runner", "command": "ls", "target": "default"}),
+        ),
+        ("role_set", json!({"role": "hand", "command": "ls"})),
+    ];
+
+    let mind = fx.key(Some("mind"));
+    for (name, arguments) in writes.clone() {
+        let message = fx.call_err(&mind, name, arguments).await;
+        assert!(message.contains("kind operator"), "{name}: {message}");
+    }
+
+    let operator = fx.key(None);
+    let before = config_text(&fx);
+    vivi_core::pump::control::set_project_mode(
+        &fx.root,
+        vivi_core::pump::control::PumpMode::Running,
+    )
+    .unwrap();
+    let lock = hold_pump_lock(&fx.root);
+    for (name, arguments) in writes {
+        let message = fx.call_err(&operator, name, arguments).await;
+        assert!(message.contains("the pump is running"), "{name}: {message}");
+        assert_eq!(config_text(&fx), before, "{name} wrote while the pump ran");
+    }
+    drop(lock);
+
+    // A paused pump holding its lock is writable, command and target included.
+    vivi_core::pump::control::set_project_mode(
+        &fx.root,
+        vivi_core::pump::control::PumpMode::Paused,
+    )
+    .unwrap();
+    let _lock = hold_pump_lock(&fx.root);
+    let added = fx
+        .call(
+            &operator,
+            "role_add",
+            json!({"role": "runner", "command": "env | sort", "target": "default"}),
+        )
+        .await;
+    assert_eq!(added["role"]["command"], "env | sort");
+    assert_eq!(added["role"]["target"], "default");
+}
+
+#[tokio::test]
+async fn role_writes_are_rate_limited_with_the_command_and_target_arguments() {
+    let fx = fixture_with("role-rate", |state| {
+        state.limiter = vivi_server::server::safety::RateLimiter::new(Some(1));
+    });
+    with_a_pump_table(&fx.root);
+    let operator = fx.key(None);
+    fx.call(
+        &operator,
+        "role_set",
+        json!({"role": "hand", "command": "echo one"}),
+    )
+    .await;
+    let message = fx
+        .call_err(
+            &operator,
+            "role_set",
+            json!({"role": "hand", "target": "default", "command": "echo two"}),
+        )
+        .await;
+    assert!(message.contains("writes/min"), "{message}");
+    let shown = fx
+        .call(&operator, "role_show", json!({"role": "hand"}))
+        .await;
+    assert_eq!(shown["command"], "echo one");
+    assert_eq!(shown["target"], Value::Null);
+}

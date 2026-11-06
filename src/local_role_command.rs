@@ -59,17 +59,6 @@ fn role_set_args(command: &RoleCommand) -> RoleSetArgs {
         clear_pid,
         host,
         clear_host,
-        cadence,
-        clear_cadence,
-        status,
-        labels,
-        clear_labels,
-        pool,
-        clear_pool,
-        read_only,
-        clear_read_only,
-        models,
-        clear_models,
         ..
     } = command
     else {
@@ -90,6 +79,34 @@ fn role_set_args(command: &RoleCommand) -> RoleSetArgs {
         clear_pid: *clear_pid,
         host: host.clone(),
         clear_host: *clear_host,
+        ..role_set_tail_args(command)
+    }
+}
+
+/// The scheduling, labelling, pool, model and text fields of a `role set`.
+fn role_set_tail_args(command: &RoleCommand) -> RoleSetArgs {
+    let RoleCommand::Set {
+        cadence,
+        clear_cadence,
+        status,
+        labels,
+        clear_labels,
+        pool,
+        clear_pool,
+        read_only,
+        clear_read_only,
+        models,
+        clear_models,
+        command: role_command,
+        clear_command,
+        target,
+        clear_target,
+        ..
+    } = command
+    else {
+        return RoleSetArgs::default();
+    };
+    RoleSetArgs {
         cadence: cadence.clone(),
         clear_cadence: *clear_cadence,
         status: status.clone(),
@@ -101,6 +118,11 @@ fn role_set_args(command: &RoleCommand) -> RoleSetArgs {
         clear_read_only: *clear_read_only,
         models: models.clone(),
         clear_models: *clear_models,
+        command: role_command.clone(),
+        clear_command: *clear_command,
+        target: target.clone(),
+        clear_target: *clear_target,
+        ..RoleSetArgs::default()
     }
 }
 
@@ -118,6 +140,8 @@ fn add_from(command: &RoleCommand) -> Result<(), VivariumError> {
         pool,
         read_only,
         models,
+        command: role_command,
+        target,
         project,
     } = command
     else {
@@ -136,6 +160,8 @@ fn add_from(command: &RoleCommand) -> Result<(), VivariumError> {
         pool: pool.as_deref(),
         read_only: *read_only,
         models,
+        command: role_command.as_deref(),
+        target: target.as_deref(),
         project: project.as_deref(),
     })
 }
@@ -153,6 +179,8 @@ struct AddRoleArgs<'a> {
     pool: Option<&'a str>,
     read_only: Option<bool>,
     models: &'a [String],
+    command: Option<&'a str>,
+    target: Option<&'a str>,
     project: Option<&'a std::path::Path>,
 }
 
@@ -184,6 +212,10 @@ struct RoleSetArgs {
     clear_read_only: bool,
     models: Vec<String>,
     clear_models: bool,
+    command: Option<String>,
+    clear_command: bool,
+    target: Option<String>,
+    clear_target: bool,
 }
 
 fn list_roles(project: Option<&std::path::Path>, json: bool) -> Result<(), VivariumError> {
@@ -273,6 +305,8 @@ fn build_add_update(args: &AddRoleArgs<'_>, default_kind: Option<&str>) -> RoleU
         pool: args.pool.map(|value| Some(value.to_string())),
         read_only: args.read_only.map(Some),
         models: (!args.models.is_empty()).then(|| args.models.to_vec()),
+        command: args.command.map(|value| Some(value.to_string())),
+        target: args.target.map(|value| Some(value.to_string())),
         ..RoleUpdate::default()
     }
 }
@@ -313,6 +347,8 @@ fn runtime_only(update: &RoleUpdate) -> bool {
         harness,
         provider,
         model,
+        command,
+        target,
         thinking,
         pid,
         host,
@@ -328,6 +364,8 @@ fn runtime_only(update: &RoleUpdate) -> bool {
         || harness.is_some()
         || provider.is_some()
         || model.is_some()
+        || command.is_some()
+        || target.is_some()
         || thinking.is_some()
         || cadence.is_some()
         || !add_labels.is_empty()
@@ -465,6 +503,7 @@ fn build_role_update(args: &RoleSetArgs) -> RoleUpdate {
         args.provider.as_ref(),
     );
     set_optional_field(&mut update.model, args.clear_model, args.model.as_ref());
+    apply_command_and_target(&mut update, args);
     set_optional_field(
         &mut update.thinking,
         args.clear_thinking,
@@ -484,6 +523,22 @@ fn build_role_update(args: &RoleSetArgs) -> RoleUpdate {
         args.clear_host,
     );
     set_optional_field(&mut update.pool, args.clear_pool, args.pool.as_ref());
+    apply_flags_and_models(&mut update, args);
+    update
+}
+
+/// The `--command`/`--target` pair of a `role set`: a clear wins over a value.
+fn apply_command_and_target(update: &mut RoleUpdate, args: &RoleSetArgs) {
+    set_optional_field(
+        &mut update.command,
+        args.clear_command,
+        args.command.as_ref(),
+    );
+    set_optional_field(&mut update.target, args.clear_target, args.target.as_ref());
+}
+
+/// The `--read-only` and `--models` pair of a `role set`.
+fn apply_flags_and_models(update: &mut RoleUpdate, args: &RoleSetArgs) {
     if args.clear_read_only {
         update.read_only = Some(None);
     } else if let Some(flag) = args.read_only {
@@ -494,7 +549,6 @@ fn build_role_update(args: &RoleSetArgs) -> RoleUpdate {
     } else if !args.models.is_empty() {
         update.models = Some(args.models.clone());
     }
-    update
 }
 
 #[allow(clippy::option_option)]
@@ -549,6 +603,8 @@ fn update_has_fields(update: &RoleUpdate) -> bool {
         || update.harness.is_some()
         || update.provider.is_some()
         || update.model.is_some()
+        || update.command.is_some()
+        || update.target.is_some()
         || update.thinking.is_some()
         || update.pid.is_some()
         || update.host.is_some()
@@ -579,6 +635,8 @@ fn print_role_text(view: &RoleView, full: bool) {
     println!("  harness:   {}", display_opt(view.harness.as_deref()));
     println!("  provider:  {}", display_opt(view.provider.as_deref()));
     println!("  model:     {}", display_opt(view.model.as_deref()));
+    println!("  command:   {}", display_command(view.command.as_deref()));
+    println!("  target:    {}", display_opt(view.target.as_deref()));
     println!("  thinking:  {}", display_opt(view.thinking.as_deref()));
     println!("  pid:       {}", display_pid(view.pid));
     println!("  host:      {}", display_opt(view.host.as_deref()));
@@ -621,6 +679,12 @@ fn print_role_text(view: &RoleView, full: bool) {
 
 fn display_opt(value: Option<&str>) -> &str {
     value.unwrap_or("(unset)")
+}
+
+/// One line for a command, whose newlines would otherwise break the column.
+/// The `--json` view carries the exact text.
+fn display_command(value: Option<&str>) -> String {
+    value.map_or_else(|| "(unset)".into(), |command| command.replace('\n', "\\n"))
 }
 
 fn display_pid(value: Option<u32>) -> String {
