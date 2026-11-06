@@ -785,13 +785,28 @@ or `retired` does not run.
   backoff from 60 seconds, doubling up to 32 minutes.
 - **Red is a code failure.** Only a non-zero exit of the command itself on a
   recorded commit is red.
+- **A red files one need.** With no red need open for the check, the pump
+  files one from the role to its reply recipient, marked `cadence`, with the
+  execution's `--target`, subject `<role>: <command> red on <target> at
+  <commit>`, a body naming the role, command, target, main, tested commit,
+  exit, attempt and the job's task (`vivi mail thread <task>` shows the run's
+  receipt and log), and done_when `the <role> check passes on <main>
+  (<command>)`. A later red while that need is open files nothing new: the
+  pump replies once on the need with the new commit, exit and task.
+- **A green closes it.** The next green closes the red need with `<role> is
+  green again at <commit>` and records the commit as the check's last green.
+  A red need someone else closed or withdrew counts as none: the next red
+  files a fresh one, and a green just records green.
 
-Not yet implemented at this version: a red result is recorded and staged
-(status `command-staged-report`), but filing a need for it is not built, and
-neither is the recovery report a green owes after a red. Both stay staged and
-hold the role's single run, so a check that went red does not run again until
-that reporting lands. Each cadence role's state is written to `status.txt`
-in the pump home on every tick.
+Until its report is paid, a result stays staged (status
+`command-staged-report`) and holds the role's single run. A send, reply or
+close that fails is logged and retried on the next tick. The send is
+crash-safe: a marker in `pump.db` is written before `need send`, so a crash or
+timeout never sends twice; when the new need's handle is unknown the pump
+raises `cadence-command-red-need-unknown`, sends nothing more, and adopts the
+need once the role's sent needs hold exactly one open need with that subject.
+Each cadence role's state is written to `status.txt` in the pump home on
+every tick.
 
 The pump home defaults to `<project>/.vivi/pump`. It stores `pump.db`,
 `log.txt`, `exceptions.txt`, job briefs, the integration clone and bounded tick

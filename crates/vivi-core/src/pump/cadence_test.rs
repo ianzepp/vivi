@@ -1342,3 +1342,307 @@ fn command_target_main_absent_is_an_exception_not_a_skip() {
     assert!(exception.reason.contains("absent"), "{}", exception.reason);
     assert!(bench.check().waiting_main.is_none());
 }
+
+// --- reporting staged command results -----------------------------------
+
+const SENDING_KEY: &str = "cadence-red-sending:checker";
+
+impl Bench {
+    /// Run the reporting step the way `prepare_due` does, over the project's
+    /// own pump mailspace.
+    fn report(&mut self) {
+        let open = crate::pump::record::open_mailspace(&self.ctx).expect("the bench mailspace");
+        report::report(&self.ctx, &mut self.st, &mut self.cadence, &open);
+    }
+
+    /// Launch, finish and collect one execution of `make check` on `app`.
+    fn run_check(&mut self, exit: i32, start: &str, at: u64) -> String {
+        let job = self.launch(Some("app"), "make check", at);
+        let receipt = format!("agent exit {exit} in 5s");
+        self.finish(&job, JobStatus::Finished, &receipt, at + 100, Some(start));
+        self.collect(at + 200);
+        job
+    }
+
+    /// Answer the next `need send` with a created line naming `handle`.
+    fn answer_send(&self, handle: &str) {
+        self.host
+            .reply("need send", 0, &format!("created checker {handle}\n"));
+    }
+
+    fn need_sends(&self) -> Vec<String> {
+        self.commands_with("need send")
+    }
+
+    fn commands_with(&self, fragment: &str) -> Vec<String> {
+        self.host
+            .commands()
+            .into_iter()
+            .filter(|command| command.contains(fragment))
+            .collect()
+    }
+
+    fn store(&self) -> crate::pump::store::PumpStore {
+        crate::pump::store::PumpStore::open(&self.ctx.home.join(crate::pump::store::DB_FILENAME))
+            .unwrap()
+    }
+
+    fn need_open(&self, need: &str) -> bool {
+        use crate::pump::flow::mail::{MailReader, MailspacePort, NeedStatus};
+        let port = MailspacePort {
+            mailspace: crate::pump::record::open_mailspace(&self.ctx).unwrap(),
+            pump_identity: String::from("checker"),
+        };
+        port.need_state(need).unwrap() == NeedStatus::Open
+    }
+
+    fn exceptions(&self) -> String {
+        std::fs::read_to_string(self.ctx.home.join("exceptions.txt")).unwrap_or_default()
+    }
+}
+
+#[test]
+fn command_red_files_one_need_and_records_its_handle() {
+    let mut bench = Bench::new();
+    let need = bench_need(&bench.space);
+    bench.answer_send(&need);
+    let start = full_sha('d');
+    let job = bench.run_check(1, &start, 1_000);
+    bench.report();
+
+    let sends = bench.need_sends();
+    assert_eq!(sends.len(), 1, "{sends:?}");
+    let send = &sends[0];
+    assert!(send.contains("--from checker"), "{send}");
+    let to = crate::pump::host::shell_quote(&bench.ctx.cfg.reply_to());
+    assert!(send.contains(&format!("--to {to}")), "{send}");
+    assert!(
+        send.contains("--subject 'checker: make check red on app at dddddddddd'"),
+        "{send}"
+    );
+    assert!(send.contains("--mark cadence"), "{send}");
+    assert!(send.contains("--target app"), "{send}");
+    assert!(
+        send.contains("--done-when 'the checker check passes on staging (make check)'"),
+        "{send}"
+    );
+    let body_path = send
+        .split("--body-file ")
+        .nth(1)
+        .and_then(|rest| rest.split_whitespace().next())
+        .unwrap()
+        .trim_matches('\'');
+    let body = std::fs::read_to_string(body_path).unwrap();
+    for fact in [
+        "role: checker",
+        "command: make check",
+        "target: app",
+        "main: staging",
+        "exit: 1",
+        "attempt: 1",
+    ] {
+        assert!(body.contains(fact), "{fact} in {body}");
+    }
+    assert!(body.contains(&format!("tested: {start}")), "{body}");
+    assert!(body.contains(&format!("task: {}", bench.task)), "{body}");
+    assert!(
+        body.contains(&format!("mail thread {}", bench.task)),
+        "{body}"
+    );
+
+    assert_eq!(bench.check().red_need.as_deref(), Some(need.as_str()));
+    assert!(bench.latest().awaiting.is_none());
+    assert!(bench.applied(&job));
+
+    // Paid once: another pass sends nothing more and drops the markers.
+    bench.report();
+    assert_eq!(bench.need_sends().len(), 1);
+    assert!(bench.store().main_state(SENDING_KEY).unwrap().is_none());
+}
+
+#[test]
+fn command_red_on_a_newer_commit_replies_on_the_open_need() {
+    let mut bench = Bench::new();
+    let need = bench_need(&bench.space);
+    bench.answer_send(&need);
+    bench.run_check(1, &full_sha('d'), 1_000);
+    bench.report();
+
+    let job = bench.run_check(2, &full_sha('f'), 5_000);
+    assert_eq!(
+        bench.latest().awaiting.as_deref(),
+        Some(result::AWAITING_RED)
+    );
+    bench.report();
+    assert_eq!(bench.need_sends().len(), 1, "no second need is filed");
+    let replies = bench.commands_with("mail reply");
+    assert_eq!(replies.len(), 1, "{replies:?}");
+    assert!(replies[0].contains(&format!("mail reply {need} --from checker")));
+    let body_path = replies[0]
+        .split("--body-file ")
+        .nth(1)
+        .and_then(|rest| rest.split_whitespace().next())
+        .unwrap()
+        .trim_matches('\'');
+    let body = std::fs::read_to_string(body_path).unwrap();
+    assert!(body.contains(&full_sha('f')), "{body}");
+    assert!(body.contains("exit: 2"), "{body}");
+    assert!(body.contains(&format!("task: {}", bench.task)), "{body}");
+    assert_eq!(bench.check().red_need.as_deref(), Some(need.as_str()));
+    assert!(bench.latest().awaiting.is_none());
+    assert!(bench.applied(&job));
+
+    bench.report();
+    assert_eq!(bench.commands_with("mail reply").len(), 1, "replied once");
+}
+
+#[test]
+fn command_green_after_red_closes_the_red_need() {
+    let mut bench = Bench::new();
+    let need = bench_need(&bench.space);
+    bench.answer_send(&need);
+    bench.run_check(1, &full_sha('d'), 1_000);
+    bench.report();
+    assert!(bench.need_open(&need));
+
+    let green = full_sha('e');
+    let job = bench.run_check(0, &green, 5_000);
+    assert_eq!(
+        bench.latest().awaiting.as_deref(),
+        Some(result::AWAITING_RECOVERY)
+    );
+    bench.report();
+
+    assert!(!bench.need_open(&need), "the recovery closes the red need");
+    let check = bench.check();
+    assert!(check.red_need.is_none());
+    assert_eq!(check.last_green_commit.as_deref(), Some(green.as_str()));
+    assert!(bench.latest().awaiting.is_none());
+    assert!(bench.applied(&job));
+    assert_eq!(bench.need_sends().len(), 1);
+}
+
+#[test]
+fn command_green_without_a_red_need_reports_nothing() {
+    let mut bench = Bench::new();
+    let job = bench.run_check(0, &full_sha('a'), 1_000);
+    bench.report();
+    assert!(bench.applied(&job));
+    assert!(bench.need_sends().is_empty());
+    assert!(bench.commands_with("mail reply").is_empty());
+    assert!(bench.check().red_need.is_none());
+}
+
+#[test]
+fn command_failed_red_send_stays_staged_and_retries() {
+    let mut bench = Bench::new();
+    let need = bench_need(&bench.space);
+    bench
+        .host
+        .reply_once("need send", 1, "error: mailspace locked");
+    bench.answer_send(&need);
+    let job = bench.run_check(1, &full_sha('d'), 1_000);
+    bench.report();
+
+    assert_eq!(bench.need_sends().len(), 1);
+    assert!(!bench.applied(&job), "an unpaid red keeps its slot");
+    assert_eq!(
+        bench.latest().awaiting.as_deref(),
+        Some(result::AWAITING_RED)
+    );
+    assert!(bench.check().red_need.is_none());
+    assert!(bench.store().main_state(SENDING_KEY).unwrap().is_none());
+
+    bench.report();
+    assert_eq!(bench.need_sends().len(), 2, "the next tick retries");
+    assert_eq!(bench.check().red_need.as_deref(), Some(need.as_str()));
+    assert!(bench.applied(&job));
+}
+
+#[test]
+fn command_sending_marker_from_a_crash_never_sends_twice() {
+    let mut bench = Bench::new();
+    let job = bench.run_check(1, &full_sha('d'), 1_000);
+    bench.store().set_main_state(SENDING_KEY, &job).unwrap();
+    bench.answer_send("never-used");
+    bench.report();
+
+    assert!(bench.need_sends().is_empty(), "no second send");
+    assert!(!bench.applied(&job));
+    assert!(
+        bench.exceptions().contains(report::RED_NEED_UNKNOWN),
+        "{}",
+        bench.exceptions()
+    );
+    bench.report();
+    assert!(bench.need_sends().is_empty());
+
+    // The send did land: its need, found by subject, settles the result.
+    let front = NeedFront::new(vec![String::from("the check passes")]);
+    let landed = bench
+        .space
+        .send(SendRequest {
+            from: "checker".into(),
+            to: vec!["pump".into()],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: String::from("checker: make check red on app at dddddddddd"),
+            body: need_body_with(&front, "red"),
+            role: String::from("needs"),
+            kind: Some(String::from("need")),
+            reply_to: None,
+        })
+        .unwrap()
+        .delivered
+        .remove(0)
+        .handle;
+    bench.report();
+    assert!(bench.need_sends().is_empty());
+    assert!(bench.check().red_need.is_some());
+    assert!(bench.applied(&job));
+
+    // The adopted handle is that need: the recovery closes it.
+    assert!(bench.need_open(&landed));
+    bench.run_check(0, &full_sha('e'), 5_000);
+    bench.report();
+    assert!(!bench.need_open(&landed));
+    assert!(bench.check().red_need.is_none());
+}
+
+#[test]
+fn command_red_after_an_external_close_files_a_new_need() {
+    let mut bench = Bench::new();
+    let first = bench_need(&bench.space);
+    bench.answer_send(&first);
+    bench.run_check(1, &full_sha('d'), 1_000);
+    bench.report();
+    bench
+        .space
+        .move_item("checker", &first, "done", Some("withdrawn"), "close", None)
+        .unwrap();
+
+    let second = bench_need(&bench.space);
+    bench.answer_send(&second);
+    let job = bench.run_check(1, &full_sha('f'), 5_000);
+    bench.report();
+
+    assert_eq!(bench.need_sends().len(), 2, "a fresh need is filed");
+    assert!(bench.commands_with("mail reply").is_empty());
+    assert_eq!(bench.check().red_need.as_deref(), Some(second.as_str()));
+    assert!(bench.applied(&job));
+
+    // A green over a red need closed elsewhere records green, closing nothing.
+    bench
+        .space
+        .move_item("checker", &second, "done", None, "close", None)
+        .unwrap();
+    let green = full_sha('a');
+    let job = bench.run_check(0, &green, 9_000);
+    bench.report();
+    assert!(bench.applied(&job));
+    assert!(bench.check().red_need.is_none());
+    assert_eq!(
+        bench.check().last_green_commit.as_deref(),
+        Some(green.as_str())
+    );
+}

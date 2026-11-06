@@ -6,8 +6,8 @@
 //! itself failed. Everything else — a missing tool, a lost slot, a receipt
 //! without an exit, an unreadable target tip — is the environment: it retries
 //! with backoff and files no need. A green that still owes a recovery report
-//! and a genuine red stay staged, holding the single-flight slot until the
-//! reporting slices supply their mail effect.
+//! and a genuine red stay staged, holding the single-flight slot until
+//! [`super::report`] files, replies on or closes the red need they owe.
 
 use crate::mailspace::{Mailspace, PoolEventRow};
 use crate::pump::flow::verify;
@@ -234,7 +234,7 @@ pub fn full_sha(sha: &str) -> bool {
 /// mailspace, so a tick without one consumes nothing. A green that owes no
 /// report and an environment failure are applied at once; a red and a green
 /// that owes a recovery report are staged, which keeps the single-flight slot
-/// closed until the reporting slice applies them.
+/// closed until [`super::report`] pays and applies them.
 pub fn collect(
     ctx: &Ctx,
     st: &mut State,
