@@ -475,3 +475,30 @@ fn a_silent_split_planner_still_goes_stuck() {
         exceptions(&ctx)
     );
 }
+
+#[test]
+fn parse_collected_reads_the_outcome_and_push_of_a_pool_collected_event() {
+    let latest = "## 2026-11-06T15:45:34+00:00 - a4a4f871 [mail captured]\n\
+        Subject: Re: [pump-job:cadence-x] cadence command x\n\n\
+        +++\n[pool]\nevent = \"pool_collected\"\n\
+        record = '{\"agent_rc\":\"1\",\"outcome\":\"finished\",\"push\":\"read_only_unchanged\",\"state\":\"done\"}'\n\
+        +++\n";
+    assert_eq!(
+        parse_collected(latest),
+        Some((
+            String::from("finished"),
+            String::from("read_only_unchanged")
+        ))
+    );
+}
+
+#[test]
+fn parse_collected_ignores_a_task_still_open_or_without_an_outcome() {
+    let dispatched =
+        "+++\n[pool]\nevent = \"pool_dispatched\"\nrecord = '{\"outcome\":\"finished\"}'\n+++\n";
+    assert_eq!(parse_collected(dispatched), None);
+    let odd =
+        "+++\n[pool]\nevent = \"pool_collected\"\nrecord = '{\"outcome\":\"running\"}'\n+++\n";
+    assert_eq!(parse_collected(odd), None);
+    assert_eq!(parse_collected("no receipt yet"), None);
+}

@@ -152,13 +152,86 @@ pub fn collect(ctx: &Ctx, st: &mut State) {
     } else {
         (String::new(), true)
     };
-    let seen = parse_reconcile(&out);
+    let mut seen = parse_reconcile(&out);
     if !reconcile_ok {
         // A failed round still reports what it collected; a collected result
         // is reported only once, so drop nothing that the round did report.
         ctx.log(&format!("pool reconcile failed: {}", tail(&out, 300)));
     }
+    for (task, found) in collected_elsewhere(ctx, st, &seen) {
+        seen.entry(task).or_insert(found);
+    }
     crate::pump::jobs::apply_reconcile(ctx, st, &seen);
+}
+
+/// How long a job runs before the pump looks for a collection made elsewhere.
+const PROBE_AFTER_SECS: u64 = 180;
+/// How often one job's task is read again while it stays unseen.
+const PROBE_EVERY_SECS: u64 = 120;
+
+/// Results another caller's `pool reconcile` collected.
+///
+/// `pool reconcile` reports a finished slot once, to whichever caller
+/// reconciles first; anyone may run it for the project (an operator's
+/// filler does, every minute). A dispatched job its own round did not report
+/// is therefore read from its task: the pool closes every dispatch with a
+/// `pool_collected` event whose record carries the outcome and the push
+/// detail, the same pair the reconcile line gives. Each job is read only
+/// after it has run a while, and then at most every two minutes, so a tick
+/// costs no subprocess per running job.
+fn collected_elsewhere(
+    ctx: &Ctx,
+    st: &mut State,
+    seen: &BTreeMap<String, (String, String)>,
+) -> Vec<(String, (String, String))> {
+    let now = ctx.now();
+    let mut found = Vec::new();
+    for job in st.jobs.values_mut() {
+        if job.status != crate::pump::jobs::JobStatus::Dispatched {
+            continue;
+        }
+        let Some(task) = job.task.clone() else {
+            continue;
+        };
+        if seen.contains_key(&task) {
+            continue;
+        }
+        let ran = now.saturating_sub(job.dispatched_at.unwrap_or(now));
+        let since_probe = job.probed_at.map_or(u64::MAX, |at| now.saturating_sub(at));
+        if ran < PROBE_AFTER_SECS || since_probe < PROBE_EVERY_SECS {
+            continue;
+        }
+        job.probed_at = Some(now);
+        if let Some(result) = parse_collected(&receipt_full(ctx, &task)) {
+            ctx.log(&format!(
+                "collect {task}: collected by another reconcile ({} {})",
+                result.0, result.1
+            ));
+            found.push((task, result));
+        }
+    }
+    found
+}
+
+/// The `(outcome, push)` pair of the `pool_collected` event in a task's
+/// latest message, or `None` when the latest message is not one.
+#[must_use]
+pub(crate) fn parse_collected(latest: &str) -> Option<(String, String)> {
+    let mut lines = latest.lines().map(str::trim);
+    lines.find(|line| *line == "event = \"pool_collected\"")?;
+    let record = lines.find_map(|line| line.strip_prefix("record = '"))?;
+    let record = record.strip_suffix('\'')?;
+    let value: serde_json::Value = serde_json::from_str(record).ok()?;
+    let outcome = value.get("outcome")?.as_str()?.to_owned();
+    if !matches!(outcome.as_str(), "finished" | "timeout" | "lost") {
+        return None;
+    }
+    let push = value
+        .get("push")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("-")
+        .to_owned();
+    Some((outcome, push))
 }
 
 /// `SPLIT_PROMPT` with the stored resplit record and unit handle substituted.

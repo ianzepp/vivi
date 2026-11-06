@@ -234,6 +234,10 @@ pub struct PoolJob {
     /// When the pump applied the result to its own lifecycle state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub applied_at: Option<u64>,
+    /// When the pump last read the task for a collection made by another
+    /// caller's `pool reconcile` (see `collect::collected_elsewhere`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub probed_at: Option<u64>,
     /// Pool dispatches refused by a `refused` porcelain line since the job
     /// was queued or last released.
     #[serde(default, skip_serializing_if = "is_zero_u32")]
@@ -281,6 +285,7 @@ impl From<JobSpec> for PoolJob {
             status: JobStatus::Pending,
             outcome: None,
             applied_at: None,
+            probed_at: None,
             dispatch_refusals: 0,
             held: None,
         }
