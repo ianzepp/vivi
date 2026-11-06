@@ -1086,3 +1086,32 @@ fn a_job_with_a_target_keeps_it() {
         "{command}"
     );
 }
+
+#[test]
+fn with_the_flow_off_only_cadence_jobs_are_dispatched() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = PumpConfig::default();
+    cfg.subsystems.flow = false;
+    let (ctx, host) = test_ctx(dir.path(), cfg);
+    let ctx = ctx.with_routing(merge_routing(None));
+    host.reply("pool status", 0, "slot primary bridge slot-1 free\n");
+    host.reply("task send", 0, "created hand a1b2c3d4\n");
+    host.reply(
+        "pool dispatch",
+        0,
+        "dispatched a1b2c3d4 bridge slot-1 model/default unit/task\n",
+    );
+    let mut store = Store::default();
+    let left_over = flow_job("flow-left-over", "build", "hand", "n1", 1);
+    let mut check = PoolJob::from(JobSpec::new("cad-1", "cadence", "merge", "check", "run"));
+    check.queued_at = 2;
+    for job in [left_over, check] {
+        store.jobs.insert(job.id.clone(), job);
+    }
+
+    assert_eq!(
+        dispatch_pending(&ctx, &mut store).unwrap(),
+        vec![String::from("cad-1")]
+    );
+    assert_eq!(store.jobs["flow-left-over"].status, JobStatus::Pending);
+}

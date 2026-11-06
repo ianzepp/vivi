@@ -22,7 +22,12 @@ use vivi_mail::letter::work::{JobFront, TaskFront};
 /// Returns filesystem and task-store errors that prevent writing a brief.
 pub fn dispatch_pending(ctx: &Ctx, st: &mut impl JobStore) -> Result<Vec<String>, VivariumError> {
     super::release::apply_releases(ctx, st)?;
-    if !st.jobs().values().any(dispatchable) {
+    // With the flow switched off, only cadence jobs go out: a flow job left
+    // pending from before the switch stays queued, untouched, until the flow
+    // is switched back on.
+    let flow_on = ctx.cfg.subsystems.flow;
+    let eligible = |job: &PoolJob| dispatchable(job) && (flow_on || is_cadence_job(job));
+    if !st.jobs().values().any(eligible) {
         return Ok(Vec::new());
     }
     let mut free = super::slots(ctx);
@@ -30,7 +35,7 @@ pub fn dispatch_pending(ctx: &Ctx, st: &mut impl JobStore) -> Result<Vec<String>
     let mut pending: Vec<PoolJob> = st
         .jobs()
         .iter()
-        .filter(|(_, job)| dispatchable(job))
+        .filter(|(_, job)| eligible(job))
         .map(|(_, job)| job.clone())
         .collect();
     pending.sort_by_key(|job| dispatch_order(job, &priorities));
@@ -61,6 +66,12 @@ pub const REFUSAL_LIMIT: u32 = 3;
 /// Whether a job waits for a pool: Pending and not held.
 fn dispatchable(job: &PoolJob) -> bool {
     job.status == JobStatus::Pending && job.held.is_none()
+}
+
+/// Whether a job comes from a role cadence (a command check, a model cadence
+/// run or a digest) rather than the flow.
+fn is_cadence_job(job: &PoolJob) -> bool {
+    matches!(job.kind.as_str(), "cadence" | "digest")
 }
 
 /// One job being offered to its candidate pools in order.
