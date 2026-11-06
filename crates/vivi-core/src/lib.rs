@@ -11,6 +11,7 @@ pub mod mcp;
 pub mod pool;
 pub mod pump;
 pub mod registry;
+pub mod results;
 pub mod role_schedule;
 pub mod role_status;
 pub mod routing;

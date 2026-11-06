@@ -854,6 +854,96 @@ rm -f "$tmp" "$tmp.out"
 exit "$rc"
 VIVI_SUBMIT_SCRIPT
 chmod 0755 "$AGENT_HOME/bin/vivi-submit" || finish workdir_missing
+# vivi-results: submit per-case outcomes to the server named by the job's
+# result token. Each suite gets one run; rows are JSON lines from a file or
+# standard input, posted in batches, and a final call closes the run.
+cat > "$AGENT_HOME/bin/vivi-results" <<'VIVI_RESULTS_SCRIPT' || finish workdir_missing
+# VIVI_RESULTS_CLIENT_START
+#!/bin/sh
+# vivi-results [--suite <name>] [file]: post JSON-line case rows and close
+# the run. The file is standard input when absent or `-`.
+# Environment: VIVI_RESULTS_URL (server base), VIVI_RESULTS_TOKEN (the job's
+# job token) or VIVI_RESULTS_RUN, optional VIVI_RESULTS_BATCH (rows per
+# POST, default 100).
+url=${VIVI_RESULTS_URL:-}
+job=${VIVI_RESULTS_JOB:-${VIVI_RESULTS_TOKEN:-}}
+run=${VIVI_RESULTS_RUN:-${VIVI_RESULTS_RUN_TOKEN:-}}
+# A token already naming a run goes straight to that run; a job token opens
+# the suite's run first.
+case "$job" in vivir_*) [ -n "$run" ] || run=$job; job= ;; esac
+suite=default
+file=-
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --suite) shift; [ $# -gt 0 ] || { echo "vivi-results: --suite needs a name" >&2; exit 2; }; suite=$1 ;;
+    --suite=*) suite=${1#--suite=} ;;
+    --help|-h)
+      echo "usage: vivi-results [--suite <name>] [file]" >&2
+      echo "the rows are JSON lines from [file], else standard input" >&2
+      exit 0 ;;
+    --) shift; [ $# -gt 0 ] && file=$1 ;;
+    -) file=- ;;
+    -*)
+      echo "vivi-results: unknown option $1" >&2; exit 2 ;;
+    *)
+      [ "$file" = - ] || { echo "vivi-results: only one input file" >&2; exit 2; }
+      file=$1 ;;
+  esac
+  shift
+done
+url=${url%/}
+[ -n "$url" ] || { echo "rejected: VIVI_RESULTS_URL is not set" >&2; exit 1; }
+tmp=$(mktemp "${TMPDIR:-/tmp}/vivi-results.XXXXXX") || exit 1
+out=$tmp.out
+trap 'rm -f "$tmp" "$out" "$tmp.batch"' EXIT
+if [ -z "$run" ]; then
+  [ -n "$job" ] || { echo "rejected: VIVI_RESULTS_TOKEN is not set" >&2; exit 1; }
+  code=$(curl -sS --max-time 60 -o "$out" -w '%{http_code}' \
+    -X POST -H "X-Vivi-Suite: $suite" --data '' "$url/v1/results/open/$job")
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "vivi-results: could not reach $url (curl exit $rc); run it again" >&2
+    exit 1
+  fi
+  if [ "$code" != 200 ]; then cat "$out" >&2; exit 1; fi
+  run=$(sed -n 's/.*"token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$out" | head -n 1)
+  [ -n "$run" ] || { echo "rejected: the open answer carried no run token" >&2; exit 1; }
+fi
+if [ "$file" = - ]; then cat > "$tmp" || exit 1; else cat "$file" > "$tmp" || exit 1; fi
+total=$(awk 'NF' "$tmp" | wc -l | tr -d ' ')
+batch=${VIVI_RESULTS_BATCH:-100}
+case "$batch" in ''|*[!0-9]*|0) batch=100 ;; esac
+post() {
+  code=$(curl -sS --max-time 60 -o "$out" -w '%{http_code}' \
+    --data-binary @"$1" "$url/v1/results/$run")
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "vivi-results: could not reach $url (curl exit $rc); run it again" >&2
+    return 1
+  fi
+  if [ "$code" != 200 ]; then cat "$out" >&2; return 1; fi
+  return 0
+}
+n=0
+: > "$tmp.batch"
+while IFS= read -r line || [ -n "$line" ]; do
+  [ -n "$line" ] || continue
+  printf '%s\n' "$line" >> "$tmp.batch"
+  n=$((n + 1))
+  if [ "$n" -ge "$batch" ]; then
+    post "$tmp.batch" || exit 1
+    : > "$tmp.batch"
+    n=0
+  fi
+done < "$tmp"
+[ "$n" -eq 0 ] || post "$tmp.batch" || exit 1
+printf '{"close":true}\n' > "$tmp.batch"
+post "$tmp.batch" >/dev/null || exit 1
+echo "accepted: $total rows"
+exit 0
+# VIVI_RESULTS_CLIENT_END
+VIVI_RESULTS_SCRIPT
+chmod 0755 "$AGENT_HOME/bin/vivi-results" || finish workdir_missing
 # mktemp, ahead of the system one on the agent's PATH: macOS /usr/bin/mktemp
 # ignores TMPDIR and always uses the machine's temp dir on the system volume,
 # so every `mktemp -d` an agent ran escaped its slot. GNU mktemp honours
@@ -880,12 +970,18 @@ chmod 0755 "$AGENT_HOME/bin/mktemp" || finish workdir_missing
 [ -n "${UNPRIVILEGED:-}" ] || chown -R hand:hand "$AGENT_HOME/bin"
 HARNESS_CMD=$(cat "$J/harness.cmd")
 HARNESS_CMD=${HARNESS_CMD//\/home\/hand\//$AGENT_HOME/}
+RESULTS_JOB=${RESULTS_JOB:-${RESULTS_TOKEN:-}}
+RESULTS_RUN=${RESULTS_RUN:-${RESULTS_RUN_TOKEN:-}}
 
 # Clean environment: HOME, PATH, and only the names the config lists. The
 # pool's commit identity travels under its Git names, so `git merge` and
 # `git commit` work unconfigured; it is not a secret.
 HARNESS_ENV=("HOME=$AGENT_USER_HOME" "PATH=$AGENT_HOME/bin:$PATH" "VIVI_AGENT_JOB=$JOB")
 HARNESS_ENV+=("VIVI_REPLY_OUT=$REPLY_OUT")
+# A dispatched check's result endpoint and one-run job token, when supplied.
+[ -z "${RESULTS_URL:-}" ] || HARNESS_ENV+=("VIVI_RESULTS_URL=$RESULTS_URL")
+[ -z "$RESULTS_JOB" ] || HARNESS_ENV+=("VIVI_RESULTS_JOB=$RESULTS_JOB")
+[ -z "$RESULTS_RUN" ] || HARNESS_ENV+=("VIVI_RESULTS_RUN=$RESULTS_RUN")
 HARNESS_ENV+=("GIT_AUTHOR_NAME=$COMMIT_NAME" "GIT_AUTHOR_EMAIL=$COMMIT_EMAIL")
 HARNESS_ENV+=("GIT_COMMITTER_NAME=$COMMIT_NAME" "GIT_COMMITTER_EMAIL=$COMMIT_EMAIL")
 [ -z "${VIVI_SLOT_ROOT:-}" ] || HARNESS_ENV+=("VIVI_SLOT_ROOT=$VIVI_SLOT_ROOT")

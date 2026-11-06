@@ -26,6 +26,7 @@ pub mod projects;
 pub mod projects_api;
 pub mod pump_health;
 pub mod reply_check;
+pub mod results;
 pub mod rooms;
 pub mod safety;
 
@@ -190,6 +191,9 @@ fn service_routes(router: Router<AppState>) -> Router<AppState> {
             "/v1/reply/check/{kind}",
             post(reply_check::reply_check_handler),
         )
+        // A dispatched job opens one run per suite, then posts case rows to it.
+        .route("/v1/results/open/{token}", post(results::open_handler))
+        .route("/v1/results/{token}", post(results::submit_handler))
         .route(
             "/v1/auth/machine/challenge",
             post(machine_auth::challenge_handler),
