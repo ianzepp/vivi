@@ -374,6 +374,27 @@ pub enum NeedCommand {
         project: Option<PathBuf>,
     },
 
+    /// Change a need's repository target after it was sent
+    Retarget {
+        /// Need handle or unambiguous prefix
+        handle: String,
+
+        /// Repository target to move the need to (a `[pump.targets.<id>]` key)
+        target: String,
+
+        /// Why the need was retargeted; recorded on the retarget letter
+        #[arg(long)]
+        reason: Option<String>,
+
+        /// Identity writing the retarget: the need's author by default
+        #[arg(long = "for")]
+        for_identity: Option<String>,
+
+        /// Project root to use
+        #[arg(long)]
+        project: Option<PathBuf>,
+    },
+
     /// Assign needs to a local role or another member mailspace's role
     Assign {
         /// Need handles to assign (each assignment is its own reply letter)

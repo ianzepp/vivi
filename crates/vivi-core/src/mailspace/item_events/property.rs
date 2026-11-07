@@ -9,13 +9,14 @@
 //!
 //! ```text
 //! In-Reply-To: <item Message-ID>
-//! X-Vivi-Event: absorbed | marked | unmarked | bound
+//! X-Vivi-Event: absorbed | marked | unmarked | bound | retargeted
 //!                | dependency-added | dependency-removed
 //! X-Vivi-Event-Of: <item Message-ID>
 //! X-Vivi-Event-At: <RFC 3339>                 (optional, all kinds)
 //! X-Vivi-Event-Slug: <slug>                   (marked / unmarked)
 //! X-Vivi-Event-Unit: <unit Message-ID>        (bound; one header per unit)
 //! X-Vivi-Event-State: done | open             (absorbed)
+//! X-Vivi-Event-Target: <target id>            (retargeted)
 //! X-Vivi-Event-Dep: <dependency Message-ID>   (dependency-*; one header per dependency)
 //! ```
 //!
@@ -64,6 +65,7 @@ const EVENT_UNIT_HEADER: &str = "X-Vivi-Event-Unit";
 const EVENT_DEP_HEADER: &str = "X-Vivi-Event-Dep";
 const EVENT_SLUG_HEADER: &str = "X-Vivi-Event-Slug";
 const EVENT_STATE_HEADER: &str = "X-Vivi-Event-State";
+const EVENT_TARGET_HEADER: &str = crate::mailspace::need_target::EVENT_TARGET_HEADER;
 
 /// What a property event puts on an item.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,6 +82,8 @@ pub enum PropertyKind {
     DependencyAdded,
     /// The item lost its prerequisite edges to the named dependencies.
     DependencyRemoved,
+    /// The item's repository target changed after the send.
+    Retargeted,
 }
 
 impl PropertyKind {
@@ -93,6 +97,7 @@ impl PropertyKind {
             Self::Bound => "bound",
             Self::DependencyAdded => "dependency-added",
             Self::DependencyRemoved => "dependency-removed",
+            Self::Retargeted => "retargeted",
         }
     }
 
@@ -104,6 +109,7 @@ impl PropertyKind {
             "bound" => Some(Self::Bound),
             "dependency-added" => Some(Self::DependencyAdded),
             "dependency-removed" => Some(Self::DependencyRemoved),
+            "retargeted" => Some(Self::Retargeted),
             _ => None,
         }
     }
@@ -133,6 +139,8 @@ pub(crate) struct PropertyEvent {
     /// The normalized dependency `Message-ID`s of a `dependency-added` or
     /// `dependency-removed` event.
     pub(crate) deps: Vec<String>,
+    /// The `X-Vivi-Event-Target` of a `retargeted` event.
+    pub(crate) target: Option<String>,
 }
 
 /// Read a property event from a letter's bytes; `None` for a letter that is
@@ -146,6 +154,7 @@ pub(crate) fn parse_property_event(bytes: &[u8]) -> Option<PropertyEvent> {
     let mut state = None;
     let mut units: Vec<String> = Vec::new();
     let mut deps: Vec<String> = Vec::new();
+    let mut target = None;
     for header in parsed.headers() {
         let HeaderValue::Text(text) = header.value() else {
             continue;
@@ -161,6 +170,8 @@ pub(crate) fn parse_property_event(bytes: &[u8]) -> Option<PropertyEvent> {
             slug = Some(text.trim().to_string());
         } else if name.eq_ignore_ascii_case(EVENT_STATE_HEADER) {
             state = Some(text.trim().to_ascii_lowercase());
+        } else if name.eq_ignore_ascii_case(EVENT_TARGET_HEADER) {
+            target = Some(text.trim().to_string()).filter(|word| !word.is_empty());
         } else if name.eq_ignore_ascii_case(EVENT_UNIT_HEADER)
             && let Some(id) = normalize_message_id(text)
             && !units.contains(&id)
@@ -187,6 +198,7 @@ pub(crate) fn parse_property_event(bytes: &[u8]) -> Option<PropertyEvent> {
         PropertyKind::Bound => !units.is_empty(),
         PropertyKind::DependencyAdded | PropertyKind::DependencyRemoved => !deps.is_empty(),
         PropertyKind::Absorbed => matches!(state.as_deref(), Some("done" | "open")),
+        PropertyKind::Retargeted => target.is_some(),
     };
     carries_payload.then_some(PropertyEvent {
         kind,
@@ -198,6 +210,7 @@ pub(crate) fn parse_property_event(bytes: &[u8]) -> Option<PropertyEvent> {
         units,
         state,
         deps,
+        target,
     })
 }
 
@@ -421,6 +434,40 @@ pub(super) fn property_chain(
         }
     }
     Ok(chain)
+}
+
+/// The target the newest counted `retargeted` letter names for `item`, or
+/// `None` when no retarget counts. A retarget dated after the item's seal is
+/// not part of its history; one dated before it is. The newest is judged by
+/// `(instant, Message-ID)`, the order every property letter settles by, so
+/// every member that holds the letters reports the same target.
+pub(in crate::mailspace) fn retarget_target(
+    mailspace: &Mailspace,
+    storage: &Storage,
+    item: &HeldItem,
+) -> Result<Option<String>, VivariumError> {
+    let chain = property_chain(mailspace, storage, item)?;
+    let events: Vec<PropertyEvent> = match earliest_absorb(&chain.events) {
+        Some(seal) => chain
+            .events
+            .iter()
+            .filter(|event| event.kind != PropertyKind::Absorbed)
+            .filter(|event| (event.at, &event.id) < (seal.at, &seal.id))
+            .cloned()
+            .collect(),
+        None => chain.events,
+    };
+    Ok(newest_retarget(&events).map(str::to_string))
+}
+
+/// The target of the newest `retargeted` letter in `events`, if any.
+fn newest_retarget(events: &[PropertyEvent]) -> Option<&str> {
+    events
+        .iter()
+        .filter(|event| event.kind == PropertyKind::Retargeted)
+        .filter_map(|event| event.target.as_deref().map(|target| (event, target)))
+        .max_by(|(left, _), (right, _)| (left.at, &left.id).cmp(&(right.at, &right.id)))
+        .map(|(_, target)| target)
 }
 
 /// The earliest counted `absorbed` event among `events` — smallest `at`,

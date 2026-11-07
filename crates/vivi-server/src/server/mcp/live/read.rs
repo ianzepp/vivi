@@ -347,8 +347,14 @@ pub(super) fn show(h: &Hosted, arguments: &Value) -> Result<Value, ToolError> {
     } else {
         None
     };
+    let mut item = item_row(&kind, &view, &events, deps);
+    if kind == "need"
+        && let Some(target) = h.ms.need_target(handle).map_err(lib_error)?
+    {
+        item["target"] = json!(target);
+    }
     Ok(json!({
-        "item": item_row(&kind, &view, &events, deps),
+        "item": item,
         "text": render_message(&raw).unwrap_or_default(),
         "letter": to_json_message(&view.message_id, &raw).ok(),
     }))
@@ -392,6 +398,9 @@ pub(super) fn thread(h: &Hosted, arguments: &Value) -> Result<Value, ToolError> 
             }
             if let Some(commit) = &m.close_commit {
                 item["close_commit"] = json!(commit);
+            }
+            if let Some(target) = &m.target {
+                item["target"] = json!(target);
             }
             item
         })

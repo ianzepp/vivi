@@ -17,6 +17,7 @@
 //! pump is another process on the same files).
 
 mod config_write;
+mod need_retarget;
 mod origin;
 mod pool_bands;
 mod pump;
@@ -44,6 +45,7 @@ use super::tools::ToolError;
 use config_write::{
     config_migrate, config_set, config_unset, pool_allow_set, target_add, target_remove,
 };
+use need_retarget::need_retarget;
 use pool_bands::pool_bands;
 use pump::{pump_control, pump_rungs};
 use pump_action::{pump_action, pump_reset};
@@ -85,6 +87,7 @@ pub(super) fn operator_tool(name: &str) -> Option<OperatorTool> {
         "pump_list" => Some(pump_list),
         "pump_show" => Some(pump_show),
         "pump_priority" => Some(pump_priority),
+        "need_retarget" => Some(need_retarget),
         "pump_log" => Some(views::pump_log),
         "pump_action" => Some(pump_action),
         "pump_reset" => Some(pump_reset),

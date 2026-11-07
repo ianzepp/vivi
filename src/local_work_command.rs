@@ -148,6 +148,25 @@ pub(crate) fn handle_need_command(command: &NeedCommand) -> Result<(), VivariumE
         NeedCommand::Mark(command) => mark_item(command, "need", true)?,
         NeedCommand::Unmark(command) => mark_item(command, "need", false)?,
         NeedCommand::Depend(command) => depend_item(command, "need")?,
+        NeedCommand::Retarget {
+            handle,
+            target,
+            reason,
+            for_identity,
+            project,
+        } => {
+            let mailspace = Mailspace::discover(project.as_deref())?;
+            let write = mailspace.retarget_need(
+                for_identity.as_deref(),
+                handle,
+                target,
+                reason.as_deref(),
+            )?;
+            println!("retargeted {} to {}", write.handle, write.target);
+            if let Some(event) = &write.event {
+                println!("event {event}");
+            }
+        }
     }
     Ok(())
 }
@@ -740,6 +759,9 @@ fn show_need(
     vivi_core::mailspace::print_thread(&mailspace, handle, false, 50, 50, json, latest)?;
     if json || latest {
         return Ok(());
+    }
+    if let Some(target) = mailspace.need_target(handle)? {
+        println!("  target   {target}");
     }
     let dependencies = mailspace.backlog_dependencies(handle)?;
     if !dependencies.is_empty() {

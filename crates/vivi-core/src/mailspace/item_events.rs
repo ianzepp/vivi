@@ -68,7 +68,7 @@ mod pump_authority;
 
 pub(super) use dependency::copy_nodes;
 pub(super) use held::{HeldItem, held_item};
-pub(crate) use property::{PropertyKind, parse_property_event};
+pub(in crate::mailspace) use property::{PropertyKind, parse_property_event, retarget_target};
 
 pub(crate) const EVENT_HEADER: &str = "X-Vivi-Event";
 const EVENT_OF_HEADER: &str = "X-Vivi-Event-Of";

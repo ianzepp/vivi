@@ -43,12 +43,29 @@ pub(super) fn gate(
     let mut gated =
         letter_gate::gate(word, body).map_err(|error| VivariumError::Message(error.to_string()))?;
     let mut body = body.to_string();
+    let mut rerender_needed = false;
     if let Some(letter) = gated.letter.as_mut()
         && let Front::Need(front) = &mut letter.front
-        && (front.serves.is_some() || front.explores.is_some())
     {
-        let storage = mailspace.storage()?;
-        canonical_wants(&storage, front)?;
+        // Every send path composes a need here, so the target is resolved
+        // once, for all of them: the target the sender named must be one the
+        // project configures; a send that names none takes the pump's primary
+        // target, and a project with several targets and no primary refuses.
+        let resolved = super::super::need_target::resolve_send_target(
+            &mailspace.config,
+            front.target.as_deref(),
+        )?;
+        if resolved != front.target {
+            front.target = resolved;
+            rerender_needed = true;
+        }
+        if front.serves.is_some() || front.explores.is_some() {
+            let storage = mailspace.storage()?;
+            canonical_wants(&storage, front)?;
+            rerender_needed = true;
+        }
+    }
+    if rerender_needed && let Some(letter) = gated.letter.as_ref() {
         body = rerender(letter)?;
     }
     Ok(Gated {

@@ -12,6 +12,7 @@ const NO_DONE_WHEN: &str =
 fn need_flags_store_front_matter_and_dispatch_with_two_clauses() {
     let project = tempfile::tempdir().unwrap();
     init_roster(project.path());
+    add_target(project.path(), "vivi");
     let root = project.path().to_str().unwrap();
 
     let sent = vivi(&send_args(
@@ -192,6 +193,18 @@ fn init_roster(project: &Path) {
     }
 }
 
+/// Declare one `[pump.targets.<id>]` repository target in the project file.
+fn add_target(project: &Path, id: &str) {
+    let path = project.join(".vivi/mailspace.toml");
+    let mut raw = std::fs::read_to_string(&path).unwrap();
+    raw.push_str("\n[pump.targets.");
+    raw.push_str(id);
+    raw.push_str("]\npath = \"");
+    raw.push_str(id);
+    raw.push_str("\"\n");
+    std::fs::write(&path, raw).unwrap();
+}
+
 fn vivi(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_vivi"))
         .args(args)
@@ -269,4 +282,42 @@ fn vivi_ok(args: &[&str]) -> Output {
     let output = vivi(args);
     assert_success(&output);
     output
+}
+
+#[test]
+fn need_retarget_changes_the_shown_target_and_refuses_an_unknown_one() {
+    let project = tempfile::tempdir().unwrap();
+    init_roster(project.path());
+    add_target(project.path(), "default");
+    add_target(project.path(), "beta");
+    let root = project.path().to_str().unwrap();
+
+    let sent = vivi_ok(&send_args("need", root, &["--done-when", "d"]));
+    let need = handle_after(&stdout(&sent), "created cto");
+    let shown = stdout(&vivi(&["need", "show", &need, "--project", root]));
+    assert!(shown.contains("target   default"), "{shown}");
+
+    let moved = vivi_ok(&[
+        "need",
+        "retarget",
+        &need,
+        "beta",
+        "--reason",
+        "moved",
+        "--project",
+        root,
+    ]);
+    assert!(stdout(&moved).contains("retargeted"), "{}", stdout(&moved));
+    let shown = stdout(&vivi(&["need", "show", &need, "--project", root]));
+    assert!(shown.contains("target   beta"), "{shown}");
+
+    let refused = vivi(&["need", "retarget", &need, "gamma", "--project", root]);
+    assert!(!refused.status.success());
+    assert!(
+        stderr(&refused).contains("beta, default"),
+        "{}",
+        stderr(&refused)
+    );
+    let shown = stdout(&vivi(&["need", "show", &need, "--project", root]));
+    assert!(shown.contains("target   beta"), "{shown}");
 }

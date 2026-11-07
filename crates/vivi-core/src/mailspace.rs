@@ -48,6 +48,7 @@ mod mermaid;
 #[cfg(test)]
 #[path = "mailspace/message_id_test.rs"]
 mod message_id_test;
+mod need_target;
 mod pool_record;
 mod pump_action;
 pub mod pump_note;
@@ -116,6 +117,7 @@ pub use marks::{MarkWrite, folded_marks, marks_include, validate_marks, validate
 pub use merge::{MailspaceImportOptions, MailspaceImportReport, import_mailspace};
 pub use mermaid::is_gate_kind;
 pub use mermaid::{MermaidEdge, MermaidFlowchart, MermaidNode, parse_flowchart};
+pub use need_target::NeedRetarget;
 pub use pool_record::{POOL_EVENT_TYPES, PoolEventRow, PoolTask, order_notes};
 pub use pump_action::{PumpAction, PumpActionKind, PumpActionRequest, UnreadableAction};
 pub use pump_record::{PumpRecord, PumpState};

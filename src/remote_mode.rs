@@ -110,6 +110,7 @@ fn command_project(command: &Command) -> Option<&Path> {
     match command {
         Command::Need { command } => match command {
             NeedCommand::Send(c) => c.send.project.as_deref(),
+            NeedCommand::Retarget { project, .. } => project.as_deref(),
             NeedCommand::List { project, .. }
             | NeedCommand::Show { project, .. }
             | NeedCommand::Done { project, .. }
@@ -199,20 +200,64 @@ fn translate_need(command: &NeedCommand, a: &mut Args) -> Result<&'static str, V
             put(a, "commit", commit.as_deref());
             "done"
         }
+        _ => return translate_need_move(command, a),
+    };
+    Ok(tool)
+}
+
+/// The need subcommands that move an existing need: `reopen` and `retarget`,
+/// each the MCP tool of the same name.
+fn translate_need_move(command: &NeedCommand, a: &mut Args) -> Result<&'static str, VivariumError> {
+    let tool = match command {
         NeedCommand::Reopen {
             handle,
             for_identity,
             note,
             ..
         } => {
-            a.insert("handle".into(), json!(handle));
-            a.insert("for".into(), json!(for_identity));
-            put(a, "note", note.as_deref());
+            put_reopen(a, handle, for_identity, note.as_deref());
             "reopen"
+        }
+        NeedCommand::Retarget {
+            handle,
+            target,
+            reason,
+            for_identity,
+            ..
+        } => {
+            put_retarget(
+                a,
+                handle,
+                target,
+                reason.as_deref(),
+                for_identity.as_deref(),
+            );
+            "need_retarget"
         }
         _ => return Err(unmapped(command_name(command))),
     };
     Ok(tool)
+}
+
+/// The arguments of `need reopen`.
+fn put_reopen(a: &mut Args, handle: &str, for_identity: &str, note: Option<&str>) {
+    a.insert("handle".into(), json!(handle));
+    a.insert("for".into(), json!(for_identity));
+    put(a, "note", note);
+}
+
+/// The arguments of `need retarget`.
+fn put_retarget(
+    a: &mut Args,
+    handle: &str,
+    target: &str,
+    reason: Option<&str>,
+    for_identity: Option<&str>,
+) {
+    a.insert("handle".into(), json!(handle));
+    a.insert("target".into(), json!(target));
+    put(a, "reason", reason);
+    put(a, "for", for_identity);
 }
 
 fn translate(command: &Command) -> Result<(&'static str, Args), VivariumError> {

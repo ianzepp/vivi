@@ -10,6 +10,15 @@ fn roster() -> (Mailspace, tempfile::TempDir) {
 }
 
 fn send_need(mailspace: &Mailspace, subject: &str) -> String {
+    // A pump with several explicit targets refuses a need that names none, so
+    // the helper names the first one; a legacy pump names none.
+    let mut front = vivi_mail::letter::work::NeedFront::new(vec![String::from("it works")]);
+    front.target = mailspace
+        .config
+        .pump
+        .as_ref()
+        .filter(|pump| !pump.targets.is_empty())
+        .and_then(|pump| pump.target_configs().into_keys().next());
     mailspace
         .send(SendRequest {
             from: "operator".into(),
@@ -17,7 +26,7 @@ fn send_need(mailspace: &Mailspace, subject: &str) -> String {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: subject.into(),
-            body: vivi_mail::letter::fixture::need_body(&["it works"], ""),
+            body: vivi_mail::letter::fixture::need_body_with(&front, ""),
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,

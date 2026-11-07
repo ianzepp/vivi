@@ -36,6 +36,11 @@ pub struct MailspaceThreadMessage {
     /// Commit recorded by the item's close, when present.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub close_commit: Option<String>,
+    /// The need's current repository target: the newest retarget letter's,
+    /// else the one its front matter was sent with. Absent for a non-need
+    /// and a need that names no target.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
 }
 
 struct ThreadCandidate {
@@ -184,7 +189,21 @@ impl Mailspace {
             storage.links_for_thread(&seed.content_id)?
         };
         let included = connected_content_ids(&seed.content_id, &links, limit, max_depth);
-        assemble_thread(&storage, &seed, &links, included)
+        let mut messages = assemble_thread(&storage, &seed, &links, included)?;
+        // A need's target is one fact of the whole item, not of one copy, and
+        // it is folded from the retarget letters when the view is built.
+        if messages
+            .iter()
+            .any(|message| message.kind.as_deref() == Some("need"))
+        {
+            let target = self.need_target(handle)?;
+            for message in &mut messages {
+                if message.kind.as_deref() == Some("need") {
+                    message.target.clone_from(&target);
+                }
+            }
+        }
+        Ok(messages)
     }
 
     /// The thread's inventory as outline rows: the anchor message first,
@@ -448,6 +467,7 @@ fn thread_message(
         marks: candidate.marks.clone(),
         close_branch: candidate.close_branch.clone(),
         close_commit: candidate.close_commit.clone(),
+        target: None,
     }
 }
 

@@ -550,6 +550,16 @@ fn tools_list() -> Value {
                 "required": ["handle"],
                 "additionalProperties": false
             })),
+            tool("need_retarget", "Hosted projects only, operator only. Change the repository target of a need after it was sent, as `vivi need retarget` does. The change is a `retargeted` property letter on the need, so the newest retarget counts on every member and `need show` reports it. A target the project does not configure is refused, naming the valid targets; a target the need already has writes nothing. Authorized like pump_send: an API key minted by the host's own member acting as a role of kind operator. Returns {handle, target, previous?, event?, changed}.", json!({
+                "type": "object",
+                "properties": {
+                    "handle": { "type": "string", "description": "The need to retarget" },
+                    "target": { "type": "string", "description": "The repository target to move the need to (a `[pump.targets.<id>]` key)" },
+                    "reason": { "type": "string", "description": "Why the need was retargeted; recorded on the retarget letter" }
+                },
+                "required": ["handle", "target"],
+                "additionalProperties": false
+            })),
             tool("pump", "Hosted projects only. Read-only pump health: verdict ok/degraded/stalled/unknown with reasons, control and writer state, last tick, recent exceptions. Pass a previous `as_of` as `since` for `changed_since`.", json!({
                 "type": "object",
                 "properties": {
