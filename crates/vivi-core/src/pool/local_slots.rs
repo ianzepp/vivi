@@ -172,26 +172,26 @@ pub fn slot_id_ok(id: &str) -> bool {
             .is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
 }
 
-/// List only the direct slot directories of one resolved pool site.
+/// List only the direct slot directories of one resolved pool site: those
+/// of its pool and of that pool's `-doctor` self-test pool. Each record
+/// carries its pool mark; callers tell the two pools apart by it.
 ///
 /// # Errors
-/// Returns an error if the pool directory cannot be read.
+/// Returns an error if a pool directory cannot be read.
 pub fn list(site: &super::local_site::LocalSite) -> Result<Vec<MachineRecord>, VivariumError> {
     let mut found = Vec::new();
-    for slot in subdirs(&site.pool_dir)? {
-        let Some(name) = slot.file_name().and_then(|n| n.to_str()) else {
-            continue;
-        };
-        if !name.starts_with("slot-") || !is_known(&slot) {
-            continue;
-        }
-        let id = if site.relative {
-            format!("{}/{name}", site.pool)
-        } else {
-            format!("{}/{}/{name}", site.mailspace, site.pool)
-        };
-        if slot_id_ok(&id) {
-            found.push(record_of(&slot, &id));
+    for pool in site.pools() {
+        for slot in subdirs(&site.dir_of(&pool))? {
+            let Some(name) = slot.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            if !name.starts_with("slot-") || !is_known(&slot) {
+                continue;
+            }
+            let id = format!("{}{name}", site.id_prefix(&pool));
+            if slot_id_ok(&id) {
+                found.push(record_of(&slot, &id));
+            }
         }
     }
     Ok(found)

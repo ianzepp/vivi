@@ -124,16 +124,11 @@ impl LocalProvider {
     /// The directory of slot `id`, which must be a slot id.
     fn dir(&self, id: &str) -> Result<PathBuf, VivariumError> {
         let site = self.site()?;
-        let prefix = if site.relative {
-            format!("{}/", site.pool)
-        } else {
-            format!("{}/{}/", site.mailspace, site.pool)
-        };
-        if slots::slot_id_ok(id)
-            && id
-                .strip_prefix(&prefix)
+        let in_pool = |pool: &String| {
+            id.strip_prefix(&site.id_prefix(pool))
                 .is_some_and(|slot| slot.starts_with("slot-"))
-        {
+        };
+        if slots::slot_id_ok(id) && site.pools().iter().any(in_pool) {
             Ok(site.root.join(id))
         } else {
             Err(VivariumError::Message(format!(
@@ -162,7 +157,7 @@ fn new_slot_id(site: &local_site::LocalSite, spec: &CreateSpec) -> Result<String
     };
     let mailspace = field(META_MAILSPACE)?;
     let pool = field(META_POOL)?;
-    if mailspace.as_str() != site.mailspace || pool.as_str() != site.pool {
+    if mailspace.as_str() != site.mailspace || !site.serves(pool) {
         return Err(VivariumError::Message(
             "slot spec does not belong to this local pool".into(),
         ));

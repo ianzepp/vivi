@@ -58,6 +58,40 @@ pub fn resolve(
     })
 }
 
+impl LocalSite {
+    /// The pools whose slots this site holds: its own pool and that pool's
+    /// `-doctor` self-test pool, the same pair every other provider serves.
+    #[must_use]
+    pub fn pools(&self) -> [String; 2] {
+        [
+            self.pool.clone(),
+            format!("{}{}", self.pool, super::slot::DOCTOR_SUFFIX),
+        ]
+    }
+
+    /// Whether `pool` is one of [`Self::pools`].
+    #[must_use]
+    pub fn serves(&self, pool: &str) -> bool {
+        self.pools().iter().any(|served| served == pool)
+    }
+
+    /// The id prefix of slots of `pool` (`<pool>/` or `<mailspace>/<pool>/`).
+    #[must_use]
+    pub fn id_prefix(&self, pool: &str) -> String {
+        if self.relative {
+            format!("{pool}/")
+        } else {
+            format!("{}/{pool}/", self.mailspace)
+        }
+    }
+
+    /// The directory that holds the slots of `pool`.
+    #[must_use]
+    pub fn dir_of(&self, pool: &str) -> PathBuf {
+        self.root.join(self.id_prefix(pool))
+    }
+}
+
 /// A project-relative root must stay inside the project and use plain parts.
 fn refuse_unsafe_relative(
     root: &str,
