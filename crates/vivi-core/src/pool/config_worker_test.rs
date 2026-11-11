@@ -52,3 +52,32 @@ fn host_kind_and_size_are_checked() {
         assert!(said.iter().any(|m| m.contains(want)), "{text:?}: {said:?}");
     }
 }
+
+#[test]
+fn persistent_cargo_is_opt_in_and_its_controls_validate() {
+    let off = worker("host = 'studio'\nkind = 'dir'\n");
+    assert!(!off.cargo_target.enabled);
+    assert_eq!(off.request(), "kind=dir size_gib=0");
+    let on = worker(
+        "host = 'studio'\nkind = 'apfs'\nsize_gib = 32\n[cargo_target]\nenabled = true\nroot = '/Volumes/Lanes'\ncap_gib = 48\nsccache = true\n",
+    );
+    on.validate("studio").unwrap();
+    assert!(
+        on.request()
+            .contains("cargo_root=/Volumes/Lanes\ncargo_cap_gib=48\ncargo_sccache=1")
+    );
+    for setting in [
+        "cap_gib = 0",
+        "cap_gib = 1025",
+        "root = '/'",
+        "root = 'relative'",
+        "root = '/a/../b'",
+        "root = '/a/./b'",
+        "cap = 32",
+    ] {
+        let cfg = worker(&format!(
+            "kind = 'dir'\n[cargo_target]\nenabled = true\n{setting}\n"
+        ));
+        assert!(cfg.validate("p").is_err(), "{setting}");
+    }
+}

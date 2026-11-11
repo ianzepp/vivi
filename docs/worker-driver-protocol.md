@@ -1,7 +1,7 @@
 # Worker driver
 
 Status: implemented for macOS workers, 2026-10-21 (`provider = "worker"`,
-`src/pool/worker.rs`, `src/pool/worker-macos.sh`). The repo wins wherever
+`crates/vivi-core/src/pool/worker.rs`, `crates/vivi-core/src/pool/worker-macos.sh`). The repo wins wherever
 it disagrees with this document.
 
 ## Roles
@@ -26,8 +26,9 @@ it disagrees with this document.
    every outcome.
 2. Stopping a slot means ending what uses its boundary; there is no hunting
    for processes elsewhere.
-3. Every boundary starts cold and clean: no warm builds, no caches (operator
-   ruling, 2026-10-21).
+3. Every boundary starts clean. By default its build output is cold too. An
+   opt-in per-pool Cargo target cache lives outside the boundary; nothing
+   else from a job is reused.
 4. The driver deletes only what its ledger recorded and its marks name.
 5. A request the worker cannot hold now fails as `no free slot: <reason>`;
    the pump counts the pool as full and places the job on another pool.
@@ -61,7 +62,9 @@ differences:
   pool and that pool's `-doctor` self-test pool alike. Callers tell slots
   apart by their pool mark.
 
-`boot-slot.sh` and `job-run.sh` run unchanged inside the boundary.
+`boot-slot.sh` and `job-run.sh` run inside the boundary. When configured,
+they source the Cargo cache controls after checkout, before repository seed
+commands or the harness can build.
 
 ## Worker settings
 
@@ -79,6 +82,57 @@ much, never which jobs:
 The root itself (default `~/vivi-worker`) holds the lock, the ledger and the
 mount points. It belongs on the internal disk, because macOS will not mount a
 volume at a path inside another external volume.
+
+## Persistent Cargo output (opt-in)
+
+Configure each pool independently in the mailspace config (not worker.conf):
+
+```toml
+[pools.rust.worker.cargo_target]
+enabled = true
+root = "/Volumes/Build"
+cap_gib = 32
+sccache = false
+```
+
+The table is off when absent. `root` is an absolute worker build root, on the
+same filesystem as `apfs_dir`; when omitted it is the parent of `apfs_dir`.
+It must not be inside a job boundary. The driver resolves it on the worker,
+checks the filesystem and rejects symlinked target paths. A slot gets
+`CARGO_TARGET_DIR=<root>/slot-targets/<pool>/slot-NN`, with at least two
+slot-number digits. The checkout, job inputs and temporary directory remain
+in the disposable boundary. Pools should have unique names on a worker:
+a lifetime reservation refuses concurrent use of the same target path even
+from another mailspace or worker root. The normal worker lock serializes
+creation and teardown; different slots never wait on one Cargo target lock.
+A nonce ties each reservation to its ledger, so retrying an interrupted old
+teardown cannot trim or unlock a newer owner's cache.
+
+`cap_gib` defaults to 32 and accepts 1..=1024 GiB. On destruction, after the
+slot's processes and boundary are gone, `du -sk` measures allocated target
+size. Above the cap, the entire target is removed; otherwise it is kept for
+the next job at that index. The ledger records the path and cap at creation,
+so subsequent config edits do not redirect cleanup. Stopping a job without
+destroying its held slot does not trim it. `rustc -vV` runs in the selected
+checkout (honoring rustup's repository toolchain) before builds; a changed or
+missing `.vivi-rustc` marker discards the old target. An unreadable compiler
+fails preparation rather than risking stale output.
+
+With `sccache = true`, install `sccache` on the worker's login PATH. Jobs also
+receive `RUSTC_WRAPPER=sccache`, `SCCACHE_DIR=<root>/sccache`,
+`SCCACHE_SERVER_UDS=<root>/sccache/server.sock` and `CARGO_INCREMENTAL=0`.
+Before building, the driver helper starts/reuses the server from that cache
+with `TMPDIR=<root>/sccache/tmp` and a persistent working directory, never
+from a job's temporary directory. The dedicated socket avoids adopting an
+unrelated server started with disposable scratch. The agent itself still
+gets its job-local TMPDIR. Slots share only this sccache cache, not targets.
+The target cap does not change sccache's own built-in cache limit.
+
+Disabling the table affects new jobs and leaves existing persistent caches
+in place; it does not delete them. A crash between target reservation and
+teardown can leave a `slot-NN.lock` directory. Reconcile/destroy the owning
+slot first. If its ledger is also lost, verify no slot or compiler is using
+the target before manually removing that reservation; it is never stolen.
 
 ## Boundaries on macOS
 

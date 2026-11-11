@@ -53,7 +53,7 @@ pub struct SshProvider {
     /// The umask the remote script writes under.
     umask: &'static str,
     /// The remote script: `ssh-slot.sh`, or a worker driver.
-    script: &'static str,
+    script: String,
     /// An extra argument of every `create` (a worker's boundary request).
     create_extra: Option<String>,
 }
@@ -103,7 +103,7 @@ impl SshProvider {
             mailspace: mailspace.to_string(),
             pool: pool.to_string(),
             umask: PRIVATE_UMASK,
-            script: SLOT_SCRIPT,
+            script: SLOT_SCRIPT.to_string(),
             create_extra: None,
         }
     }
@@ -114,10 +114,10 @@ impl SshProvider {
     #[must_use]
     pub(super) fn with_script(
         mut self,
-        script: &'static str,
+        script: impl Into<String>,
         create_extra: Option<String>,
     ) -> Self {
-        self.script = script;
+        self.script = script.into();
         self.create_extra = create_extra;
         self
     }
@@ -141,7 +141,7 @@ impl SshProvider {
             mailspace: mailspace.to_string(),
             pool: pool.to_string(),
             umask: "022",
-            script: SLOT_SCRIPT,
+            script: SLOT_SCRIPT.to_string(),
             create_extra: None,
         }
     }
@@ -162,7 +162,7 @@ impl SshProvider {
         stdin: Option<&[u8]>,
         timeout: Duration,
     ) -> Result<RunOutput, VivariumError> {
-        let line = command_line_of(self.script, &self.root, verb, (args, login, self.umask));
+        let line = command_line_of(&self.script, &self.root, verb, (args, login, self.umask));
         self.runner.run(&[line], stdin, timeout)
     }
 

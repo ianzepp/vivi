@@ -89,8 +89,9 @@ impl Rig {
         } else {
             format!("file://{}", self.f.repo.display())
         };
+        let job_id = self.work.path().display().to_string();
         let mut params = format!(
-            "REMOTE='{remote}'\nJOB='j1'\nTASK='t1'\nFROM='main'\nBRANCH='pool/w'\nDEPTH='1'\nBUDGET='{budget}'\nMODEL='standin'\nSLOT='s1'\nSUBJECT='review'\nCOMMIT_NAME='Bot'\nCOMMIT_EMAIL='bot@localhost'\nENV_NAMES=''\n"
+            "REMOTE='{remote}'\nJOB='{job_id}'\nTASK='t1'\nFROM='main'\nBRANCH='pool/w'\nDEPTH='1'\nBUDGET='{budget}'\nMODEL='standin'\nSLOT='s1'\nSUBJECT='review'\nCOMMIT_NAME='Bot'\nCOMMIT_EMAIL='bot@localhost'\nENV_NAMES=''\n"
         );
         if worktree {
             params += &format!("LOCAL_ACTION='create'\nLOCAL_START='{}'\n", self.start);

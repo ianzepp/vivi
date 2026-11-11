@@ -656,6 +656,12 @@ else
   rm -f "$RD/.git/FETCH_HEAD"
 fi
 
+# Select the checkout's selected toolchain, before any target seed builds.
+if [ -f "$W/build-cache.sh" ]; then
+  . "$W/build-cache.sh"
+  prepare_build_output "$RD" || { echo "build cache preparation failed" >&2; finish target_prepare_failed; }
+fi
+
 # Run shared repository preparation once per target cache, only after the
 # selected source and commit have been established.
 if [ -n "${CHECKOUT_KEY:-}" ] && [ ! -f "$CACHE/prepared" ]; then
@@ -902,6 +908,14 @@ for ((i=0; i<${RAMDISK_ENV_COUNT:-0}; i++)); do
   [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || finish ramdisk_env_invalid
   HARNESS_ENV+=("$name=${!value_var}")
 done
+# Persistent Cargo settings win over generic harness/workspace overrides.
+if [ -f "$W/build-cache.env" ]; then
+  HARNESS_ENV+=("CARGO_TARGET_DIR=$CARGO_TARGET_DIR")
+  if [ "${VIVI_CARGO_SCCACHE:-0}" = 1 ]; then
+    HARNESS_ENV+=("RUSTC_WRAPPER=sccache" "SCCACHE_DIR=$SCCACHE_DIR"
+      "SCCACHE_SERVER_UDS=$SCCACHE_SERVER_UDS" "CARGO_INCREMENTAL=0")
+  fi
+fi
 # The MCP bridge, when the job carries a grant: the agent reads its task and
 # reports as the dispatching member. The facts (run_fact) keep their own
 # minimal environment and do not get these.

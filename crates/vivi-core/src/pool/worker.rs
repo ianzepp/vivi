@@ -28,7 +28,7 @@ use super::run::ONCE_ENV;
 use super::slot::{META_MAILSPACE, META_POOL, META_SLOT, META_STATE, STATE_READY};
 use super::ssh::SshProvider;
 use super::ssh_cli::SshCli;
-use super::ssh_script::WORKER_MACOS_SCRIPT;
+use super::ssh_script::{WORKER_CARGO_SCRIPT, WORKER_MACOS_SCRIPT};
 use super::ssh_state;
 use vivi_error::VivariumError;
 
@@ -77,8 +77,10 @@ impl WorkerProvider {
         through.ssh.root = Some(config.worker.root_or_default().to_string());
         let request = config.worker.request();
         Self {
-            ssh: SshProvider::with_runner_for_pool(&through, mailspace, "", runner)
-                .with_script(WORKER_MACOS_SCRIPT, Some(request.clone())),
+            ssh: SshProvider::with_runner_for_pool(&through, mailspace, "", runner).with_script(
+                format!("{WORKER_CARGO_SCRIPT}\n{WORKER_MACOS_SCRIPT}"),
+                Some(request.clone()),
+            ),
             host: config.worker.host.clone().unwrap_or_default(),
             slots: config.slots,
             request,
@@ -143,6 +145,10 @@ impl WorkerProvider {
         let pool = &request.pool.pool;
         for index in self.free_indices(pool)? {
             let mut spec = request.spec.clone();
+            spec.files.push((
+                "/work/build-cache.sh".to_string(),
+                WORKER_CARGO_SCRIPT.to_string(),
+            ));
             spec.metadata
                 .insert(META_SLOT.to_string(), index.to_string());
             spec.name = format!("{}-{pool}-slot-{index}", request.pool.mailspace);

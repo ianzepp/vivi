@@ -176,8 +176,8 @@ build_apfs() {
 # Make the boundary of slot $1 for request $2 at the slot path.
 make_boundary() {
   local id=$1 kind size name entry at rc dir
-  kind=$(printf '%s\n' $2 | sed -n 's/^kind=//p')
-  size=$(printf '%s\n' $2 | sed -n 's/^size_gib=//p')
+  kind=$(printf '%s\n' "$2" | head -n1 | tr ' ' '\n' | sed -n 's/^kind=//p')
+  size=$(printf '%s\n' "$2" | head -n1 | tr ' ' '\n' | sed -n 's/^size_gib=//p')
   [[ ${size:-0} =~ ^[0-9]+$ ]] || fail "size_gib is not a whole number: $size"
   size=${size:-0}
   admit_check "$kind" "$size"
@@ -206,13 +206,17 @@ make_boundary() {
 # The pids with a file, or their working directory, on slot $1's boundary,
 # plus the boot wrapper's process group and every descendant of it.
 users_of() {
-  local id=$1 kind at p
+  local id=$1 kind at p target
+  target=$(field "$id" cargo_target)
   kind=$(field "$id" kind); at=$(field "$id" mount)
   [ "$kind" != dir ] || at=$(field "$id" dir)
   # No ledger entry: the slot path and the dir this slot would have are all
   # there is to look at.
   [ -n "$at" ] || at="$R/$id"
   {
+    # Background compilers may only hold files/cwd in the persistent target.
+    # The shared sccache server lives elsewhere and is not a slot process.
+    if [ -n "$target" ] && [ -d "$target" ] && cargo_owned "$id"; then lsof -t +D "$target" 2>/dev/null; fi
     if [ -n "$at" ] && [ -d "$at" ]; then
       if [ "$kind" != dir ] && mounted_at "$at"; then lsof -t +f -- "$at" 2>/dev/null; else lsof -t +D "$at" 2>/dev/null; fi
     fi
@@ -285,6 +289,7 @@ teardown() {
   case "$dir" in "$(dir_root)"/*) rm -rf -- "$dir" ;; esac
   case "$at" in "$R"/*/*/slot-*) rm -rf -- "$at" ;; esac
   if [ -e "$at" ] || [ -L "$at" ]; then fail "slot $id was not removed: $at remains"; fi
+  cargo_trim "$id" || fail "could not trim the cargo target of $id"
   rm -f -- "$R/.ledger/$(flat "$id")"
   rmdir "$(dirname "$at")" "$(dirname "$(dirname "$at")")" 2>/dev/null
   return 0
@@ -344,6 +349,7 @@ create_slot() {
   make_boundary "$A1" "$A2"
   need_slot "$A1"
   tar -xf - -C "$D" || { teardown "$A1"; fail "could not unpack the new slot"; }
+  cargo_prepare "$A1" "$A2" || { teardown "$A1"; fail "could not prepare the cargo target"; }
   date -u +%Y-%m-%dT%H:%M:%SZ > "$D/created"
   [ ! -f "$D/once.env" ] || chmod 600 "$D/once.env"
   [ ! -f "$D/slot.env" ] || chmod 600 "$D/slot.env"

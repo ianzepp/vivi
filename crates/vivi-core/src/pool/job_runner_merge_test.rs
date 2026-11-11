@@ -130,8 +130,9 @@ impl Rig {
         } else {
             format!("file://{}", self.f.repo.display())
         };
+        let job_id = self.work.path().display().to_string();
         let mut params = format!(
-            "REMOTE='{remote}'\nJOB='j1'\nTASK='t1'\nFROM='A'\nBRANCH='pool/w'\nDEPTH='{depth}'\nBUDGET='60'\nMODEL='standin'\nSLOT='s1'\nSUBJECT='review'\nCOMMIT_NAME='Bot'\nCOMMIT_EMAIL='bot@localhost'\nENV_NAMES=''\n"
+            "REMOTE='{remote}'\nJOB='{job_id}'\nTASK='t1'\nFROM='A'\nBRANCH='pool/w'\nDEPTH='{depth}'\nBUDGET='60'\nMODEL='standin'\nSLOT='s1'\nSUBJECT='review'\nCOMMIT_NAME='Bot'\nCOMMIT_EMAIL='bot@localhost'\nENV_NAMES=''\n"
         );
         if worktree {
             params += &format!("LOCAL_ACTION='create'\nLOCAL_START='{}'\n", self.start);
@@ -194,8 +195,9 @@ impl Rig {
         } else {
             String::new()
         };
+        let job_id = self.work.path().display().to_string();
         let mut params = format!(
-            "REMOTE='{remote}'\nJOB='j1'\nTASK='t1'\nFROM='A'\nBRANCH='pool/publish'\nDEPTH='1'\nBUDGET='60'\nMODEL='standin'\nSLOT='s1'\nSUBJECT='publish'\nCOMMIT_NAME='Bot'\nCOMMIT_EMAIL='bot@localhost'\nENV_NAMES=''\nPUBLISH_REF='{reference}'\nPUBLISH_REMOTE='{publish_remote}'\n"
+            "REMOTE='{remote}'\nJOB='{job_id}'\nTASK='t1'\nFROM='A'\nBRANCH='pool/publish'\nDEPTH='1'\nBUDGET='60'\nMODEL='standin'\nSLOT='s1'\nSUBJECT='publish'\nCOMMIT_NAME='Bot'\nCOMMIT_EMAIL='bot@localhost'\nENV_NAMES=''\nPUBLISH_REF='{reference}'\nPUBLISH_REMOTE='{publish_remote}'\n"
         );
         if let Some(expected) = expected {
             params.push_str(&format!("PUBLISH_EXPECT='{expected}'\n"));
@@ -792,8 +794,9 @@ impl Rig {
         .unwrap();
         std::fs::set_permissions(&ssh, std::os::unix::fs::PermissionsExt::from_mode(0o755))
             .unwrap();
+        let job_id = self.work.path().display().to_string();
         let params = format!(
-            "REMOTE='ssh://lab-hub{}'\nJOB='j1'\nTASK='t1'\nFROM='A'\nBRANCH='pool/w'\nDEPTH='1'\nBUDGET='60'\nMODEL='standin'\nSLOT='s1'\nSUBJECT='review'\nCOMMIT_NAME='Bot'\nCOMMIT_EMAIL='bot@localhost'\nENV_NAMES=''\n",
+            "REMOTE='ssh://lab-hub{}'\nJOB='{job_id}'\nTASK='t1'\nFROM='A'\nBRANCH='pool/w'\nDEPTH='1'\nBUDGET='60'\nMODEL='standin'\nSLOT='s1'\nSUBJECT='review'\nCOMMIT_NAME='Bot'\nCOMMIT_EMAIL='bot@localhost'\nENV_NAMES=''\n",
             self.f.repo.display()
         );
         self.stage(&params, "true", &[]);

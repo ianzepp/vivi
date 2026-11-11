@@ -462,6 +462,16 @@ size_gib = 12
 margin_gib = 6
 ```
 
+Worker pools can opt into persistent Cargo output with
+`[pools.<name>.worker.cargo_target]`: `enabled = true`, `root = "/Volumes/Build"`,
+`cap_gib = 32`, and optional `sccache = true`. The feature is off by default.
+Each slot keeps its own `root/slot-targets/<pool>/slot-NN`, passed to the job
+as `CARGO_TARGET_DIR`; its checkout and temporary files remain disposable.
+Idle targets over the cap are removed, as are targets built by a different
+`rustc -vV`. Optional shared sccache uses a persistent server TMPDIR and keeps
+`CARGO_INCREMENTAL=0`. See [the worker driver reference](docs/worker-driver-protocol.md#persistent-cargo-output-opt-in)
+for defaults, filesystem checks and server settings.
+
 A pool that needs no network, and that `vivi pool doctor` accepts:
 
 ```toml

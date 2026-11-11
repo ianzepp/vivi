@@ -531,3 +531,6 @@ fn a_destroy_that_cannot_remove_the_slot_is_an_error_not_destroyed() {
     p.destroy(&slot.id).unwrap();
     assert!(p.list().unwrap().is_empty());
 }
+
+#[path = "worker_cargo_test.rs"]
+mod cargo_tests;

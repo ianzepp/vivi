@@ -40,8 +40,9 @@ impl Rig {
     fn run(&self, harness: &str, bridge: Option<&str>) -> JobResult {
         let job = self.job();
         std::fs::create_dir_all(&job).unwrap();
+        let job_id = self.work.path().display().to_string();
         let mut params = format!(
-            "REMOTE='file://{}'\nJOB='j1'\nTASK='t1'\nFROM='main'\nBRANCH=''\nDEPTH='1'\n\
+            "REMOTE='file://{}'\nJOB='{job_id}'\nTASK='t1'\nFROM='main'\nBRANCH=''\nDEPTH='1'\n\
              BUDGET='60'\nMODEL='standin'\nSLOT='s1'\nSUBJECT='review'\nCOMMIT_NAME='Bot'\n\
              COMMIT_EMAIL='bot@localhost'\nENV_NAMES=''\nREAD_ONLY='1'\n",
             self.f.repo.display()

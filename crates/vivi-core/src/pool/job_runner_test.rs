@@ -108,8 +108,9 @@ impl Rig {
             std::fs::remove_dir_all(&job).unwrap();
         }
         std::fs::create_dir_all(&job).unwrap();
+        let job_id = self.work.path().display().to_string();
         let mut params = format!(
-            "REMOTE='file://{}'\nJOB='j1'\nTASK='t1'\nFROM='main'\nBRANCH=''\nDEPTH='1'\nBUDGET='60'\nMODEL='standin'\nSLOT='s1'\nSUBJECT='review'\nCOMMIT_NAME='Bot'\nCOMMIT_EMAIL='bot@localhost'\nENV_NAMES=''\nREAD_ONLY='1'\n",
+            "REMOTE='file://{}'\nJOB='{job_id}'\nTASK='t1'\nFROM='main'\nBRANCH=''\nDEPTH='1'\nBUDGET='60'\nMODEL='standin'\nSLOT='s1'\nSUBJECT='review'\nCOMMIT_NAME='Bot'\nCOMMIT_EMAIL='bot@localhost'\nENV_NAMES=''\nREAD_ONLY='1'\n",
             source.display()
         );
         if let Some((id, key)) = target {
@@ -131,6 +132,10 @@ impl Rig {
         if !facts.is_empty() {
             let list: String = facts.iter().map(|c| format!("{c}\n")).collect();
             std::fs::write(job.join("facts.cmd"), list).unwrap();
+        }
+        let seed = self.work.path().join("fixture-target-seed.sh");
+        if seed.is_file() {
+            std::fs::copy(seed, job.join("target-seed.sh")).unwrap();
         }
         let home = self.work.path().join("home");
         let shims = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/pool/local-bin");
@@ -480,7 +485,7 @@ fn fact_output_cannot_break_the_result_file_or_run_anything() {
     let result = rig.run_with_facts("cat a.txt", "build", &[command, "echo second"]);
     assert_eq!(
         result.get("job"),
-        "j1",
+        rig.work.path().display().to_string(),
         "a forged job= line changed nothing"
     );
     assert_eq!(result.get("fact_9_cmd"), "", "no forged fact key");
@@ -539,3 +544,6 @@ fn one_slot_reuses_isolated_target_caches_across_a_b_a_jobs() {
     );
     assert_eq!(git(&rig.repo(), &["rev-parse", "HEAD"]), rig.start);
 }
+
+#[path = "job_runner_cargo_test.rs"]
+mod cargo_tests;

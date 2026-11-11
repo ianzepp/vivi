@@ -14,6 +14,9 @@ use serde::{Deserialize, Serialize};
 use super::config::{bad, reject_unknown};
 use vivi_error::VivariumError;
 
+#[path = "config_cargo.rs"]
+pub mod config_cargo;
+
 /// The worker root when none is configured: the login user's home, on the
 /// internal disk (macOS will not mount a volume inside another external one).
 pub const DEFAULT_WORKER_ROOT: &str = "~/vivi-worker";
@@ -39,6 +42,9 @@ pub struct PoolWorker {
     /// The boundary's size in GiB; required for `apfs` and `ram`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size_gib: Option<u32>,
+    /// Persistent per-slot Cargo output; opt-in, outside the job boundary.
+    #[serde(default)]
+    pub cargo_target: config_cargo::PoolCargoTarget,
     #[serde(flatten)]
     pub unknown: BTreeMap<String, toml::Value>,
 }
@@ -54,9 +60,10 @@ impl PoolWorker {
     #[must_use]
     pub fn request(&self) -> String {
         format!(
-            "kind={} size_gib={}",
+            "kind={} size_gib={}{}",
             self.kind.as_deref().unwrap_or_default(),
-            self.size_gib.unwrap_or(0)
+            self.size_gib.unwrap_or(0),
+            self.cargo_target.request()
         )
     }
 
@@ -66,6 +73,7 @@ impl PoolWorker {
     /// Returns a configuration error naming the first problem.
     pub fn validate(&self, pool: &str) -> Result<(), VivariumError> {
         reject_unknown(pool, ".worker", &self.unknown)?;
+        self.cargo_target.validate(pool)?;
         let kind = self.kind.as_deref().unwrap_or_default();
         if !kind.is_empty() && !WORKER_KINDS.contains(&kind) {
             return Err(bad(format!(

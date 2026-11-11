@@ -165,6 +165,10 @@ if [ ! -f "$W/seeded" ]; then
   rm -f "$RD/.git/FETCH_HEAD"
   git rev-parse HEAD > "$W/seed-base.txt"
   T2=$(now); echo "clone_s $(d $T1 $T2)" >> $L
+  if [ -f "$W/build-cache.sh" ]; then
+    . "$W/build-cache.sh"
+    prepare_build_output "$RD" || { echo "seed_failed build_cache" >> "$L"; exit 8; }
+  fi
   mount_build
   check_requires || exit 7
   bash "$W/seed.sh" > "$W/seed.log" 2>&1; SRC=$?

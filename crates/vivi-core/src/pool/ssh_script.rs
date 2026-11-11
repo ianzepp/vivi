@@ -15,6 +15,9 @@ pub const SLOT_SCRIPT: &str = include_str!("ssh-slot.sh");
 /// slots that are per-job bounded workspaces (see `worker-macos.sh`).
 pub const WORKER_MACOS_SCRIPT: &str = include_str!("worker-macos.sh");
 
+/// Persistent Cargo cache lifecycle, also delivered inside each worker slot.
+pub const WORKER_CARGO_SCRIPT: &str = include_str!("worker-cargo.sh");
+
 /// The umask of a slot that only its login user may enter.
 pub const PRIVATE_UMASK: &str = "077";
 
