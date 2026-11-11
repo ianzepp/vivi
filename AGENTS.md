@@ -157,26 +157,41 @@ as risk increases:
 
 - `cargo fmt --check`
 - `cargo test --test hygiene` — mandatory before delivery for any change that
-  touches `src/**/*.rs`; it fails the build on inline `#[cfg(test)]` modules
+  touches `src/**/*.rs` or `crates/*/src/**/*.rs`; it fails the build on
+  inline `#[cfg(test)]` modules
   and on `#[test]` attributes in production files
-- `cargo test`
+- `cargo test -p <crate>` for the crate you changed (most code is in
+  `crates/vivi-core`), narrowed with a test-name filter while iterating
+- `cargo test --workspace` — the full gate. A bare `cargo test` at the root
+  runs only the root `vivi` package (970 tests on 2026-11-10) and skips every
+  `crates/*` member, `vivi-core` included
 
-Measured on burgus (M5 Max, 18 cores) on 2026-10-20, with a faberlang pump
-compiling alongside, so treat these as upper bounds:
+Measured on burgus (M5 Max, 18 cores) on 2026-11-10, after the crate split:
+
+- `cargo test --workspace --quiet --no-fail-fast` (5,846 tests, 14 ignored,
+  134 suites): 248 s from a fresh worktree, 229 s after a version bump that
+  rebuilds every crate. Under the five-minute line, but close to it.
+- `cargo test --quiet --no-fail-fast` (root package only, 970 tests): 156 s
+  from a fresh worktree; not a full gate
+
+Measured on 2026-10-20, before the crate split, with a faberlang pump
+compiling alongside. The test counts no longer match the layout; treat the
+times as upper bounds:
 
 - `cargo test --lib --no-run` from a fresh worktree: 37 s
 - `cargo test --lib` (2,907 tests): 46 s run, 68 s with a rebuild
 - `cargo test --test hygiene`: 16 s with a rebuild
 - `cargo test --test skills_cli`: 16 s with a rebuild
-- `cargo test` (full, 3,189 tests): 351 s. Over the five-minute line; it
-  needs splitting or a faster harness, and it belongs out of lane.
+- `cargo test` (then the full suite, 3,189 tests): 351 s
 
 For documentation-only edits, at least inspect links or run a small local
 Markdown link scan when the touched file contains links.
 
 ## Measured development loop
 
-Measured on burgus on 2026-10-19 with a warm development target. These are
+Measured on burgus on 2026-10-19, before the crate split, with a warm
+development target; the `cargo test` rows then covered the whole codebase and
+now cover the root package only. These are
 wall times, including incremental compilation where applicable. Measure again
 when the command or source shape changes materially; do not raise a timeout
 to hide a slowdown.
@@ -191,9 +206,10 @@ to hide a slowdown.
 | `cargo test --test hygiene --quiet` | 20.54s | 60s |
 | `cargo test --test '*' --quiet --no-fail-fast` | 145.66s | 270s |
 
-The full-gate measurement passed 3,203 tests with ten ignored. Timings are
+The full-gate measurement then passed 3,203 tests with ten ignored. Timings are
 baselines, not acceptance receipts for later changes. A full delivery still
-requires `cargo test` and the source hygiene check on the delivered tip.
+requires `cargo test --workspace` and the source hygiene check on the
+delivered tip.
 Keep one Cargo writer per shared target. Run the final gate from the integration
 checkout and refresh generated embedded skills after changing checkout roots.
 

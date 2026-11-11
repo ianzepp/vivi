@@ -1,6 +1,6 @@
 [package]
 name = "vivi-mind"
-version = "23.0.2"
+version = "24.0.0"
 edition = "2024"
 description = "The vivi mind service"
 license = "MIT"
