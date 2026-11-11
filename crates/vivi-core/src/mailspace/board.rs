@@ -194,7 +194,9 @@ fn build_identity_boards(
     let accounts = unique_scope_accounts(&scopes);
     let mut messages = storage.list_messages_by_account_roles_raw(&accounts, &board_roles())?;
     messages.extend(wants::reopened_rows(&storage, &account_identity)?);
-    apply_scoped_handles(&storage, &scopes, &account_identity, &mut messages)?;
+    for message in &mut messages {
+        message.handle = vivi_storage::storage::short_handle(&message.message_id);
+    }
     let ids: Vec<String> = messages
         .iter()
         .map(|message| message.message_id.clone())
@@ -372,27 +374,6 @@ fn board_roles() -> Vec<String> {
         .into_iter()
         .map(String::from)
         .collect()
-}
-
-fn apply_scoped_handles(
-    storage: &Storage,
-    scopes: &[(String, Vec<String>)],
-    account_identity: &HashMap<String, String>,
-    messages: &mut [StoredMessageView],
-) -> Result<(), VivariumError> {
-    let handles_by_identity = storage.display_handles_for_account_scopes(scopes)?;
-    for message in messages {
-        let Some(identity) = account_identity.get(&message.account) else {
-            continue;
-        };
-        let Some(handles) = handles_by_identity.get(identity) else {
-            continue;
-        };
-        if let Some(handle) = handles.get(&message.message_id) {
-            message.handle = handle.clone();
-        }
-    }
-    Ok(())
 }
 
 fn group_board_messages(

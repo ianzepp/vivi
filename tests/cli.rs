@@ -1210,7 +1210,7 @@ fn parses_mail_absorb() {
         Command::Mail {
             command: MailCommand::Absorb(absorb),
         } => {
-            assert_eq!(absorb.handle, "abc123");
+            assert_eq!(absorb.handles, ["abc123"]);
             assert_eq!(absorb.for_identity, "mind");
             assert_eq!(absorb.note.as_deref(), Some("handled"));
         }
@@ -1225,35 +1225,35 @@ fn parses_absorb_for_each_record_kind() {
         mail.command,
         Command::Mail {
             command: MailCommand::Absorb(ref absorb)
-        } if absorb.handle == "abc123" && absorb.for_identity == "mind"
+        } if absorb.handles == ["abc123"] && absorb.for_identity == "mind"
     ));
     let task = Cli::try_parse_from(["vivi", "task", "absorb", "abc123", "--for", "mind"]).unwrap();
     assert!(matches!(
         task.command,
         Command::Task {
             command: TaskCommand::Absorb(ref absorb)
-        } if absorb.handle == "abc123"
+        } if absorb.handles == ["abc123"]
     ));
     let need = Cli::try_parse_from(["vivi", "need", "absorb", "abc123", "--for", "mind"]).unwrap();
     assert!(matches!(
         need.command,
         Command::Need {
             command: NeedCommand::Absorb(ref absorb)
-        } if absorb.handle == "abc123"
+        } if absorb.handles == ["abc123"]
     ));
     let want = Cli::try_parse_from(["vivi", "want", "absorb", "abc123", "--for", "mind"]).unwrap();
     assert!(matches!(
         want.command,
         Command::Want {
             command: WantCommand::Absorb(ref absorb)
-        } if absorb.handle == "abc123"
+        } if absorb.handles == ["abc123"]
     ));
     let memo = Cli::try_parse_from(["vivi", "memo", "absorb", "abc123", "--for", "mind"]).unwrap();
     assert!(matches!(
         memo.command,
         Command::Memo {
             command: MemoCommand::Absorb(ref absorb)
-        } if absorb.handle == "abc123"
+        } if absorb.handles == ["abc123"]
     ));
 }
 
@@ -1969,4 +1969,16 @@ fn parses_config_and_role_pool_helpers() {
         }
         other => panic!("unexpected command: {other:?}"),
     }
+}
+
+#[test]
+fn parses_multiple_mail_absorb_handles_and_requires_at_least_one() {
+    let cli = Cli::try_parse_from([
+        "vivi", "mail", "absorb", "abc123", "def456", "--for", "mind",
+    ])
+    .unwrap();
+    assert!(matches!(cli.command, Command::Mail {
+        command: MailCommand::Absorb(ref absorb)
+    } if absorb.handles == ["abc123", "def456"]));
+    assert!(Cli::try_parse_from(["vivi", "mail", "absorb", "--for", "mind"]).is_err());
 }

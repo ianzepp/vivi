@@ -399,7 +399,8 @@ pub const SHORT_HANDLE_LEN: usize = 8;
 ///
 /// A handle is a fixed-width prefix of the id's basis (the id without its
 /// `msg_` prefix). Ids without the prefix are their own handle.
-pub(crate) fn short_handle(message_id: &str) -> String {
+#[must_use]
+pub fn short_handle(message_id: &str) -> String {
     match message_id.strip_prefix("msg_") {
         None => message_id.to_string(),
         Some(basis) => {

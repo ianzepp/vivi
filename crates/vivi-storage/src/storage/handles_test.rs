@@ -53,6 +53,7 @@ fn a_cached_reader_resolves_another_connections_committed_message() {
     // can only come from the handle index.
     assert!(!first.content_id.starts_with(&first_handle));
 
+    reader.preload_handle_index().unwrap();
     // Warm the reader's cache against the pre-commit database.
     assert_eq!(
         reader.resolve_message_token(&first_handle).unwrap(),
@@ -106,6 +107,7 @@ fn a_read_only_cached_reader_observes_an_external_commit() {
     assert!(!Storage::read_only_wal_index_missing(tmp.path()));
     let reader = Storage::open_mailspace_read_only(tmp.path()).unwrap();
 
+    reader.preload_handle_index().unwrap();
     // Warm the reader's cached index against the pre-commit database.
     assert_eq!(
         reader.resolve_message_token(&first_handle).unwrap(),
@@ -142,6 +144,7 @@ fn a_cached_success_becomes_ambiguous_after_an_external_insert() {
     let first = ingest_hinted(&reader, first_id, "seed:first");
     assert!(!first.content_id.starts_with("abcd1234"));
 
+    reader.preload_handle_index().unwrap();
     // Warm a successful resolution through the cache.
     assert_eq!(reader.resolve_message_token("abcd1234").unwrap(), first_id);
 
@@ -169,6 +172,7 @@ fn an_external_delete_invalidates_a_cached_handle() {
     let stored = ingest_hinted(&reader, id, "seed:third");
     assert!(!stored.content_id.starts_with(&handle));
 
+    reader.preload_handle_index().unwrap();
     // Warm the reader's cache, then soft-delete through the other
     // connection.
     assert_eq!(reader.resolve_message_token(&handle).unwrap(), id);
@@ -190,6 +194,7 @@ fn local_ingest_and_rollback_invalidate_the_handle_index() {
     let kept = ingest_hinted(&storage, kept_id, "seed:kept");
     assert!(!kept.content_id.starts_with(&kept_handle));
 
+    storage.preload_handle_index().unwrap();
     // Warm the index, then ingest again and prove immediate visibility.
     assert_eq!(
         storage.resolve_message_token(&kept_handle).unwrap(),
@@ -244,6 +249,7 @@ fn unchanged_reads_reuse_the_handle_index() {
     let stored = ingest_hinted(&storage, id, "seed:warm");
     assert!(!stored.content_id.starts_with(&handle));
 
+    storage.preload_handle_index().unwrap();
     // Warm the cache, then hold one index Ref while obtaining another: a
     // rebuild here would need a mutable borrow of the occupied RefCell and
     // panic, and pointer identity shows no replacement happened.
@@ -256,4 +262,141 @@ fn unchanged_reads_reuse_the_handle_index() {
     assert_eq!(storage.resolve_message_token(&handle).unwrap(), id);
     assert_eq!(storage.display_handle(id).unwrap(), handle);
     drop(held);
+}
+
+#[test]
+fn one_off_resolution_display_and_listing_never_build_the_index() {
+    let tmp = tempfile::tempdir().unwrap();
+    let storage = Storage::open_mailspace(tmp.path()).unwrap();
+    let id = "msg_12345678abcdef0123456789";
+    let stored = ingest_hinted(&storage, id, "direct");
+    for token in [id, "12345678", "12345678abc", "1234", "msg_123456"] {
+        assert_eq!(storage.resolve_message_token(token).unwrap(), id);
+        assert!(storage.handle_index.borrow().is_none());
+    }
+    assert_eq!(storage.display_handle(id).unwrap(), "12345678");
+    assert_eq!(storage.list_messages().unwrap()[0].handle, "12345678");
+    assert_eq!(
+        storage
+            .resolve_message_token(&stored.content_id[..12])
+            .unwrap(),
+        id
+    );
+    assert!(
+        storage
+            .resolve_message_token("ffffffffffffff")
+            .unwrap_err()
+            .to_string()
+            .contains("message not found")
+    );
+    assert!(storage.handle_index.borrow().is_none());
+}
+
+#[test]
+fn direct_collision_is_ambiguous_and_display_preserves_fixed_width() {
+    let tmp = tempfile::tempdir().unwrap();
+    let storage = Storage::open_mailspace(tmp.path()).unwrap();
+    let first = "msg_abcd1234aaaabbbbcccc0001";
+    let second = "msg_abcd1234aaaabbbbcccc0002";
+    ingest_hinted(&storage, first, "first");
+    ingest_hinted(&storage, second, "second");
+    assert_eq!(
+        storage
+            .resolve_message_token("abcd1234")
+            .unwrap_err()
+            .to_string(),
+        "message error: ambiguous handle 'abcd1234'; matches 2 messages"
+    );
+    assert_eq!(storage.display_handle(first).unwrap(), "abcd1234");
+    assert_eq!(storage.display_handle(second).unwrap(), "abcd1234");
+    assert!(storage.handle_index.borrow().is_none());
+    assert!(storage.mark_message_deleted("acct", second).unwrap());
+    assert_eq!(storage.resolve_message_token("abcd1234").unwrap(), first);
+    assert_eq!(storage.display_handle(second).unwrap(), second);
+}
+
+#[test]
+fn scoped_resolution_uses_ranges_without_loading_all_account_ids() {
+    let tmp = tempfile::tempdir().unwrap();
+    let storage = Storage::open_mailspace(tmp.path()).unwrap();
+    let first = "msg_ffffffffaaaabbbbcccc0001";
+    let second = "msg_ffffffffaaaabbbbcccc0002";
+    ingest_hinted(&storage, first, "first");
+    ingest_hinted(&storage, second, "second");
+    storage
+        .conn
+        .borrow()
+        .execute(
+            "UPDATE messages SET account = 'other' WHERE message_id = ?1",
+            [second],
+        )
+        .unwrap();
+    assert_eq!(
+        storage
+            .resolve_message_token_for_accounts("ffffffff", &["acct".into()])
+            .unwrap(),
+        first
+    );
+    assert_eq!(
+        storage
+            .resolve_message_token_for_accounts("msg_ffffffff", &["other".into()])
+            .unwrap(),
+        second
+    );
+    assert!(
+        storage
+            .resolve_message_token_for_accounts("ffffffff", &[])
+            .is_err()
+    );
+    assert!(
+        storage
+            .resolve_message_token_for_accounts(second, &["acct".into()])
+            .is_err()
+    );
+    assert!(storage.handle_index.borrow().is_none());
+}
+
+#[test]
+fn literal_id_prefixes_and_primary_key_query_plan() {
+    let tmp = tempfile::tempdir().unwrap();
+    let storage = Storage::open_mailspace(tmp.path()).unwrap();
+    ingest_hinted(&storage, "legacy_%_record", "literal");
+    assert!(storage.message_id_prefix_exists("legacy_%_").unwrap());
+    assert!(!storage.message_id_prefix_exists("legacy_A").unwrap());
+    assert!(storage.message_id_prefix_exists("").unwrap());
+    let plan: String = storage
+        .conn
+        .borrow()
+        .query_row(
+            "EXPLAIN QUERY PLAN SELECT message_id FROM messages INDEXED BY sqlite_autoindex_messages_1
+         WHERE message_id >= ?1 AND message_id < ?2 AND deleted_at IS NULL
+         ORDER BY message_id LIMIT ?3",
+            params!["msg_abcd1234", "msg_abcd1235", 2],
+            |row| row.get(3),
+        )
+        .unwrap();
+    assert!(
+        plan.contains("SEARCH messages USING INDEX sqlite_autoindex_messages_1"),
+        "{plan}"
+    );
+    assert!(plan.contains("message_id>? AND message_id<?"), "{plan}");
+    assert_eq!(prefix_end("msg_ffffffff"), Some("msg_fffffffg".into()));
+    assert_eq!(prefix_end("legacy_\u{10ffff}"), Some("legacy`".into()));
+    assert_eq!(prefix_end(""), None);
+}
+
+#[test]
+fn scoped_native_and_legacy_prefix_matches_remain_ambiguous() {
+    let tmp = tempfile::tempdir().unwrap();
+    let storage = Storage::open_mailspace(tmp.path()).unwrap();
+    ingest_hinted(&storage, "msg_abcd1234aaaabbbbcccc0001", "native");
+    ingest_hinted(&storage, "abcd1234-legacy", "legacy");
+    let error = storage
+        .resolve_message_token_for_accounts("abcd1234", &["acct".into()])
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("ambiguous handle 'abcd1234' for identity; matches 2 messages"),
+        "{error}"
+    );
 }

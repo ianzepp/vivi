@@ -183,7 +183,9 @@ impl Storage {
         accounts: &[String],
         roles: &[String],
     ) -> Result<Vec<StoredMessageView>, VivariumError> {
-        self.decorate_handles(self.list_messages_by_account_roles_raw(accounts, roles)?)
+        Ok(Self::decorate_handles(
+            self.list_messages_by_account_roles_raw(accounts, roles)?,
+        ))
     }
 
     /// List messages filtered by accounts and roles, with handles scoped to those accounts.
@@ -196,10 +198,7 @@ impl Storage {
         accounts: &[String],
         roles: &[String],
     ) -> Result<Vec<StoredMessageView>, VivariumError> {
-        self.decorate_handles_for_accounts(
-            self.list_messages_by_account_roles_raw(accounts, roles)?,
-            accounts,
-        )
+        self.list_messages_by_account_roles(accounts, roles)
     }
 
     /// List messages filtered by accounts and roles without computing display handles.
@@ -274,7 +273,7 @@ impl Storage {
                 })
             })
             .collect();
-        self.decorate_handles(messages?)
+        Ok(Self::decorate_handles(messages?))
     }
 
     /// List all non-deleted messages across all accounts.

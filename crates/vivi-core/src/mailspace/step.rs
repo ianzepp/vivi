@@ -65,6 +65,7 @@ impl Mailspace {
                 decisions: Vec::new(),
             });
         };
+        storage.preload_handle_index()?;
         let show = self.graph_show_with_storage(storage, BACKLOG_GRAPH_CODE)?;
         let mut dispatches = Vec::new();
         let mut exceptions = Vec::new();
@@ -88,9 +89,8 @@ impl Mailspace {
                 StepOutcome::Exception(exc) => exceptions.push(exc),
             }
         }
-        // Blocked nodes never dispatch, but a dependent whose letter names a
-        // dependency this mailspace does not hold is not merely waiting: the
-        // reference must be filed or fetched. Report it so the gap is visible.
+        // Blocked nodes never dispatch. A dependency not held here must be
+        // filed or fetched: report it so the gap is visible.
         for node in show
             .nodes
             .iter()

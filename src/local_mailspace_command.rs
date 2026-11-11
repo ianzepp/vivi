@@ -390,13 +390,15 @@ pub(crate) fn absorb_record(
     command: &vivi_core::cli::AbsorbCommand,
 ) -> Result<(), VivariumError> {
     let mailspace = Mailspace::discover(command.project.as_deref())?;
-    let handle = mailspace.absorb(
+    let handles = mailspace.absorb_many(
         &command.for_identity,
-        &command.handle,
+        &command.handles,
         command.note.as_deref(),
         kind,
     )?;
-    println!("absorbed {handle}");
+    for handle in handles {
+        println!("absorbed {handle}");
+    }
     Ok(())
 }
 
