@@ -101,16 +101,6 @@ fn depends_on_handle(value: &str) -> Option<String> {
         .then(|| head.to_ascii_lowercase())
 }
 
-/// The 8-hex prefixes of the message ids this mailspace holds live.
-fn held_handles(storage: &Storage) -> Result<HashSet<String>, VivariumError> {
-    Ok(storage
-        .handle_map()?
-        .keys()
-        .filter_map(|id| id.strip_prefix("msg_").and_then(|rest| rest.get(..8)))
-        .map(str::to_ascii_lowercase)
-        .collect())
-}
-
 /// Refuse a depth outside 1 to [`MAX_DEPTH`].
 ///
 /// # Errors
@@ -183,12 +173,14 @@ fn unheld_references(
     ids: &[String],
     asked: &HashSet<String>,
 ) -> Result<Vec<String>, VivariumError> {
-    let held = held_handles(storage)?;
     let mut wanted: Vec<String> = Vec::new();
     for id in ids {
         let bytes = storage.read_message(id)?;
         for token in references_in(&bytes) {
-            if !held.contains(&token) && !asked.contains(&token) && !wanted.contains(&token) {
+            if !asked.contains(&token)
+                && !wanted.contains(&token)
+                && !storage.message_id_prefix_exists(&format!("msg_{token}"))?
+            {
                 wanted.push(token);
             }
         }

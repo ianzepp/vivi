@@ -7,10 +7,9 @@ use super::{
 
 /// Every active message's id and short handle, built in one pass.
 ///
-/// Handle resolution, handle decoration, and the token prefix scan are
-/// repeated many times per command — `vivi step` resolves one token per ready
-/// node. Building this once per [`Storage`] keeps those calls out of the
-/// `messages` table, whose scan cost grows with the whole mailbox.
+/// Explicitly preloaded by bulk commands such as `vivi step`, which resolves
+/// one token per ready node. One-off resolution uses primary-key ranges and
+/// decoration computes the fixed prefix directly; neither builds this index.
 ///
 /// The index is stamped with the `PRAGMA data_version` sampled before its ids
 /// were loaded. This connection's own commits are handled by explicit
@@ -25,8 +24,6 @@ pub(super) struct HandleIndex {
     data_version: i64,
     /// Active message ids in `message_id` order.
     ids: Vec<String>,
-    /// `message_id` -> short handle.
-    by_message_id: HashMap<String, String>,
     /// short handle -> every message id carrying it.
     by_handle: HashMap<String, Vec<String>>,
 }
@@ -36,7 +33,6 @@ impl HandleIndex {
     /// before `ids` was read. The stamp travels only in memory; it is never
     /// persisted or compared across connections.
     fn new(ids: Vec<String>, data_version: i64) -> Self {
-        let mut by_message_id = HashMap::with_capacity(ids.len());
         let mut by_handle: HashMap<String, Vec<String>> = HashMap::new();
         for message_id in &ids {
             let handle = short_handle(message_id);
@@ -44,12 +40,10 @@ impl HandleIndex {
                 .entry(handle.clone())
                 .or_default()
                 .push(message_id.clone());
-            by_message_id.insert(message_id.clone(), handle);
         }
         Self {
             data_version,
             ids,
-            by_message_id,
             by_handle,
         }
     }
@@ -100,69 +94,151 @@ impl Storage {
             })
     }
 
-    /// Resolve a message token (full ID, short handle, or ID prefix) to a
-    /// canonical message ID.
+    /// Opt into the cached full index for a command that resolves many tokens.
+    /// One-off resolution and display never build this index.
     ///
     /// # Errors
-    /// Returns a [`VivariumError`] if the token is ambiguous or no message
-    /// matches.
-    pub fn resolve_message_token(&self, token: &str) -> Result<String, VivariumError> {
-        if self.message_by_id_exact(token)?.is_some() {
-            return Ok(token.to_string());
-        }
-        let index = self.handle_index()?;
-        if let Some(matches) = index.by_handle.get(token) {
-            return match matches.as_slice() {
-                [only] => Ok(only.clone()),
-                many => Err(VivariumError::Message(format!(
-                    "ambiguous handle '{token}'; matches {} messages",
-                    many.len()
-                ))),
-            };
-        }
-        let id_prefix_matches: Vec<&String> = index
-            .ids
-            .iter()
-            .filter(|message_id| message_id.starts_with(token))
-            .collect();
-        match id_prefix_matches.as_slice() {
-            [only] => return Ok((*only).clone()),
-            [] => {}
-            many => {
-                return Err(VivariumError::Message(format!(
-                    "ambiguous message_id prefix '{token}'; matches {} messages",
-                    many.len()
-                )));
-            }
-        }
-        let content_matches = self.content_prefix_matches(token)?;
-        match content_matches.len() {
-            1 => Ok(content_matches[0].clone()),
-            n if n > 1 => Err(VivariumError::Message(format!(
-                "ambiguous content_id prefix '{token}'; matches {n} messages"
-            ))),
-            _ => Err(VivariumError::Message(format!(
-                "message not found: {token}"
-            ))),
-        }
+    /// Returns an error if the index cannot be loaded.
+    pub fn preload_handle_index(&self) -> Result<(), VivariumError> {
+        drop(self.handle_index()?);
+        Ok(())
     }
 
-    /// Compute a short display handle for a single message.
-    ///
-    /// Results come from the cached handle index, so repeated decoration does
-    /// not rescan the `messages` table. The index is invalidated on any local
-    /// write that affects messages (ingest, move, flag update, delete) and
-    /// rebuilt when the freshness check detects another connection's commit.
+    /// Resolve a full id, short handle, or id prefix to a canonical message id.
+    /// Uses primary-key ranges unless a bulk caller explicitly preloaded the index.
     ///
     /// # Errors
-    /// Returns a [`VivariumError`] if the active-message-ids query fails.
-    pub fn display_handle(&self, message_id: &str) -> Result<String, VivariumError> {
+    /// Returns an error for an ambiguous or missing token, or a failed query.
+    pub fn resolve_message_token(&self, token: &str) -> Result<String, VivariumError> {
+        if let Some(id) = self.message_by_id_exact(token)? {
+            return Ok(id);
+        }
+        let cached = self.handle_index.borrow().is_some();
+        let matches = if cached {
+            self.indexed_token_matches(token)?
+        } else {
+            self.direct_token_matches(token, None)?
+        };
+        if let Some(id) = resolve_prefix_matches(token, matches, false)? {
+            return Ok(id);
+        }
+        resolve_content_matches(token, &self.content_prefix_matches(token)?, false)
+    }
+
+    fn indexed_token_matches(&self, token: &str) -> Result<(Vec<String>, bool), VivariumError> {
         let index = self.handle_index()?;
-        Ok(index
-            .by_message_id
-            .get(message_id)
+        if let Some(matches) = index.by_handle.get(token) {
+            return Ok((matches.clone(), true));
+        }
+        let (prefix, handle) = token_prefix(token);
+        let matches: Vec<String> = index
+            .ids
+            .iter()
+            .filter(|id| id.starts_with(&prefix))
             .cloned()
-            .unwrap_or_else(|| message_id.to_string()))
+            .collect();
+        if !matches.is_empty() {
+            return Ok((matches, handle));
+        }
+        Ok((
+            index
+                .ids
+                .iter()
+                .filter(|id| id.starts_with(token))
+                .cloned()
+                .collect(),
+            false,
+        ))
+    }
+
+    fn direct_token_matches(
+        &self,
+        token: &str,
+        accounts: Option<&[String]>,
+    ) -> Result<(Vec<String>, bool), VivariumError> {
+        let (prefix, handle) = token_prefix(token);
+        let mut matches = self.message_id_prefix_matches(&prefix, accounts, i64::MAX)?;
+        if accounts.is_some() && handle {
+            // Scoped resolution historically considers both legacy id prefixes
+            // and native bases together, rather than preferring the native one.
+            matches.extend(self.message_id_prefix_matches(token, accounts, i64::MAX)?);
+            matches.sort();
+            matches.dedup();
+            return Ok((matches, true));
+        }
+        if !matches.is_empty() || !handle {
+            return Ok((matches, handle));
+        }
+        Ok((
+            self.message_id_prefix_matches(token, accounts, i64::MAX)?,
+            false,
+        ))
+    }
+
+    /// Compute the fixed-width handle of an active message, or return the id
+    /// unchanged if it is missing/deleted. Collisions remain fixed-width and
+    /// are refused by resolution; no whole-mailbox index is needed to display.
+    ///
+    /// # Errors
+    /// Returns an error if the exact-id query fails.
+    pub fn display_handle(&self, message_id: &str) -> Result<String, VivariumError> {
+        Ok(if self.message_by_id_exact(message_id)?.is_some() {
+            short_handle(message_id)
+        } else {
+            message_id.to_string()
+        })
+    }
+
+    /// Whether an active message id starts with this literal prefix.
+    /// Unlike token resolution, this does not fall back to content ids.
+    ///
+    /// # Errors
+    /// Returns an error if the primary-key range query fails.
+    pub fn message_id_prefix_exists(&self, prefix: &str) -> Result<bool, VivariumError> {
+        Ok(!self.message_id_prefix_matches(prefix, None, 1)?.is_empty())
+    }
+
+    fn message_id_prefix_matches(
+        &self,
+        prefix: &str,
+        accounts: Option<&[String]>,
+        limit: i64,
+    ) -> Result<Vec<String>, VivariumError> {
+        if accounts.is_some_and(<[String]>::is_empty) {
+            return Ok(Vec::new());
+        }
+        let end = prefix_end(prefix);
+        let scope = accounts.map_or_else(String::new, |accounts| {
+            format!(
+                " AND account IN ({})",
+                sql_placeholders(accounts.len(), 4).join(",")
+            )
+        });
+        let upper = if end.is_some() {
+            "message_id < ?2"
+        } else {
+            "?2 IS NULL"
+        };
+        let sql = format!(
+            "SELECT message_id FROM messages INDEXED BY sqlite_autoindex_messages_1
+             WHERE message_id >= ?1 AND {upper} AND deleted_at IS NULL{scope}
+             ORDER BY message_id LIMIT ?3"
+        );
+        let mut values: Vec<&dyn rusqlite::types::ToSql> = vec![&prefix, &end, &limit];
+        if let Some(accounts) = accounts {
+            values.extend(to_sql_params(accounts));
+        }
+        let conn = self.conn.borrow();
+        let mut stmt = conn.prepare(&sql).map_err(|e| {
+            VivariumError::Other(format!("failed to prepare message id prefix query: {e}"))
+        })?;
+        let rows = stmt
+            .query_map(values.as_slice(), |row| row.get(0))
+            .map_err(|e| VivariumError::Other(format!("failed to query message id prefix: {e}")))?;
+        rows.map(|row| {
+            row.map_err(|e| VivariumError::Other(format!("failed to read message id prefix: {e}")))
+        })
+        .collect()
     }
 
     /// Build the full short-handle map from the database (uncached).
@@ -226,42 +302,18 @@ impl Storage {
         if let Some(message_id) = self.message_by_id_exact_for_accounts(token, accounts)? {
             return Ok(message_id);
         }
-        let message_ids = self.active_message_ids_for_accounts(accounts)?;
-        let handle_matches = scoped_handle_matches(token, &message_ids);
-        match handle_matches.len() {
-            1 => return Ok(handle_matches[0].clone()),
-            n if n > 1 => {
-                return Err(VivariumError::Message(format!(
-                    "ambiguous handle '{token}' for identity; matches {n} messages"
-                )));
-            }
-            _ => {}
+        if let Some(id) = resolve_prefix_matches(
+            token,
+            self.direct_token_matches(token, Some(accounts))?,
+            true,
+        )? {
+            return Ok(id);
         }
-        let content_matches = self.content_prefix_matches_for_accounts(token, accounts)?;
-        match content_matches.len() {
-            1 => Ok(content_matches[0].clone()),
-            n if n > 1 => Err(VivariumError::Message(format!(
-                "ambiguous content_id prefix '{token}' for identity; matches {n} messages"
-            ))),
-            _ => Err(VivariumError::Message(format!(
-                "message not found for identity: {token}"
-            ))),
-        }
-    }
-
-    pub(super) fn decorate_handles_for_accounts(
-        &self,
-        mut messages: Vec<StoredMessageView>,
-        accounts: &[String],
-    ) -> Result<Vec<StoredMessageView>, VivariumError> {
-        let handle_map = self.display_handles_for_accounts(accounts)?;
-        for message in &mut messages {
-            message.handle = handle_map
-                .get(&message.message_id)
-                .cloned()
-                .unwrap_or_else(|| message.message_id.clone());
-        }
-        Ok(messages)
+        resolve_content_matches(
+            token,
+            &self.content_prefix_matches_for_accounts(token, accounts)?,
+            true,
+        )
     }
 
     fn active_message_ids(&self) -> Result<Vec<String>, VivariumError> {
@@ -463,33 +515,69 @@ impl Storage {
         .collect()
     }
 
-    pub(super) fn decorate_handles(
-        &self,
-        mut messages: Vec<StoredMessageView>,
-    ) -> Result<Vec<StoredMessageView>, VivariumError> {
-        let index = self.handle_index()?;
+    pub(super) fn decorate_handles(mut messages: Vec<StoredMessageView>) -> Vec<StoredMessageView> {
         for message in &mut messages {
-            message.handle = index
-                .by_message_id
-                .get(&message.message_id)
-                .cloned()
-                .unwrap_or_else(|| message.message_id.clone());
+            message.handle = short_handle(&message.message_id);
         }
-        Ok(messages)
+        messages
     }
 }
 
-fn scoped_handle_matches(token: &str, message_ids: &[String]) -> Vec<String> {
-    message_ids
-        .iter()
-        .filter(|message_id| {
-            message_id.starts_with(token)
-                || message_id
-                    .strip_prefix("msg_")
-                    .is_some_and(|handle| handle.starts_with(token))
-        })
-        .cloned()
-        .collect()
+fn token_prefix(token: &str) -> (String, bool) {
+    if token.starts_with("msg_") {
+        (token.to_string(), false)
+    } else {
+        (format!("msg_{token}"), true)
+    }
+}
+
+// Increment a Unicode scalar, not a byte; `%` and `_` stay literal.
+// An empty/all-maximal prefix has no upper bound.
+fn prefix_end(prefix: &str) -> Option<String> {
+    for (offset, ch) in prefix.char_indices().rev() {
+        let next = u32::from(ch) + 1;
+        if let Some(next) = char::from_u32(if next == 0xd800 { 0xe000 } else { next }) {
+            return Some(format!("{}{next}", &prefix[..offset]));
+        }
+    }
+    None
+}
+
+fn resolve_prefix_matches(
+    token: &str,
+    (matches, handle): (Vec<String>, bool),
+    scoped: bool,
+) -> Result<Option<String>, VivariumError> {
+    let scope = if scoped { " for identity" } else { "" };
+    let kind = if handle || scoped {
+        "handle"
+    } else {
+        "message_id prefix"
+    };
+    match matches.len() {
+        0 => Ok(None),
+        1 => Ok(matches.into_iter().next()),
+        n => Err(VivariumError::Message(format!(
+            "ambiguous {kind} '{token}'{scope}; matches {n} messages"
+        ))),
+    }
+}
+
+fn resolve_content_matches(
+    token: &str,
+    matches: &[String],
+    scoped: bool,
+) -> Result<String, VivariumError> {
+    let scope = if scoped { " for identity" } else { "" };
+    match matches.len() {
+        1 => Ok(matches[0].clone()),
+        n if n > 1 => Err(VivariumError::Message(format!(
+            "ambiguous content_id prefix '{token}'{scope}; matches {n} messages"
+        ))),
+        _ => Err(VivariumError::Message(format!(
+            "message not found{scope}: {token}"
+        ))),
+    }
 }
 
 fn sql_placeholders(count: usize, start: usize) -> Vec<String> {

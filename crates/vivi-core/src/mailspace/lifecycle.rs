@@ -129,33 +129,82 @@ impl Mailspace {
     ) -> Result<String, VivariumError> {
         let (identity, message) = self.resolve_owned_message(identity, handle)?;
         let storage = self.storage()?;
-        let kind = self.source_kind(&storage, &message)?;
+        self.validate_absorb(&storage, &identity, &message, handle, expected_kind)?;
+        self.absorb_owned_message(&storage, &identity, &message, note, expected_kind)
+    }
+
+    /// Absorb several records with one mailspace and storage connection.
+    /// Resolve ownership, kind and quiet-period checks for the whole batch
+    /// before sealing any row. Storage/archive failures during the write pass
+    /// retain the single-item command's per-record commit semantics.
+    ///
+    /// # Errors
+    /// Returns an error if any record fails validation or a write/export fails.
+    pub fn absorb_many(
+        &self,
+        identity: &str,
+        handles: &[String],
+        note: Option<&str>,
+        expected_kind: &str,
+    ) -> Result<Vec<String>, VivariumError> {
+        let identity = self.resolve_identity(identity)?;
+        let storage = self.storage()?;
+        let mut messages = Vec::with_capacity(handles.len());
+        for handle in handles {
+            let (_, message) = self.resolve_owned_message(&identity, handle)?;
+            self.validate_absorb(&storage, &identity, &message, handle, expected_kind)?;
+            messages.push(message);
+        }
+        messages
+            .iter()
+            .map(|message| {
+                self.absorb_owned_message(&storage, &identity, message, note, expected_kind)
+            })
+            .collect()
+    }
+
+    fn validate_absorb(
+        &self,
+        storage: &Storage,
+        identity: &str,
+        message: &StoredMessageView,
+        handle: &str,
+        expected_kind: &str,
+    ) -> Result<(), VivariumError> {
+        let kind = self.source_kind(storage, message)?;
         if kind != expected_kind {
             return Err(VivariumError::Message(format!(
                 "{handle} is {kind}, not {expected_kind}"
             )));
         }
         if message.absorbed_at.is_none() && matches!(expected_kind, "need" | "task" | "want") {
-            self.require_quiet_absorb(&storage, &identity, &message, handle)?;
+            self.require_quiet_absorb(storage, identity, message, handle)?;
         }
-        let storage = storage;
-        let newly = storage.absorb_message(&message.account, &message.message_id, &identity)?;
+        Ok(())
+    }
+
+    fn absorb_owned_message(
+        &self,
+        storage: &Storage,
+        identity: &str,
+        message: &StoredMessageView,
+        note: Option<&str>,
+        expected_kind: &str,
+    ) -> Result<String, VivariumError> {
+        let newly = storage.absorb_message(&message.account, &message.message_id, identity)?;
         if newly {
             storage.append_mailspace_event(&absorb_event(
                 expected_kind,
-                &identity,
-                &message,
+                identity,
+                message,
                 note,
             ))?;
             if matches!(expected_kind, "need" | "task" | "want") {
-                // A reply is a new record, so the letter can be stored under
-                // the seal it reports.
-                self.emit_absorbed_letter(&storage, &identity, &message, note)?;
+                self.emit_absorbed_letter(storage, identity, message, note)?;
             }
         }
-        drop(storage);
         super::archive::export_absorbed(self, &message.message_id, expected_kind)?;
-        self.storage()?.display_handle(&message.message_id)
+        Ok(message.handle.clone())
     }
 
     /// The `absorbed` letter an absorb by a role that may close the item
@@ -551,7 +600,7 @@ impl Mailspace {
     }
 
     /// Effective kind of a stored message. Takes the caller's storage handle so
-    /// a batch shares one connection and one handle map.
+    /// a batch shares one connection.
     pub(super) fn source_kind(
         &self,
         storage: &vivi_storage::storage::Storage,

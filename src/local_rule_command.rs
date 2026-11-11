@@ -87,12 +87,16 @@ fn retire_rule(command: &RuleRetireCommand) -> Result<(), VivariumError> {
 }
 
 fn absorb_rule(command: &AbsorbCommand) -> Result<(), VivariumError> {
-    let handle = Mailspace::discover(command.project.as_deref())?.absorb_rule(
-        &command.for_identity,
-        &command.handle,
-        command.note.as_deref(),
-    )?;
-    println!("absorbed {handle}");
+    let mailspace = Mailspace::discover(command.project.as_deref())?;
+    mailspace.resolve_identity(&command.for_identity)?;
+    for handle in &command.handles {
+        mailspace.show_rule(handle)?;
+    }
+    for handle in &command.handles {
+        let handle =
+            mailspace.absorb_rule(&command.for_identity, handle, command.note.as_deref())?;
+        println!("absorbed {handle}");
+    }
     Ok(())
 }
 

@@ -197,6 +197,39 @@ fn listing_never_leaves_the_selected_pool_directory() {
     );
 }
 
+/// Issue 29: `pool doctor --test` makes its slots under `<pool>-doctor`. The
+/// provider of `<pool>` must create, list, and address them, and still refuse
+/// any other pool.
+#[test]
+fn the_provider_serves_its_pools_doctor_test_pool_and_no_other() {
+    let project = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    let absolute = provider_for(
+        project.path(),
+        root.path().to_str().unwrap(),
+        "space",
+        "probe",
+    );
+    let relative = provider_for(project.path(), "pool", "space", "probe");
+    for (provider, want) in [
+        (&absolute, "space/probe-doctor/slot-1"),
+        (&relative, "probe-doctor/slot-1"),
+    ] {
+        let id = provider
+            .create(&spec_for("space", "probe-doctor", 1, "exit 0\n"))
+            .unwrap();
+        assert_eq!(id, want);
+        assert!(provider.machine(&id).is_ok());
+        let listed: Vec<_> = provider.list().unwrap().into_iter().map(|m| m.id).collect();
+        assert_eq!(listed, [want]);
+        let foreign = provider
+            .create(&spec_for("space", "probe-other", 1, "exit 0\n"))
+            .unwrap_err();
+        assert!(foreign.to_string().contains("does not belong"), "{foreign}");
+        provider.destroy(&id).unwrap();
+    }
+}
+
 #[test]
 fn a_created_slot_runs_its_boot_to_its_end_and_reads_stopped_with_an_exit_code() {
     let (_tmp, root) = root();

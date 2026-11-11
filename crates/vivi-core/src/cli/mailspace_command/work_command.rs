@@ -49,8 +49,9 @@ pub struct DependCommand {
 /// Seal a mailspace record. Once absorbed, it can no longer be changed.
 #[derive(Debug, Clone, Args)]
 pub struct AbsorbCommand {
-    /// Record handle or unambiguous prefix
-    pub handle: String,
+    /// Record handles or unambiguous prefixes (all validated before sealing)
+    #[arg(required = true)]
+    pub handles: Vec<String>,
 
     /// Identity absorbing the record
     #[arg(long = "for")]
