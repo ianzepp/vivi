@@ -193,6 +193,7 @@ fn assemble_job_plan(
         ramdisk_env: Vec::new(),
         job,
         remote: config.remote_address(),
+        integration_ref: String::new(),
         checkout: None,
         task: handle.to_string(),
         need: flags.need.clone(),

@@ -84,6 +84,7 @@ fn plan_phase(
         rules,
         job_id.clone(),
     )?;
+    plan.integration_ref = dispatch_integration_ref(space, command.target.as_deref());
     plan.target = selected.as_ref().map(|selected| selected.target.clone());
     if config.provider == "local" {
         plan.publish_remote = selected
@@ -98,6 +99,16 @@ fn plan_phase(
         plan,
         job_id,
     })
+}
+
+/// Every job carries its repository's integration branch, not its start commit.
+fn dispatch_integration_ref(space: &Mailspace, target: Option<&str>) -> String {
+    let Some(pump) = space.config.pump.as_ref() else {
+        return "main".into();
+    };
+    target
+        .and_then(|id| pump.target_configs().remove(id))
+        .map_or_else(|| pump.main.clone(), |target| target.main)
 }
 
 pub(crate) fn dispatch(command: &PoolDispatchCommand) -> Result<(), VivariumError> {

@@ -34,6 +34,17 @@ fn privileged_publish_controls_are_runner_only_job_parameters() {
     );
 }
 
+#[test]
+fn integration_branch_is_carried_separately_from_the_pinned_start() {
+    let mut p = plan();
+    p.integration_ref = "release/trunk".into();
+    p.refs.from = "a".repeat(40);
+    let bundle = build_bundle(&p, "s", &Secret::new(SECRET.into()));
+    let params = text(&bundle, "params.env");
+    assert!(params.contains("INTEGRATION_REF='release/trunk'"));
+    assert!(params.contains(&format!("FROM='{}'", p.refs.from)));
+}
+
 fn plan() -> JobPlan {
     JobPlan {
         target: None,
@@ -44,6 +55,7 @@ fn plan() -> JobPlan {
         ramdisk_env: Vec::new(),
         job: "0123456789ab".into(),
         remote: "https://github.com/acme/widgets.git".into(),
+        integration_ref: "main".into(),
         checkout: None,
         task: "abcd1234".into(),
         need: None,

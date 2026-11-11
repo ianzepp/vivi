@@ -46,6 +46,7 @@ fn plan_with(names: &[&str]) -> job::JobPlan {
         ramdisk_env: Vec::new(),
         job: "0123456789ab".into(),
         remote: String::new(),
+        integration_ref: "main".into(),
         checkout: None,
         task: "abcd1234".into(),
         need: None,
@@ -156,6 +157,37 @@ fn extra_refs_resolve_in_the_source_repository_before_any_slot_is_claimed() {
         plan.with
             .iter()
             .all(|w| w.commit.len() == 40 && w.commit.chars().all(|c| c.is_ascii_hexdigit()))
+    );
+}
+
+#[test]
+fn dispatch_carries_the_selected_targets_main_or_the_legacy_default() {
+    use vivi_core::pump::config::{PumpConfig, PumpTarget};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let mut space = Mailspace::init(Some(tmp.path())).unwrap();
+    assert_eq!(dispatch_integration_ref(&space, None), "main");
+    let mut pump = PumpConfig {
+        main: "vivi/main".into(),
+        ..Default::default()
+    };
+    space.config.pump = Some(pump.clone());
+    assert_eq!(dispatch_integration_ref(&space, None), "vivi/main");
+    assert_eq!(
+        dispatch_integration_ref(&space, Some("default")),
+        "vivi/main"
+    );
+    pump.targets.insert(
+        "web".into(),
+        PumpTarget {
+            main: "release/trunk".into(),
+            ..Default::default()
+        },
+    );
+    space.config.pump = Some(pump);
+    assert_eq!(
+        dispatch_integration_ref(&space, Some("web")),
+        "release/trunk"
     );
 }
 

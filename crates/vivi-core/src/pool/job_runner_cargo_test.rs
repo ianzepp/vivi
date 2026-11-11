@@ -1,4 +1,7 @@
 //! The clean agent environment must explicitly carry the worker cache settings.
+#[path = "job_runner_integration_test.rs"]
+mod integration_tests;
+
 use super::*;
 use crate::pool::job::sh_quote;
 use crate::pool::ssh_script::WORKER_CARGO_SCRIPT;

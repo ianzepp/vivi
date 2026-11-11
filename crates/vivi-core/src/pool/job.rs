@@ -347,6 +347,9 @@ pub struct JobPlan {
     /// Full Git address the runner fetches from and pushes to. Empty for a
     /// worktree slot, which has no remote.
     pub remote: String,
+    /// Integration branch fetched into `origin/<name>` before the agent starts.
+    /// Empty uses `main` for fetch jobs and leaves offline worktrees offline.
+    pub integration_ref: String,
     /// Set for a worktree slot: how the job starts and what happens to the
     /// branch.
     pub checkout: Option<Checkout>,
@@ -560,6 +563,7 @@ fn core_fields(spec: &JobPlan, slot: &str) -> Vec<ParamField> {
         ("JOB", spec.job.clone()),
         ("TASK", spec.task.clone()),
         ("FROM", spec.refs.from.clone()),
+        ("INTEGRATION_REF", spec.integration_ref.clone()),
         ("BRANCH", spec.refs.branch.clone()),
         ("DEPTH", spec.depth.to_string()),
         ("BUDGET", spec.budget.to_string()),

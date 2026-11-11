@@ -3,7 +3,7 @@
 # set, as the ordinary user that owns the slot), started by the boot script
 # under a hard time limit. Everything it needs is in $WORK/job (default
 # /work/job), delivered as one archive:
-#   params.env   REMOTE FROM BRANCH DEPTH BUDGET MODEL SLOT SUBJECT JOB TASK
+#   params.env   REMOTE FROM INTEGRATION_REF BRANCH DEPTH BUDGET MODEL SLOT SUBJECT JOB TASK
 #                COMMIT_NAME COMMIT_EMAIL ENV_NAMES RAMDISK_SIZE_GIB
 #                RAMDISK_ENV_COUNT and numbered RAMDISK_ENV_<n>_NAME/VALUE
 #                READ_ONLY (set to 1 for a read-only job; BRANCH is then empty)
@@ -64,8 +64,9 @@
 # made on its own -- a merge of an extra ref, say -- is pushed the same way.
 # The outcome goes to $WORK/job/result as key=value lines.
 #
-# A worktree slot (LOCAL_ACTION set) has no remote: the checkout is a Git
-# worktree of a repository on this machine, so nothing is fetched or pushed.
+# A worktree slot (LOCAL_ACTION set) has no job remote: the checkout is a Git
+# worktree of a repository on this machine. Its inherited origin, when present,
+# is fetched for the integration ref, but nothing is pushed by a normal job.
 # The work happens on a detached HEAD at LOCAL_START. Where LOCAL_ACTION is
 # `create`, BRANCH is made only when there is something to commit, at the
 # commit the work started from (a plain `checkout -b`, which refuses an
@@ -656,6 +657,42 @@ else
   rm -f "$RD/.git/FETCH_HEAD"
 fi
 
+# A fetch checkout may be a fresh `git init`, not a clone. Always configure
+# a credential-free origin and refresh the integration ref, independently of
+# repository seeding or persistent Cargo output. Fetch with the runner's URL,
+# never store its token in config or FETCH_HEAD. A remote-backed worktree
+# inherits origin; an offline worktree keeps its no-fetch contract.
+prepare_integration_ref() {
+  local main=${INTEGRATION_REF:-main} ref depth=${D:-${DEPTH:-50}}
+  main=${main#refs/heads/}
+  ref=refs/remotes/origin/$main
+  as_hand git check-ref-format "refs/heads/$main" || return 1
+  if [ -n "${LOCAL_ACTION:-}" ]; then
+    if ! as_hand git config --get remote.origin.url >/dev/null; then
+      # Only an explicitly offline job may omit origin. A configured
+      # integration branch must never silently disappear from the checkout.
+      [ -z "${INTEGRATION_REF:-}" ]
+      return $?
+    fi
+    retry_refused as_hand git fetch -q --no-tags --no-write-fetch-head origin \
+      "+refs/heads/$main:$ref"
+    return $?
+  fi
+  as_hand git config --replace-all remote.origin.url "$(clean_publish_url "$REMOTE")" && \
+    as_hand git config --replace-all remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*' || return 1
+  retry_refused as_hand git fetch -q --no-tags --no-write-fetch-head --depth "$depth" \
+    "$URL" "+refs/heads/$main:$ref" || return 1
+  # As with explicit extra refs, retain enough bounded history to merge the
+  # integration branch even when FROM is a pinned commit or another branch.
+  while ! as_hand git merge-base "$START" "$ref" >/dev/null 2>&1 && [ "$depth" -lt 5000 ]; do
+    depth=$((depth * 2)); [ "$depth" -le 5000 ] || depth=5000
+    retry_refused as_hand git fetch -q --no-tags --no-write-fetch-head --depth "$depth" \
+      "$URL" "$START" || return 1
+    retry_refused as_hand git fetch -q --no-tags --no-write-fetch-head --depth "$depth" \
+      "$URL" "+refs/heads/$main:$ref" || return 1
+  done
+}
+
 # Select the checkout's selected toolchain, before any target seed builds.
 if [ -f "$W/build-cache.sh" ]; then
   . "$W/build-cache.sh"
@@ -682,8 +719,9 @@ fi
 # a branch name to refs/remotes/origin/<ref>, a 40-hex commit to
 # refs/vivi/with/<commit> -- at the pool's depth. Every fetch, like the FROM
 # fetch, leaves the URL, which holds the token, in .git/FETCH_HEAD, so
-# FETCH_HEAD is removed after each one, and nothing is written to .git/config
-# or the agent's home. The result records where each ref landed. A worktree
+# FETCH_HEAD is removed after each one. Only the credential-free origin is
+# kept in .git/config; nothing is written to the agent's home. The result
+# records where each ref landed. A worktree
 # job fetches nothing: the refs are already refs of the shared repository,
 # and the agent sees them as named. A ref the remote does not have ends the
 # job fetch_failed.
@@ -761,6 +799,9 @@ if [ -f "$J/with.list" ]; then
     fi
   fi
 fi
+# Run this last: target seeding may set Git config, and a shallow extra-ref
+# fetch may have shortened history needed to merge the integration branch.
+prepare_integration_ref || finish fetch_failed
 echo "from $FROM at ${START:0:12} prepared_s $(( $(now) - T0 ))"
 
 # Extra repositories: read-only checkouts of the other targets, one per entry
