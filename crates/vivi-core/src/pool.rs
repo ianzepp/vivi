@@ -40,7 +40,6 @@ pub mod config_bridge;
 pub mod config_depth;
 pub mod config_restore;
 pub mod config_ticket;
-pub mod config_tree;
 pub mod config_view;
 pub mod config_worker;
 pub mod dispatch;
@@ -52,6 +51,8 @@ pub mod docker_tar;
 pub mod doctor;
 pub mod doctor_pool;
 pub mod doctor_repo;
+pub mod explicit;
+pub mod explicit_provider;
 pub mod extras;
 pub mod facts;
 #[cfg(test)]
@@ -123,6 +124,9 @@ pub use provider::PoolProvider;
 /// pool names, for hosts that need project-local or id-scoped storage.
 #[must_use]
 pub fn open_provider(config: &PoolConfig, ctx: &runpod::HostContext) -> Box<dyn PoolProvider> {
+    if !config.explicit_slots.is_empty() {
+        return Box::new(explicit_provider::ExplicitProvider::new(config, ctx));
+    }
     match config.provider.as_str() {
         "runpod" => Box::new(runpod::RunpodProvider::new(config, ctx)),
         "docker" => Box::new(docker::DockerProvider::new(config)),

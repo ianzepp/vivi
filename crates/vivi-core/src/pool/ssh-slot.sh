@@ -52,6 +52,7 @@ esac
 # A slot id is <mailspace>/<pool>/slot-<n> and nothing else.
 slot_ok() { [[ $1 =~ ^[a-z0-9][a-z0-9-]*/[a-z0-9][a-z0-9-]*/slot-[0-9]+$ ]]; }
 need_slot() {
+  if [ -n "${EXPLICIT_DIR:-}" ]; then D=$EXPLICIT_DIR/.vivi; return; fi
   slot_ok "$1" || fail "not a slot id: $1"
   D=$(cd "$R/$1" 2>/dev/null && pwd -P) || D="$R/$1"
 }
@@ -92,13 +93,24 @@ slot_pids() {
 
 emit() {
   local id=$1 d f state=stopped
-  d=$(cd "$R/$id" && pwd -P) || return 0
-  echo "@@slot $id"
+  if [ -n "${EXPLICIT_DIR:-}" ]; then
+    d=$EXPLICIT_DIR/.vivi
+    echo "@@slot $id"
+    echo "mark.vivi_pool=$EXPLICIT_POOL"
+    echo "mark.vivi_pool_mailspace=$EXPLICIT_SPACE"
+    echo "mark.vivi_pool_state=ready"
+  else
+    d=$(cd "$R/$id" && pwd -P) || return 0
+    echo "@@slot $id"
+  fi
   alive "$d" && state=started
   echo "state=$state"
   [ "$state" = stopped ] && [ -f "$d/exit_code" ] && echo "exit=$(head -n1 "$d/exit_code")"
   echo "created=$(head -n1 "$d/created" 2>/dev/null)"
   for f in "$d"/marks/*; do
+    if [ -n "${EXPLICIT_DIR:-}" ]; then
+      case "${f##*/}" in vivi_pool|vivi_pool_mailspace|vivi_pool_state|vivi_pool_slot) continue ;; esac
+    fi
     [ -f "$f" ] && printf 'mark.%s=%s\n' "${f##*/}" "$(head -n1 "$f")"
   done
   if [ -f "$d/claim" ]; then
@@ -157,6 +169,7 @@ start_slot() {
     set -a; . "$D/slot.env"; set +a
     # A login shell may reorder PATH; the boot command puts this order back.
     export WORK="$D" VIVI_SLOT_ROOT="$D" VIVI_SESSION_PATH="$PATH"
+    [ -z "${EXPLICIT_DIR:-}" ] || export SLOT_DIR="$EXPLICIT_DIR"
     cd "$D" || exit 1
     detach bash -l -c 'PATH="$VIVI_SESSION_PATH:$PATH"; set -f; q=; IFS=:; for d in $PATH; do [ -n "$d" ] || continue; case ":$q:" in *":$d:"*) ;; *) q="${q:+$q:}$d" ;; esac; done; unset IFS; set +f; PATH=$q; unset VIVI_SESSION_PATH d q; echo $$ > "$WORK/boot.pid"; bash "$WORK/boot.sh"; rc=$?; echo "$rc" > "$WORK/exit_code"; exit "$rc"' \
       > "$D/boot.out" 2>&1 < /dev/null &
@@ -179,6 +192,7 @@ stop_slot() {
     done
   done
   [ -z "$pids" ] || fail "could not stop processes of $A1: $pids"
+  busy_release
   rm -f "$D/boot.pid" "$D/exit_code"
 }
 
@@ -191,13 +205,25 @@ free_now() {
 # gets it, and the winner's task and time are in place the moment it exists.
 claim_slot() {
   local nonce tmp
-  need_slot "$A1"; known || { echo gone; return 0; }
+  need_slot "$A1"
+  if [ -n "${EXPLICIT_DIR:-}" ]; then
+    parent=$D
+    while [ "$parent" != / ]; do
+      [ ! -L "$parent" ] || fail "symlinked slot directory"
+      parent=${parent%/*}; [ -n "$parent" ] || parent=/
+    done
+    mkdir -p "$D/marks" || fail "cannot create slot records"
+    printf '%s\n' ready > "$D/marks/vivi_pool_state"
+    printf '%s\n' "$EXPLICIT_POOL" > "$D/marks/vivi_pool"
+    printf '%s\n' "$EXPLICIT_SPACE" > "$D/marks/vivi_pool_mailspace"
+  fi
+  known || { echo gone; return 0; }
   nonce=$(head -c 12 /dev/urandom | od -An -tx1 | tr -d ' \n')
   tmp="$D/claim.$$.$nonce.tmp"
   printf 'task=%s\nclaimed=%s\nnonce=%s\n' "$A2" "$A3" "$nonce" > "$tmp" || fail "cannot write the claim"
   if ln "$tmp" "$D/claim" 2>/dev/null; then
     rm -f "$tmp"
-    if free_now; then echo "claimed $nonce"; else rm -f "$D/claim"; echo busy; fi
+    if free_now && { rm -f "$D/boot.pid"; busy_take; }; then echo "claimed $nonce"; else rm -f "$D/claim"; echo busy; fi
   else
     rm -f "$tmp"
     [ -e "$D/claim" ] && echo taken || fail "cannot create the claim (hard links unavailable?)"
@@ -237,6 +263,7 @@ read_files() {
 # Vivi's own marks naming this pool AND this mailspace.
 destroy_slot() {
   local pool space real root
+  if [ -n "${EXPLICIT_DIR:-}" ]; then stop_slot; return 0; fi
   slot_ok "$A1" || refuse "not a slot id: $A1"
   case "$R" in ''|/) refuse "the root is empty or /" ;; /*) ;; *) refuse "the root is not absolute: $R" ;; esac
   root=$(cd "$R" 2>/dev/null && pwd -P) || { echo gone; return 0; }
@@ -304,16 +331,33 @@ exec_script() {
   bash -c "$A2"
 }
 
+busy_lock
 case "$VERB" in
   list) list_slots ;;
-  machine) need_slot "$A1"; if known; then emit "$A1"; fi ;;
+  machine) need_slot "$A1"; if known || [ -n "${EXPLICIT_DIR:-}" ]; then emit "$A1"; fi ;;
   probe) probe ;;
   envgaps) envgaps ;;
   create) create_slot ;;
+  install)
+    need_slot "$A1"
+    [ "$(sed -n 's/^nonce=//p' "$D/claim")" = "$A2" ] || fail "not claim holder"
+    tar -xf - -C "$D" || fail "cannot install runtime"
+    chmod +x "$D"/bin/*
+    if [ -e "$EXPLICIT_DIR/.git" ]; then
+      (
+        cd "$EXPLICIT_DIR" || exit 1
+        exclude=$(git rev-parse --git-path info/exclude) || exit 1
+        mkdir -p "$(dirname "$exclude")" || exit 1
+        grep -qxF '/.vivi/' "$exclude" 2>/dev/null || printf '\n/.vivi/\n' >> "$exclude"
+      ) || fail "cannot exclude slot records"
+    fi
+    touch "$D/seeded"
+    printf '%s\n' ready > "$D/marks/vivi_pool_state"
+    ;;
   start) start_slot ;;
   stop) stop_slot ;;
   claim) claim_slot ;;
-  unclaim) need_slot "$A1"; rm -f "$D/claim" ;;
+  unclaim) need_slot "$A1"; busy_release; rm -f "$D/claim" ;;
   put) put_file ;;
   seal) seal_mark ;;
   read) read_files ;;

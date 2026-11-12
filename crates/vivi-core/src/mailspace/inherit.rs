@@ -113,12 +113,16 @@ pub fn load_with_origins(path: &Path, raw: &str) -> Result<LoadedConfig, Vivariu
         table: project,
     });
     let (merged, origins) = merge::merge_layers(layers, skipped)?;
-    let config = Value::Table(merged).try_into().map_err(|e| {
+    let mut config: MailspaceConfig = Value::Table(merged).try_into().map_err(|e| {
         VivariumError::Message(format!(
             "failed to parse mailspace config at {}: {e}",
             path.display()
         ))
     })?;
+    crate::pool::explicit::validate(&config.slots, &config.pools)?;
+    for (name, pool) in &mut config.pools {
+        crate::pool::explicit::route(pool, name, &config.slots)?;
+    }
     Ok(LoadedConfig { config, origins })
 }
 

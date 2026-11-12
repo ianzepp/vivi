@@ -385,6 +385,7 @@ start_slot() {
 stop_slot() {
   need_slot "$A1"; [ -d "$D" ] || return 0
   kill_users "$A1" || fail "could not stop the processes of $A1"
+  busy_release
   rm -f "$D/boot.pid" "$D/boot.start" "$D/exit_code"
 }
 
@@ -400,7 +401,7 @@ claim_slot() {
   printf 'task=%s\nclaimed=%s\nnonce=%s\n' "$A2" "$A3" "$nonce" > "$tmp" || fail "cannot write the claim"
   if ln "$tmp" "$D/claim" 2>/dev/null; then
     rm -f "$tmp"
-    if free_now; then echo "claimed $nonce"; else rm -f "$D/claim"; echo busy; fi
+    if free_now && { rm -f "$D/boot.pid"; busy_take; }; then echo "claimed $nonce"; else rm -f "$D/claim"; echo busy; fi
   else
     rm -f "$tmp"
     [ -e "$D/claim" ] && echo taken || fail "cannot create the claim (hard links unavailable?)"
@@ -487,6 +488,7 @@ exec_script() {
   bash -c "$A2"
 }
 
+busy_lock
 case "$VERB" in
   list) list_slots ;;
   machine) need_slot "$A1"; if known; then emit "$A1"; fi ;;
@@ -497,7 +499,7 @@ case "$VERB" in
   start) start_slot ;;
   stop) stop_slot ;;
   claim) claim_slot ;;
-  unclaim) need_slot "$A1"; rm -f "$D/claim" ;;
+  unclaim) need_slot "$A1"; busy_release; rm -f "$D/claim" ;;
   put) put_file ;;
   seal) seal_mark ;;
   read) read_files ;;

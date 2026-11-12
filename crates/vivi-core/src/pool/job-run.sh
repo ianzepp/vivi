@@ -6,8 +6,6 @@
 #   params.env   REMOTE FROM INTEGRATION_REF BRANCH DEPTH BUDGET MODEL SLOT SUBJECT JOB TASK
 #                COMMIT_NAME COMMIT_EMAIL ENV_NAMES RAMDISK_SIZE_GIB
 #                RAMDISK_ENV_COUNT and numbered RAMDISK_ENV_<n>_NAME/VALUE
-#                TARGET_TREE (optional absolute target cache directory, including
-#                its repo/ checkout and source/worktree_of records)
 #                READ_ONLY (set to 1 for a read-only job; BRANCH is then empty)
 #                (REMOTE is the full Git address; https gets the token below,
 #                a file:// address is used as given). A worktree slot has no
@@ -106,8 +104,8 @@ if [ -n "${BASH_SOURCE[0]:-}" ]; then
 fi
 W=${WORK:-/work}
 J=$W/job
-RD=$W/repo
 . "$J/params.env"
+RD=${SLOT_DIR:-$W/repo}
 # Capture config before the harness starts; never read a check from the checkout
 # (or re-read its delivered params after the agent could have touched them).
 readonly CHECK_COMMAND="${CHECK_COMMAND:-}" CHECK_TIMEOUT_S="${CHECK_TIMEOUT_S:-600}"
@@ -612,12 +610,14 @@ finalize_targets() {
 
 # A shared slot keeps repository caches isolated; never recycle another
 # target's Git metadata or ignored build output.
-if [ -n "${CHECKOUT_KEY:-}" ]; then
-  [[ "$CHECKOUT_KEY" =~ ^[0-9a-f]{64}$ ]] || finish target_key_invalid
-  CACHE=${TARGET_TREE:-$W/targets/$CHECKOUT_KEY}
-  RD=$CACHE/repo
-  if [ -n "${TARGET_TREE:-}" ]; then
-    case "$CACHE" in /) finish target_cache_invalid ;; /*) ;; *) finish target_cache_invalid ;; esac
+if [ -n "${CHECKOUT_KEY:-}${SLOT_DIR:-}" ]; then
+  [ -z "${CHECKOUT_KEY:-}" ] || [[ "$CHECKOUT_KEY" =~ ^[0-9a-f]{64}$ ]] || finish target_key_invalid
+  REPOSITORY=${REPOSITORY:-$REMOTE}
+  CACHE=$W/targets/$CHECKOUT_KEY
+  if [ -n "${SLOT_DIR:-}" ]; then CACHE=$W; else RD=$CACHE/repo; fi
+  if [ -n "${SLOT_DIR:-}" ]; then
+    [ ! -L "$RD/.git" ] || finish target_cache_invalid
+    case "$SLOT_DIR" in /) finish target_cache_invalid ;; /*) ;; *) finish target_cache_invalid ;; esac
     # Refuse links in the configured tree and its ancestors, even when a
     # leaf does not exist yet. Do not let mkdir or Git follow one outside it.
     parent=$RD
@@ -639,6 +639,7 @@ if [ -n "${CHECKOUT_KEY:-}" ]; then
       as_hand git -C "$RD" init -q . || finish target_prepare_failed
       printf '%s' "$REPOSITORY" > "$CACHE/source"
     fi
+    if [ -n "${SLOT_DIR:-}" ] && [ ! -f "$CACHE/source" ]; then printf '%s' "$REPOSITORY" > "$CACHE/source"; fi
     [ "$(cat "$CACHE/source" 2>/dev/null)" = "$REPOSITORY" ] || finish target_source_mismatch
   fi
   # Target caches are persistent directories, independent of the legacy
@@ -647,6 +648,11 @@ if [ -n "${CHECKOUT_KEY:-}" ]; then
 fi
 
 cd "$RD" || finish workdir_missing
+if [ -n "${SLOT_DIR:-}" ]; then
+  exclude=$(git rev-parse --git-path info/exclude) || finish target_prepare_failed
+  mkdir -p "$(dirname "$exclude")"
+  grep -qxF '/.vivi/' "$exclude" 2>/dev/null || printf '\n/.vivi/\n' >> "$exclude"
+fi
 TOKEN=$(cat "$J/token")
 [ -z "${UNPRIVILEGED:-}" ] || rm -f "$J/token"
 BRIDGE_KEY=

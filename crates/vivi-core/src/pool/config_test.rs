@@ -76,9 +76,9 @@ private_key = "k.pem"
 }
 
 #[test]
-fn rejects_missing_required_field() {
-    let result: Result<PoolConfig, _> = toml::from_str("app = \"a\"\nrepo = \"o/r\"");
-    assert!(result.is_err());
+fn rejects_missing_count_for_a_counted_pool() {
+    let config: PoolConfig = toml::from_str("provider='ssh'\n[ssh]\nhost='box'\n").unwrap();
+    assert!(err(&config).contains("slots must be at least 1"));
 }
 
 #[test]

@@ -9,11 +9,14 @@
 use super::job::sh_quote;
 
 /// The remote half of the provider, embedded in the binary.
-pub const SLOT_SCRIPT: &str = include_str!("ssh-slot.sh");
+pub const SLOT_SCRIPT: &str = concat!(include_str!("host-busy.sh"), include_str!("ssh-slot.sh"));
 
 /// The remote half of the `worker` provider on macOS: the same verbs, over
 /// slots that are per-job bounded workspaces (see `worker-macos.sh`).
-pub const WORKER_MACOS_SCRIPT: &str = include_str!("worker-macos.sh");
+pub const WORKER_MACOS_SCRIPT: &str = concat!(
+    include_str!("host-busy.sh"),
+    include_str!("worker-macos.sh")
+);
 
 /// Persistent Cargo cache lifecycle, also delivered inside each worker slot.
 pub const WORKER_CARGO_SCRIPT: &str = include_str!("worker-cargo.sh");

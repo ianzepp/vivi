@@ -353,7 +353,7 @@ fn both_mount_sites_of_the_boot_script_go_through_the_conditional() {
     assert_eq!(BOOT_SCRIPT.matches("mount -t tmpfs").count(), 1);
     assert_eq!(BOOT_SCRIPT.matches("mount_build\n").count(), 2);
     assert!(BOOT_SCRIPT.contains(r#"[ -n "${BUILD_MOUNTED:-}${BUILD_PERSISTS:-}" ] ||"#));
-    assert!(BOOT_SCRIPT.contains("RD=$W/repo"));
+    assert!(BOOT_SCRIPT.contains("RD=${SLOT_DIR:-$W/repo}"));
     assert!(BOOT_SCRIPT.contains("W=${WORK:-/work}"));
     assert_eq!(CHECKOUT_DIR, "/work/repo");
 }

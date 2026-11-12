@@ -41,7 +41,9 @@ impl PoolConfig {
         }
         match self.provider.as_str() {
             "fly" if self.fly.app.is_none() => need("fly.app", FLY_APP_REQUIRED),
-            "ssh" if self.ssh.host.is_none() => need("ssh.host", SSH_HOST_REQUIRED),
+            "ssh" if self.ssh.host.is_none() && self.explicit_slots.is_empty() => {
+                need("ssh.host", SSH_HOST_REQUIRED)
+            }
             "runpod" if self.runpod.api_key_file.is_none() => {
                 need("runpod.api_key_file", RUNPOD_KEY_REQUIRED);
             }

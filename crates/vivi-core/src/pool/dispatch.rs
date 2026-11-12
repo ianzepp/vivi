@@ -6,7 +6,7 @@ use std::time::Instant;
 use sha2::{Digest, Sha256};
 
 use super::bridge::bridge_brief;
-use super::claim::{Claim, claim_slot, open_slot, unclaim};
+use super::claim::{Claim, open_slot, unclaim};
 use super::collect::Pacing;
 use super::config::{PoolCommitter, PoolConfig};
 use super::github::Secret;
@@ -189,7 +189,6 @@ fn assemble_job_plan(
         extras: Vec::new(),
         prepared_cache_key: None,
         prepared_local_source: None,
-        target_tree: None,
         ramdisk_size_gib: None,
         ramdisk_env: Vec::new(),
         job,
@@ -522,6 +521,9 @@ pub fn dispatch(
     pacing: &Pacing,
 ) -> Result<DispatchRecord, VivariumError> {
     let plan = launch.plan;
+    if !launch.config.explicit_slots.is_empty() && !plan.extras.is_empty() {
+        return Err(VivariumError::Config("explicit repository slots cannot hold extra target checkouts; use a generic pool for multi-repository read-only jobs".into()));
+    }
     let request = TicketRequest {
         pool: id,
         plan,
@@ -598,7 +600,22 @@ fn take_slot(
 ) -> Result<Claim, VivariumError> {
     let plan = launch.plan;
     match provider.slot_lifetime() {
-        SlotLifetime::Resting => claim_slot(provider, id, &plan.task, now),
+        SlotLifetime::Resting => super::claim::claim_repository_slot(
+            provider,
+            id,
+            &plan.task,
+            now,
+            plan.target
+                .as_ref()
+                .map(|t| {
+                    if t.local_source.is_some() {
+                        t.publish_remote.as_deref().unwrap_or(&t.source)
+                    } else {
+                        t.source.as_str()
+                    }
+                })
+                .or(Some(plan.remote.as_str())),
+        ),
         SlotLifetime::PerDispatch => {
             let mut machine_config = launch.config.clone();
             let empty_token = Secret::new(String::new());
@@ -644,24 +661,11 @@ fn deliver(
         .checkout
         .as_ref()
         .map_or(plan.refs.from.as_str(), |c| c.start.as_str());
-    let target_tree = plan
-        .target
-        .as_ref()
-        .map(|target| {
-            super::config_tree::target_tree(
-                launch.config.tree_root.as_deref(),
-                target,
-                &claim.slot.name,
-            )
-        })
-        .transpose()?
-        .flatten();
     let prepared_workspace = provider.prepare_job(id, plan.target.as_ref(), start, &plan.job)?;
     for extra in &plan.extras {
         provider.prepare_extra_checkout(id, &extra.target, &extra.from)?;
     }
     let mut bundle_plan = plan.clone();
-    bundle_plan.target_tree = target_tree;
     bundle_plan.prepared_cache_key = prepared_workspace
         .as_ref()
         .map(|workspace| workspace.cache_key.clone());

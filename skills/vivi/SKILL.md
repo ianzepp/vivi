@@ -1251,20 +1251,68 @@ vivi pool unset glm image
   clean additionally names it (`-e /$BUILD_DIR`), so it survives even when not
   gitignored; on fly and docker it is a memory disk packed at seed and
   restored before every job instead. Fly and Docker work with or without it.
-- **`tree_root` optionally separates persistent target trees from slot control
-  files.** Set `tree_root = "/Volumes/Build/trees"` directly in
-  `[pools.<name>]` (or `vivi pool set <name> tree_root /Volumes/Build/trees`).
-  The path is absolute on the slot host, with no symlinks, `.` or `..`.
-  A target URL `git@hub.example:faberlang/radix.git` selects
-  `<tree_root>/faberlang/radix/<slot-name>/repo`; owner/repo are the URL's last
-  two path components, without `.git`, never the target alias. A local mirror
-  uses its publication remote URL. The directory above `repo` also holds the
-  `source`/`worktree_of` and preparation records. Jobs reuse it in place,
-  preserving unchanged source mtimes and ignored build output. Unset (the
-  default), target checkouts stay at `$WORK/targets/<checkout-key>/repo`.
-  Extra read-only targets and legacy non-target checkouts are unchanged.
-  Do not combine this setting with a per-job `workspace` disk. External trees
-  survive slot destruction; remove them explicitly only when idle.
+### Explicit persistent repository slots
+
+For warm builds, declare repository-bound slots in the owning mailspace's
+`.vivi/mailspace.toml`. The directory is the working tree itself, used exactly
+as written; Vivi does not append `repo/` or derive an owner/repo layout.
+
+```toml
+[pools.studio]
+provider = "ssh"
+# Add the usual harness/committer settings; no counted slots or ssh.host needed.
+
+[[slot]]
+name = "radix-1"
+repository = "faberlang/radix"
+host = "ianzepp@studio-01"
+dir = "/vivi/trees/faberlang/radix/slot-1"
+pools = ["studio"]
+```
+
+Names are unique within the mailspace. `repository` is exactly `owner/repo`,
+matched against the last two components of the target's Git URL (without
+`.git`), not its alias. `pools` is optional: absent/empty allows all SSH pools
+in this mailspace; otherwise it lists eligible role-routing pools. A job
+claims only a free slot of its repository, by name. A pool with no routed
+explicit declarations retains its counted, derived slots unchanged.
+
+The first job creates `dir` if absent. Later jobs fetch, `checkout -f` and
+`clean -fd` (never `-x`) there. Unchanged source mtimes and ignored build output
+survive. Claims, boot pid, logs, delivered files, source/worktree records and
+preparation markers live in `dir/.vivi/`; `/.vivi/` is added only to Git's
+`info/exclude`, never a tracked ignore file. Vivi never deletes `dir`, even
+when the slot is destroyed. Use physical absolute paths, without symlinks or
+`.`/`..` components. Explicit slots use the persistent `ssh` provider, not
+per-job workspace disks. Multi-repository `--also-target` jobs need a generic
+pool; explicit slots never put extra repository caches in their records.
+
+On every host, set its operator budget in `~/vivi-worker/worker.conf`:
+
+```ini
+max_busy=8
+```
+
+Unset means unlimited. This caps running/reserved jobs across mailspaces and
+pools, not slot declarations: ten declared slots can share eight busy places.
+Host-side `flock` (via Perl, on Linux and macOS) serializes claims. Small tokens
+under `~/vivi-worker/.busy/` reserve delivery and execution; normal completion,
+stop and undo release them. Dead holders are reclaimed at the next claim;
+an abandoned delivery expires after 120 seconds. All login accounts dispatching
+on one physical host must use the same writable `VIVI_WORKER_ROOT` (default
+`~/vivi-worker`) and worker.conf to share its budget.
+
+**Per-job APFS images are unsuitable for builds:** destroying the image after
+each job discards the build. Their bounded-workspace documentation remains
+available for disposable work; use persistent repository slots for warm builds.
+
+Example fleet: studio-01 has eight `faberlang/radix` entries (`radix-1` through
+`radix-8`) at `/vivi/trees/faberlang/radix/slot-1` through `slot-8`, and two
+`faberlang/gradus` entries (`gradus-1`, `gradus-2`) at
+`/vivi/trees/faberlang/gradus/slot-1` and `slot-2`. All ten are declared only
+in the faberlang mailspace, with `max_busy=8` on the host. The vivi mailspace
+declares its own vivi slots, never those of faberlang.
+
 - **A `local` pool can give each job its own workspace disk.** A
   `[pools.<name>.workspace]` table with `enabled = true` makes a fresh disk for
   the job's temporary checkout and build output; it is removed when the job

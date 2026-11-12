@@ -1080,6 +1080,3 @@ fn every_owned_cleanup_prefix_takes_one_segment_and_no_more() {
         assert_eq!(plan(&cleanup).is_ok(), ok, "{name}");
     }
 }
-
-#[path = "dispatch_tree_test.rs"]
-mod tree_tests;

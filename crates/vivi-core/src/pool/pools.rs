@@ -92,6 +92,7 @@ pub fn open_unvalidated(
     flag: Option<&str>,
     need: Need,
 ) -> Result<Vec<PoolHandle>, VivariumError> {
+    super::explicit::validate(&space.config.slots, &space.config.pools)?;
     let all = configured(space)?;
     let names: Vec<&str> = all.keys().map(String::as_str).collect();
     let chosen = select(&names, flag, need)?;
@@ -107,10 +108,11 @@ pub fn open_unvalidated(
     chosen
         .into_iter()
         .map(|name| {
-            let config = all
+            let mut config = all
                 .get(&name)
                 .cloned()
                 .ok_or_else(|| VivariumError::Config(format!("unknown pool {name}")))?;
+            super::explicit::route(&mut config, &name, &space.config.slots)?;
             if config.provider.eq_ignore_ascii_case("local") {
                 super::local_site::resolve(
                     config.local.root_or_default(),

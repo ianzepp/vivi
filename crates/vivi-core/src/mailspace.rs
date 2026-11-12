@@ -215,6 +215,9 @@ pub struct MailspaceConfig {
     /// means no pool.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub pools: BTreeMap<String, PoolConfig>,
+    /// Persistent repository slots owned by this mailspace.
+    #[serde(default, rename = "slot", skip_serializing_if = "Vec::is_empty")]
+    pub slots: Vec<crate::pool::explicit::SlotConfig>,
     /// The retired single `[pool]` table. Kept only so a `vivi pool` command
     /// can reject it with a message naming `[pools.<name>]`, and so a config
     /// rewrite does not erase it.
@@ -354,6 +357,7 @@ impl Mailspace {
             memo: None,
             pump: None,
             pools: BTreeMap::new(),
+            slots: Vec::new(),
             retired_pool: None,
         };
         write_config(&path, &config)?;

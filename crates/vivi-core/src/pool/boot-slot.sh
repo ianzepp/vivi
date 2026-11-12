@@ -60,7 +60,7 @@
 W=${WORK:-/work}
 [ ! -d "$W/bin" ] || PATH=$PATH:$W/bin
 L=$W/boot.log
-RD=$W/repo
+RD=${SLOT_DIR:-$W/repo}
 JT=$W/job.tgz
 # A path as the configuration spells it (under /work) -> where it really is.
 real() { case "$1" in /work|/work/*) echo "$W${1#/work}" ;; *) echo "$1" ;; esac; }
@@ -243,4 +243,10 @@ if [ ! -f "$W/job/result" ]; then
   fi
 fi
 echo "job_rc $RC job $JOB limit ${LIMIT}s $(now)" >> $L
+if [ -f "$W/busy-token" ]; then
+  token=$(cat "$W/busy-token")
+  nonce=$(sed -n 's/^nonce=//p' "$W/claim")
+  [ "$(awk '{print $2}' "$token" 2>/dev/null)" != "$nonce" ] || rm -f "$token"
+  rm -f "$W/busy-token"
+fi
 sleep "$LINGER"

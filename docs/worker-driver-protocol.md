@@ -4,6 +4,149 @@ Status: implemented for macOS workers, 2026-10-21 (`provider = "worker"`,
 `crates/vivi-core/src/pool/worker.rs`, `crates/vivi-core/src/pool/worker-macos.sh`). The repo wins wherever
 it disagrees with this document.
 
+## Persistent repository slots (preferred for builds)
+
+For warm builds, declare repository-bound slots in the owning mailspace's
+`.vivi/mailspace.toml`. The directory is the working tree itself, used exactly
+as written; Vivi does not append `repo/` or derive an owner/repo layout.
+
+```toml
+[pools.studio]
+provider = "ssh"
+# Add the usual harness/committer settings; no counted slots or ssh.host needed.
+
+[[slot]]
+name = "radix-1"
+repository = "faberlang/radix"
+host = "ianzepp@studio-01"
+dir = "/vivi/trees/faberlang/radix/slot-1"
+pools = ["studio"]
+```
+
+Names are unique within the mailspace. `repository` is exactly `owner/repo`,
+matched against the last two components of the target's Git URL (without
+`.git`), not its alias. `pools` is optional: absent/empty allows all SSH pools
+in this mailspace; otherwise it lists eligible role-routing pools. A job
+claims only a free slot of its repository, by name. A pool with no routed
+explicit declarations retains its counted, derived slots unchanged.
+
+The first job creates `dir` if absent. Later jobs fetch, `checkout -f` and
+`clean -fd` (never `-x`) there. Unchanged source mtimes and ignored build output
+survive. Claims, boot pid, logs, delivered files, source/worktree records and
+preparation markers live in `dir/.vivi/`; `/.vivi/` is added only to Git's
+`info/exclude`, never a tracked ignore file. Vivi never deletes `dir`, even
+when the slot is destroyed. Use physical absolute paths, without symlinks or
+`.`/`..` components. Explicit slots use the persistent `ssh` provider, not
+per-job workspace disks. Multi-repository `--also-target` jobs need a generic
+pool; explicit slots never put extra repository caches in their records.
+
+On every host, set its operator budget in `~/vivi-worker/worker.conf`:
+
+```ini
+max_busy=8
+```
+
+Unset means unlimited. This caps running/reserved jobs across mailspaces and
+pools, not slot declarations: ten declared slots can share eight busy places.
+Host-side `flock` (via Perl, on Linux and macOS) serializes claims. Small tokens
+under `~/vivi-worker/.busy/` reserve delivery and execution; normal completion,
+stop and undo release them. Dead holders are reclaimed at the next claim;
+an abandoned delivery expires after 120 seconds. All login accounts dispatching
+on one physical host must use the same writable `VIVI_WORKER_ROOT` (default
+`~/vivi-worker`) and worker.conf to share its budget.
+
+**Per-job APFS images are unsuitable for builds:** destroying the image after
+each job discards the build. Their bounded-workspace documentation remains
+available for disposable work; use persistent repository slots for warm builds.
+
+## Example persistent fleet
+
+The faberlang mailspace owns all ten declarations below. A separate vivi
+mailspace declares only its own repository slots. Paths here are operator
+choices, not Vivi conventions. studio-01 sets `max_busy=8`, so at most eight
+of the ten slots execute at once.
+
+```toml
+[pools.studio]
+provider = "ssh"
+# usual harness/committer configuration omitted
+
+[[slot]]
+name = "radix-1"
+repository = "faberlang/radix"
+host = "ianzepp@studio-01"
+dir = "/vivi/trees/faberlang/radix/slot-1"
+pools = ["studio"]
+
+[[slot]]
+name = "radix-2"
+repository = "faberlang/radix"
+host = "ianzepp@studio-01"
+dir = "/vivi/trees/faberlang/radix/slot-2"
+pools = ["studio"]
+
+[[slot]]
+name = "radix-3"
+repository = "faberlang/radix"
+host = "ianzepp@studio-01"
+dir = "/vivi/trees/faberlang/radix/slot-3"
+pools = ["studio"]
+
+[[slot]]
+name = "radix-4"
+repository = "faberlang/radix"
+host = "ianzepp@studio-01"
+dir = "/vivi/trees/faberlang/radix/slot-4"
+pools = ["studio"]
+
+[[slot]]
+name = "radix-5"
+repository = "faberlang/radix"
+host = "ianzepp@studio-01"
+dir = "/vivi/trees/faberlang/radix/slot-5"
+pools = ["studio"]
+
+[[slot]]
+name = "radix-6"
+repository = "faberlang/radix"
+host = "ianzepp@studio-01"
+dir = "/vivi/trees/faberlang/radix/slot-6"
+pools = ["studio"]
+
+[[slot]]
+name = "radix-7"
+repository = "faberlang/radix"
+host = "ianzepp@studio-01"
+dir = "/vivi/trees/faberlang/radix/slot-7"
+pools = ["studio"]
+
+[[slot]]
+name = "radix-8"
+repository = "faberlang/radix"
+host = "ianzepp@studio-01"
+dir = "/vivi/trees/faberlang/radix/slot-8"
+pools = ["studio"]
+
+[[slot]]
+name = "gradus-1"
+repository = "faberlang/gradus"
+host = "ianzepp@studio-01"
+dir = "/vivi/trees/faberlang/gradus/slot-1"
+pools = ["studio"]
+
+[[slot]]
+name = "gradus-2"
+repository = "faberlang/gradus"
+host = "ianzepp@studio-01"
+dir = "/vivi/trees/faberlang/gradus/slot-2"
+pools = ["studio"]
+```
+
+## Disposable bounded-worker protocol
+
+The remaining sections describe per-job worker boundaries, not explicit
+persistent SSH slots.
+
 ## Roles
 
 - **Orchestrator** (the pump). It decides which job runs on which pool, and

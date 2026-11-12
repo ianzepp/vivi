@@ -154,6 +154,25 @@ impl SshProvider {
         &self.root
     }
 
+    /// Deliver the persistent slot's runtime records after winning its claim.
+    pub(super) fn install_explicit(
+        &self,
+        config: &PoolConfig,
+        ctx: &super::runpod::HostContext,
+        id: &str,
+        hold: &Hold,
+    ) -> Result<(), VivariumError> {
+        let mut config = config.clone();
+        config.repo = None;
+        config.remote_url = None;
+        let token = super::github::Secret::new(String::new());
+        let pool = super::slot::PoolId::keyed(&ctx.mailspace, &ctx.pool);
+        let spec = super::run::dispatch_spec(&config, &pool, (&token, ""), self);
+        let archive = self.new_slot_archive(&spec)?;
+        self.require("install", &[id, &hold.nonce], Some(&archive))
+            .map(drop)
+    }
+
     /// One call of the remote script; a failing exit code is returned, not
     /// raised.
     fn call(

@@ -38,9 +38,23 @@ pub fn claim_slot(
     task: &str,
     now: u64,
 ) -> Result<Claim, VivariumError> {
+    claim_repository_slot(provider, id, task, now, None)
+}
+
+/// Claim a free slot of the selected repository (generic pools accept any).
+///
+/// # Errors
+/// Returns an error when no matching capacity is free or the provider fails.
+pub fn claim_repository_slot(
+    provider: &dyn PoolProvider,
+    id: &PoolId,
+    task: &str,
+    now: u64,
+    repository: Option<&str>,
+) -> Result<Claim, VivariumError> {
     let slots = slot::pool_slots(id, &provider.list()?);
     for candidate in slots.iter().filter(|s| s.state == "free") {
-        if let Some(hold) = provider.claim(&candidate.id, task, now)? {
+        if let Some(hold) = provider.claim_repository(&candidate.id, task, now, repository)? {
             return Ok(Claim {
                 slot: candidate.clone(),
                 hold,

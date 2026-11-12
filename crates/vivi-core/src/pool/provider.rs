@@ -411,6 +411,17 @@ pub trait PoolProvider {
     /// Returns an error if the host refuses.
     fn unclaim(&self, id: &str) -> Result<(), VivariumError>;
 
+    /// Claim only capacity serving this repository; generic pools accept any.
+    fn claim_repository(
+        &self,
+        id: &str,
+        task: &str,
+        now: u64,
+        _repository: Option<&str>,
+    ) -> Result<Option<Hold>, VivariumError> {
+        self.claim(id, task, now)
+    }
+
     /// End the claim window of `hold`; the marks stay.
     ///
     /// # Errors

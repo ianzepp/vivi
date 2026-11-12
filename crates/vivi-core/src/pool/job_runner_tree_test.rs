@@ -3,7 +3,7 @@ use crate::pool::job::sh_quote;
 use std::os::unix::fs::{MetadataExt, symlink};
 
 fn settings(tree: &Path) -> String {
-    format!("TARGET_TREE={}\n", sh_quote(&tree.to_string_lossy()))
+    format!("SLOT_DIR={}\n", sh_quote(&tree.to_string_lossy()))
 }
 
 fn tree(rig: &Rig) -> PathBuf {
@@ -37,7 +37,7 @@ fn configured_tree_reuses_checkout_git_metadata_mtimes_and_ignored_output_across
         .join("tree roots ' quoted/owner/repo/slot-1");
     let first = run(&rig, &tree, "mkdir -p build; echo warm > build/cache", "");
     assert_eq!(first.push(), "read_only_unchanged", "{:?}", first.fields);
-    let repo = tree.join("repo");
+    let repo = tree.clone();
     let before = std::fs::metadata(repo.join("a.txt")).unwrap();
     let gitdir = std::fs::metadata(repo.join(".git")).unwrap().ino();
     // Tracked and loose leftovers from a prior process must be cleaned.
@@ -59,10 +59,10 @@ fn configured_tree_reuses_checkout_git_metadata_mtimes_and_ignored_output_across
     );
     assert_eq!(gitdir, std::fs::metadata(repo.join(".git")).unwrap().ino());
     assert_eq!(
-        std::fs::read_to_string(tree.join("source")).unwrap(),
+        std::fs::read_to_string(rig.work.path().join("source")).unwrap(),
         format!("file://{}", rig.f.repo.display())
     );
-    assert!(tree.join("prepared").is_file());
+    assert!(rig.work.path().join("prepared").is_file());
     assert!(!rig.work.path().join("targets").exists());
 }
 
@@ -71,7 +71,7 @@ fn configured_tree_refuses_symlinks_at_checkout_cache_and_ancestor_paths() {
     for level in [
         "trees",
         "trees/owner/repo/slot-1",
-        "trees/owner/repo/slot-1/repo",
+        "trees/owner/repo/slot-1/.git",
     ] {
         let rig = Rig::new();
         let external = tempfile::tempdir().unwrap();
@@ -94,7 +94,11 @@ fn configured_tree_refuses_a_different_source_and_relative_paths() {
     let rig = Rig::new();
     let tree = tree(&rig);
     assert_eq!(run(&rig, &tree, "true", "").push(), "read_only_unchanged");
-    std::fs::write(tree.join("source"), "git@elsewhere:other/repo.git").unwrap();
+    std::fs::write(
+        rig.work.path().join("source"),
+        "git@elsewhere:other/repo.git",
+    )
+    .unwrap();
     assert_eq!(
         run(&rig, &tree, "true", "").push(),
         "target_source_mismatch"
@@ -113,7 +117,7 @@ fn configured_tree_refuses_a_different_source_and_relative_paths() {
 fn configured_tree_supports_a_prepared_local_mirror_worktree_and_checks_its_record() {
     let rig = Rig::new();
     let tree = tree(&rig);
-    std::fs::create_dir_all(&tree).unwrap();
+    std::fs::create_dir_all(tree.parent().unwrap()).unwrap();
     git(
         &rig.f.repo,
         &[
@@ -121,11 +125,15 @@ fn configured_tree_supports_a_prepared_local_mirror_worktree_and_checks_its_reco
             "add",
             "-q",
             "--detach",
-            tree.join("repo").to_str().unwrap(),
+            tree.to_str().unwrap(),
             &rig.start,
         ],
     );
-    std::fs::write(tree.join("worktree_of"), rig.f.repo.to_str().unwrap()).unwrap();
+    std::fs::write(
+        rig.work.path().join("worktree_of"),
+        rig.f.repo.to_str().unwrap(),
+    )
+    .unwrap();
     let extra = format!(
         "TARGET_LOCAL_SOURCE={}\nLOCAL_ACTION=detached\nLOCAL_START={}\n",
         sh_quote(rig.f.repo.to_str().unwrap()),
@@ -145,7 +153,7 @@ fn configured_tree_supports_a_prepared_local_mirror_worktree_and_checks_its_reco
         run(&rig, &tree, "grep mirror build/cache", &extra).get("agent_rc"),
         "0"
     );
-    std::fs::write(tree.join("worktree_of"), "/different/mirror").unwrap();
+    std::fs::write(rig.work.path().join("worktree_of"), "/different/mirror").unwrap();
     assert_eq!(
         run(&rig, &tree, "true", &extra).push(),
         "target_source_mismatch"

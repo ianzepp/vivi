@@ -398,7 +398,7 @@ digest = "90d"
 
 A pool table is complete on its own: nothing is inherited. Keys: `provider`
 (`fly` by default, `docker`, `ssh`, `local`, `runpod`), `repo` (`owner/name`),
-`slots`, `fallback` (next pool in the role routing chain), `image`, `setup`, `seed`, `requires`, `facts`, `build_dir`, `tree_root`, `depth`,
+`slots`, `fallback` (next pool in the role routing chain), `image`, `setup`, `seed`, `requires`, `facts`, `build_dir`, `depth`,
 `restore`, and the sub-tables `bands` (`P0` to `P5`, each a list of
 `{ model, reasoning }`), `github` (`app_id`, `private_key`), `harness` (`name`,
 `run`, `models`, `env`, `rules`), `committer` (`name`, `email`), `bridge`
@@ -412,34 +412,58 @@ not kept in the config: the Fly token comes from
 `FLY_API_TOKEN` or `FLY_ACCESS_TOKEN` (or `fly auth token`), and a harness
 receives only the environment variables its `env` list names.
 
-For persistent directory checkouts on an SSH host (Linux or macOS), set
-`tree_root` directly on the pool in `.vivi/mailspace.toml`:
+For warm builds, declare repository-bound slots in the owning mailspace's
+`.vivi/mailspace.toml`. The directory is the working tree itself, used exactly
+as written; Vivi does not append `repo/` or derive an owner/repo layout.
 
 ```toml
 [pools.studio]
 provider = "ssh"
-slots = 4
-tree_root = "/Volumes/Build/trees"
+# Add the usual harness/committer settings; no counted slots or ssh.host needed.
 
-[pools.studio.ssh]
-host = "builder@studio"
-# root = "~/vivi-pool"  # slot control files; independent of tree_root
+[[slot]]
+name = "radix-1"
+repository = "faberlang/radix"
+host = "ianzepp@studio-01"
+dir = "/vivi/trees/faberlang/radix/slot-1"
+pools = ["studio"]
 ```
 
-Add the pool's usual harness/committer settings and target repositories as
-normal. `tree_root` is an absolute path **on the slot host**, unset by default.
-A target URL such as `git@hub.example:faberlang/radix.git` yields
-`TARGET_TREE=/Volumes/Build/trees/faberlang/radix/<slot-name>`; the checkout is
-`repo/` beneath that directory, alongside its `source` or `worktree_of` record.
-The last two URL path components supply owner/repo (`.git` is removed); a local
-mirror uses its configured repository remote URL. Each job reuses the checkout
-in place: unchanged source mtimes and ignored build output survive. Symlinks
-in that path are refused; use a physical absolute path (no `.` or `..`).
-Leaving `tree_root` unset retains `$WORK/targets/<checkout-key>/repo` exactly.
-It applies to the job's selected target, not extra read-only targets or legacy
-non-target checkouts, and cannot be combined with a per-job `workspace` disk.
-Trees outside the slot control directory remain there when a slot is destroyed;
-clean them up explicitly only when no job uses them.
+Names are unique within the mailspace. `repository` is exactly `owner/repo`,
+matched against the last two components of the target's Git URL (without
+`.git`), not its alias. `pools` is optional: absent/empty allows all SSH pools
+in this mailspace; otherwise it lists eligible role-routing pools. A job
+claims only a free slot of its repository, by name. A pool with no routed
+explicit declarations retains its counted, derived slots unchanged.
+
+The first job creates `dir` if absent. Later jobs fetch, `checkout -f` and
+`clean -fd` (never `-x`) there. Unchanged source mtimes and ignored build output
+survive. Claims, boot pid, logs, delivered files, source/worktree records and
+preparation markers live in `dir/.vivi/`; `/.vivi/` is added only to Git's
+`info/exclude`, never a tracked ignore file. Vivi never deletes `dir`, even
+when the slot is destroyed. Use physical absolute paths, without symlinks or
+`.`/`..` components. Explicit slots use the persistent `ssh` provider, not
+per-job workspace disks. Multi-repository `--also-target` jobs need a generic
+pool; explicit slots never put extra repository caches in their records.
+
+On every host, set its operator budget in `~/vivi-worker/worker.conf`:
+
+```ini
+max_busy=8
+```
+
+Unset means unlimited. This caps running/reserved jobs across mailspaces and
+pools, not slot declarations: ten declared slots can share eight busy places.
+Host-side `flock` (via Perl, on Linux and macOS) serializes claims. Small tokens
+under `~/vivi-worker/.busy/` reserve delivery and execution; normal completion,
+stop and undo release them. Dead holders are reclaimed at the next claim;
+an abandoned delivery expires after 120 seconds. All login accounts dispatching
+on one physical host must use the same writable `VIVI_WORKER_ROOT` (default
+`~/vivi-worker`) and worker.conf to share its budget.
+
+**Per-job APFS images are unsuitable for builds:** destroying the image after
+each job discards the build. Their bounded-workspace documentation remains
+available for disposable work; use persistent repository slots for warm builds.
 
 On macOS the SSH host needs bash and the usual runner tools (`timeout`,
 `sha256sum`, and `grep -z`, for example from GNU packages). Slot processes are
