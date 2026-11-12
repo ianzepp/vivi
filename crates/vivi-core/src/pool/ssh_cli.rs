@@ -7,7 +7,8 @@
 //! [`shared_control_dir`]), so the pump's many short `vivi pool ...`
 //! subprocesses reuse one login per host; the connection ends after
 //! [`PERSIST_SECS`] idle. Without that directory a runner keeps a private one
-//! whose connection ends with it.
+//! whose connection ends with it. A master that refuses a new session is
+//! closed, then the call is retried once without multiplexing.
 //! [`Runner`] is the seam tests replace: its one argument is the remote
 //! command line.
 
@@ -22,6 +23,8 @@ use vivi_error::VivariumError;
 
 /// Seconds `ssh` waits to connect before it gives up (no key, no route).
 const CONNECT_TIMEOUT_SECS: &str = "10";
+/// Bound the best-effort shutdown of a master that refused a session.
+const MASTER_EXIT_TIMEOUT: Duration = Duration::from_secs(5);
 /// Seconds an idle shared connection lives on after the last call.
 pub(crate) const PERSIST_SECS: &str = "60";
 /// Longest control socket directory a Unix socket path can take with room to
@@ -101,10 +104,59 @@ impl SshCli {
     /// The process for one remote command line.
     #[must_use]
     pub fn command(&self, remote: &str) -> Command {
+        self.session_command(remote, true)
+    }
+
+    fn session_command(&self, remote: &str, multiplex: bool) -> Command {
         let mut command = Command::new("ssh");
+        if !multiplex {
+            // Put overrides first: OpenSSH uses the first value of an option.
+            // Bypass even a master another process opened during recovery.
+            command.args([
+                "-S",
+                "none",
+                "-o",
+                "ControlMaster=no",
+                "-o",
+                "ControlPersist=no",
+            ]);
+        }
         command.args(self.options());
         command.arg("--").arg(&self.host).arg(remote);
         command
+    }
+
+    fn master_exit_command(&self) -> Command {
+        let mut command = Command::new("ssh");
+        // Keep the same control path (including %C expansion), port, user
+        // and pinned-host options as the failed call.
+        command.args(self.options());
+        command.args(["-O", "exit", "--", &self.host]);
+        command
+    }
+
+    /// Retry only a refused mux session: no remote command started, so even
+    /// a mutating call and its stdin can safely be replayed. Other failures
+    /// (including generic SSH exit 255) may have run a command; leave them be.
+    fn run_with(
+        &self,
+        remote: &str,
+        stdin: Option<&[u8]>,
+        timeout: Duration,
+        mut execute: impl FnMut(Command, Option<&[u8]>, Duration) -> Result<RunOutput, VivariumError>,
+    ) -> Result<RunOutput, VivariumError> {
+        let out = execute(self.command(remote), stdin, timeout)?;
+        if !refused_mux_session(&out) {
+            return Ok(out);
+        }
+        let closed = execute(self.master_exit_command(), None, MASTER_EXIT_TIMEOUT);
+        tracing::warn!(
+            host = %self.host,
+            master_closed = closed.as_ref().is_ok_and(RunOutput::succeeded),
+            "SSH master refused a session; closing it and retrying once on a fresh connection"
+        );
+        // Do not recurse: a second refusal is returned exactly as before.
+        execute(self.session_command(remote, false), stdin, timeout)
     }
 
     /// Everything before the host: batch mode and a connect timeout so a
@@ -215,23 +267,43 @@ impl Runner for SshCli {
         timeout: Duration,
     ) -> Result<RunOutput, VivariumError> {
         let remote = args.first().map_or("", String::as_str);
-        let child = self
-            .command(remote)
-            .stdin(if stdin.is_some() {
-                Stdio::piped()
-            } else {
-                Stdio::null()
-            })
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| {
-                VivariumError::Message(format!(
-                    "failed to run `ssh` (is OpenSSH installed and on PATH?): {e}"
-                ))
-            })?;
-        finish(child, stdin, timeout, &format!("ssh {}", self.host))
+        self.run_with(remote, stdin, timeout, |command, input, limit| {
+            execute(command, input, limit, &self.host)
+        })
     }
+}
+
+/// OpenSSH's mux client exits nonzero (normally 255) before starting the
+/// remote command when the master cannot open a session. The exit code alone
+/// also covers authentication, network and potentially remote failures.
+fn refused_mux_session(out: &RunOutput) -> bool {
+    !out.succeeded()
+        && out.stderr.contains(
+            "mux_client_request_session: session request failed: Session open refused by peer",
+        )
+}
+
+fn execute(
+    mut command: Command,
+    stdin: Option<&[u8]>,
+    timeout: Duration,
+    host: &str,
+) -> Result<RunOutput, VivariumError> {
+    let child = command
+        .stdin(if stdin.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| {
+            VivariumError::Message(format!(
+                "failed to run `ssh` (is OpenSSH installed and on PATH?): {e}"
+            ))
+        })?;
+    finish(child, stdin, timeout, &format!("ssh {host}"))
 }
 
 impl Drop for SshCli {
