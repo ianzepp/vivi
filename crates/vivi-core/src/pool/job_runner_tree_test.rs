@@ -160,6 +160,72 @@ fn configured_tree_supports_a_prepared_local_mirror_worktree_and_checks_its_reco
     );
 }
 
+/// The fleet layout: a host keeps one full bare mirror per repository and each
+/// of the repository's slots is a worktree of it, so every job of every slot
+/// fetches into that one mirror. A shallow fetch there (the pool's DEPTH is 1
+/// here) would mark the shared mirror shallow for all slots, and slots
+/// starting together meet each other's locks on the shared repository.
+#[test]
+fn a_worktree_slot_of_a_shared_mirror_fetches_full_history_and_waits_out_a_held_lock() {
+    let rig = Rig::new();
+    let mirror = rig.work.path().canonicalize().unwrap().join("mirror.git");
+    git(
+        rig.work.path(),
+        &[
+            "clone",
+            "-q",
+            "--bare",
+            &rig.f.repo.display().to_string(),
+            mirror.to_str().unwrap(),
+        ],
+    );
+    let tree = tree(&rig);
+    std::fs::create_dir_all(tree.parent().unwrap()).unwrap();
+    git(
+        &mirror,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "--detach",
+            tree.to_str().unwrap(),
+            &rig.start,
+        ],
+    );
+    // Another slot's job holds the mirror's config lock for a moment.
+    let lock = mirror.join("config.lock");
+    std::fs::write(&lock, "").unwrap();
+    let release = {
+        let lock = lock.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(6));
+            std::fs::remove_file(lock).unwrap();
+        })
+    };
+    let result = run(&rig, &tree, "grep two a.txt", "");
+    release.join().unwrap();
+    assert_eq!(result.get("agent_rc"), "0", "{:?}", result.fields);
+    assert_eq!(result.push(), "read_only_unchanged");
+    assert_eq!(
+        git(&mirror, &["rev-parse", "--is-shallow-repository"]),
+        "false",
+        "a slot's fetch leaves the shared mirror's history whole"
+    );
+    let fetch_head = git(
+        &tree,
+        &[
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-path",
+            "FETCH_HEAD",
+        ],
+    );
+    assert!(
+        !Path::new(&fetch_head).exists(),
+        "FETCH_HEAD is removed through its Git path: in a worktree `.git` is a file"
+    );
+}
+
 #[test]
 fn unset_tree_keeps_the_existing_keyed_cache_location() {
     let rig = Rig::new();

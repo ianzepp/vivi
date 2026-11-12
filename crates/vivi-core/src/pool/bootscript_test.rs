@@ -257,7 +257,7 @@ fn the_runner_takes_a_full_remote_and_adds_the_token_only_to_https() {
     for needed in [
         r#"URL=$REMOTE"#,
         r#"https://*) [ -n "$TOKEN" ] && URL="https://x-access-token:${TOKEN}@${REMOTE#https://}""#,
-        r#"git fetch -q --depth "${DEPTH:-50}" "$URL" "$FROM""#,
+        r#"git fetch -q $(depth_arg "${DEPTH:-50}") "$URL" "$FROM""#,
         r#"publish_candidate_to "$(clean_publish_url "$REMOTE")" "refs/heads/$BRANCH" "$RUNNER_SHA" no"#,
     ] {
         assert!(job::RUNNER.contains(needed), "runner lacks {needed}");

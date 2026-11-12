@@ -228,19 +228,42 @@ publisher_git() {
 # drops new logins past its MaxStartups limit when many jobs connect at once.
 SSH_REFUSED='kex_exchange_identification|ssh_exchange_identification|ssh: connect to host'
 
+# Slots of one repository on one host are worktrees of one shared mirror, so
+# their jobs fetch into the same repository at once. Git then turns a fetch
+# away on the lock another fetch holds (refs, shallow, packed-refs, the
+# shared config). The losing command changed nothing, so it is safe to run
+# again.
+GIT_LOCKED="Unable to create '[^']*\\.lock': File exists|cannot lock ref|could not lock config file"
+
+# depth_arg <n>: the --depth argument of a fetch, empty in a persistent slot.
+# A persistent slot is a worktree of a full mirror shared by every slot of its
+# repository: a shallow fetch would write the mirror's `shallow` file and hide
+# history from all of them. The mirror already holds the history, so a full
+# fetch there is incremental. Used unquoted: an empty result adds no argument.
+depth_arg() {
+  [ -n "${SLOT_DIR:-}" ] || printf -- '--depth=%s' "$1"
+}
+
 # retry_refused <command...>: run a remote Git command, and run it again when
 # SSH refused the connection, up to three tries in all, 2 then 4 seconds
 # apart. A refused connection reached no Git server, so a retried push cannot
-# land twice; any other failure is returned at once. The command's stderr is
-# passed on after the last try.
+# land twice. A local lock collision (GIT_LOCKED) is retried up to twenty
+# tries, 1 to 3 seconds apart: another slot's fetch into the shared mirror
+# holds the lock for seconds. Any other failure is returned at once. The
+# command's stderr is passed on after the last try.
 retry_refused() {
-  local try=1 rc err
+  local try=1 locked=1 rc err
   err=$(mktemp "$W/git-stderr.XXXXXXXX") || { "$@"; return; }
   while :; do
     if "$@" 2>"$err"; then rc=0; else rc=$?; fi
     if [ "$rc" -ne 0 ] && [ "$try" -lt 3 ] && grep -Eq "$SSH_REFUSED" "$err"; then
       sleep $((try * 2))
       try=$((try + 1))
+      continue
+    fi
+    if [ "$rc" -ne 0 ] && [ "$locked" -lt 20 ] && grep -Eq "$GIT_LOCKED" "$err"; then
+      sleep $((1 + RANDOM % 3))
+      locked=$((locked + 1))
       continue
     fi
     cat "$err" >&2
@@ -635,7 +658,7 @@ if [ -n "${CHECKOUT_KEY:-}${SLOT_DIR:-}" ]; then
   else
     mkdir -p "$RD" || finish target_prepare_failed
     [ -n "${UNPRIVILEGED:-}" ] || chown -R hand:hand "$CACHE"
-    if [ ! -d "$RD/.git" ]; then
+    if [ ! -e "$RD/.git" ]; then
       as_hand git -C "$RD" init -q . || finish target_prepare_failed
       printf '%s' "$REPOSITORY" > "$CACHE/source"
     fi
@@ -691,11 +714,12 @@ if [ -n "${LOCAL_ACTION:-}" ]; then
     START=$(as_hand git rev-parse HEAD)
   fi
 else
-  retry_refused as_hand git fetch -q --depth "${DEPTH:-50}" "$URL" "$FROM" || finish fetch_failed
+  retry_refused as_hand git fetch -q $(depth_arg "${DEPTH:-50}") "$URL" "$FROM" || finish fetch_failed
   START=$(as_hand git rev-parse FETCH_HEAD)
   as_hand git checkout -q -f "$START" && as_hand git clean "${CLEAN[@]}" || finish checkout_failed
   [ -n "${READ_ONLY:-}" ] || as_hand git checkout -q -B "$BRANCH" || finish checkout_failed
-  rm -f "$RD/.git/FETCH_HEAD"
+  # FETCH_HEAD by its Git path: in a worktree slot `.git` is a file.
+  rm -f "$(as_hand git rev-parse --path-format=absolute --git-path FETCH_HEAD)"
 fi
 
 # A fetch checkout may be a fresh `git init`, not a clone. Always configure
@@ -719,17 +743,19 @@ prepare_integration_ref() {
       "+refs/heads/$main:$ref"
     return $?
   fi
-  as_hand git config --replace-all remote.origin.url "$(clean_publish_url "$REMOTE")" && \
-    as_hand git config --replace-all remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*' || return 1
-  retry_refused as_hand git fetch -q --no-tags --no-write-fetch-head --depth "$depth" \
+  # A worktree slot shares its mirror's config with the other slots: retry a
+  # write that meets another slot's config lock.
+  retry_refused as_hand git config --replace-all remote.origin.url "$(clean_publish_url "$REMOTE")" && \
+    retry_refused as_hand git config --replace-all remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*' || return 1
+  retry_refused as_hand git fetch -q --no-tags --no-write-fetch-head $(depth_arg "$depth") \
     "$URL" "+refs/heads/$main:$ref" || return 1
   # As with explicit extra refs, retain enough bounded history to merge the
   # integration branch even when FROM is a pinned commit or another branch.
   while ! as_hand git merge-base "$START" "$ref" >/dev/null 2>&1 && [ "$depth" -lt 5000 ]; do
     depth=$((depth * 2)); [ "$depth" -le 5000 ] || depth=5000
-    retry_refused as_hand git fetch -q --no-tags --no-write-fetch-head --depth "$depth" \
+    retry_refused as_hand git fetch -q --no-tags --no-write-fetch-head $(depth_arg "$depth") \
       "$URL" "$START" || return 1
-    retry_refused as_hand git fetch -q --no-tags --no-write-fetch-head --depth "$depth" \
+    retry_refused as_hand git fetch -q --no-tags --no-write-fetch-head $(depth_arg "$depth") \
       "$URL" "+refs/heads/$main:$ref" || return 1
   done
 }
@@ -783,7 +809,7 @@ if [ -f "$J/with.list" ]; then
       else
         wlocal="refs/remotes/origin/$wref"
       fi
-      retry_refused as_hand git fetch -q --depth "${DEPTH:-50}" "$URL" "+$wref:$wlocal" || finish fetch_failed
+      retry_refused as_hand git fetch -q $(depth_arg "${DEPTH:-50}") "$URL" "+$wref:$wlocal" || finish fetch_failed
       rm -f "$RD/.git/FETCH_HEAD"
       wsha_now=$(as_hand git rev-parse "$wlocal")
     fi
@@ -815,11 +841,11 @@ if [ -f "$J/with.list" ]; then
       done <<< "$WITH_PAIRS"
       { [ -z "$PENDING" ] || [ "$D" -ge 5000 ]; } && break
       D=$((D * 2)); [ "$D" -le 5000 ] || D=5000
-      retry_refused as_hand git fetch -q --depth "$D" "$URL" "$START" || finish fetch_failed
+      retry_refused as_hand git fetch -q $(depth_arg "$D") "$URL" "$START" || finish fetch_failed
       rm -f "$RD/.git/FETCH_HEAD"
       while IFS= read -r pair; do
         [ -n "$pair" ] || continue
-        retry_refused as_hand git fetch -q --depth "$D" "$URL" "+${pair%% *}:${pair#* }" || finish fetch_failed
+        retry_refused as_hand git fetch -q $(depth_arg "$D") "$URL" "+${pair%% *}:${pair#* }" || finish fetch_failed
         rm -f "$RD/.git/FETCH_HEAD"
       done <<< "$PENDING"
     done
