@@ -16,7 +16,7 @@ const KIB_PER_GIB: u64 = 1024 * 1024;
 pub struct Probe {
     pub user: String,
     pub host_name: String,
-    /// `Linux x86_64`
+    /// For example, `Linux x86_64` or `Darwin arm64`.
     pub system: String,
     /// Tools and facilities the slot scripts need that the host lacks.
     pub missing: Vec<String>,
@@ -155,14 +155,14 @@ fn system_check(probe: Option<&Probe>) -> Check {
     let Some(p) = probe else {
         return Check::skipped(GROUP, "system", "needs the host");
     };
-    if p.system.starts_with("Linux") {
+    if p.system.starts_with("Linux") || p.system.starts_with("Darwin") {
         Check::ok(GROUP, "system", p.system.clone())
     } else {
         Check::fail(
             GROUP,
             "system",
-            format!("{} is not Linux", p.system),
-            "the ssh provider needs a Linux host (it finds a slot's processes through /proc)",
+            format!("{} is not Linux or macOS", p.system),
+            "the ssh provider needs Linux (/proc) or macOS (ps -E)",
         )
     }
 }
@@ -178,7 +178,7 @@ fn tools_check(probe: Option<&Probe>) -> Check {
         GROUP,
         "tools",
         format!("missing on the host: {}", p.missing.join(", ")),
-        "install them on the host (the ssh provider installs nothing); git and tar are needed, and bash, setsid, timeout, sha256sum, ps from the usual base packages",
+        "install them on the host (the ssh provider installs nothing); git and tar are needed, and bash, timeout, sha256sum, ps, plus setsid (or Perl on macOS)",
     )
 }
 

@@ -18,7 +18,7 @@
 # "Running" means boot.pid names a live process whose environment carries
 # VIVI_SLOT_ROOT=<the slot directory>: a reused pid is not mistaken for it. The
 # tag is inherited by everything the slot starts, so stopping finds the whole
-# tree, not only the process group. Linux (/proc) is required.
+# tree, not only the process group. Linux reads /proc; macOS uses ps -E.
 #
 # UMASK (077 unless the provider says otherwise) is the umask of everything the
 # script writes. A host that runs the slot's scripts as root and its agent as
@@ -39,6 +39,7 @@
 #   read A1 A2                 tar stream of the files named in A2 that exist
 #   exec A1 A2                 run script A2 with the slot as WORK and cwd
 #   destroy A1                 stop and delete slot A1 (guarded)
+SYSTEM=$(uname -s)
 umask "$UMASK"
 fail() { echo "vivi-ssh: $*" >&2; exit 1; }
 refuse() { echo "vivi-ssh: refusing to delete: $*" >&2; exit 92; }
@@ -58,16 +59,27 @@ known() { [ -f "$D/marks/vivi_pool" ]; }
 
 # Processes whose environment holds the slot's tag.
 tagged() {
-  grep -lzxF "VIVI_SLOT_ROOT=$1" /proc/[0-9]*/environ 2>/dev/null | sed 's#/proc/\([0-9]*\)/environ#\1#'
+  if [ "$SYSTEM" = Darwin ]; then
+    ps -A -ww -E -o pid=,command= 2>/dev/null | awk -v tag="VIVI_SLOT_ROOT=$1" '
+      { for (i = 2; i <= NF; i++) if ($i == tag) { print $1; break } }'
+  else
+    grep -lzxF "VIVI_SLOT_ROOT=$1" /proc/[0-9]*/environ 2>/dev/null | sed 's#/proc/\([0-9]*\)/environ#\1#'
+  fi
 }
 alive() {
   local p
   p=$(cat "$1/boot.pid" 2>/dev/null) || return 1
-  [[ $p =~ ^[0-9]+$ ]] && [ -r "/proc/$p/environ" ] || return 1
+  [[ $p =~ ^[0-9]+$ ]] || return 1
+  if [ "$SYSTEM" = Darwin ]; then
+    ps -ww -E -o command= -p "$p" 2>/dev/null | tr ' \t' '\n\n' | grep -qxF "VIVI_SLOT_ROOT=$1"
+    return $?
+  fi
+  [ -r "/proc/$p/environ" ] || return 1
   tr '\0' '\n' < "/proc/$p/environ" 2>/dev/null | grep -qxF "VIVI_SLOT_ROOT=$1"
 }
 # Everything the slot runs: the tagged processes and the boot session.
 slot_pids() {
+  if [ "$SYSTEM" = Darwin ]; then tagged "$1" | sort -un | tr '\n' ' '; return; fi
   {
     tagged "$1"
     local p
@@ -127,6 +139,15 @@ create_slot() {
   mv "$part" "$R/$A1" || { rm -rf "$part"; fail "could not place the new slot"; }
 }
 
+# macOS has no setsid utility, but Perl exposes the same POSIX call.
+detach() {
+  if [ "$SYSTEM" != Darwin ] || command -v setsid >/dev/null 2>&1; then
+    nohup setsid "$@"
+  else
+    nohup perl -MPOSIX -e 'POSIX::setsid() or die "setsid: $!\n"; exec @ARGV or die "exec: $!\n"' "$@"
+  fi
+}
+
 start_slot() {
   local _
   need_slot "$A1"; known || fail "no such slot: $A1"
@@ -137,7 +158,7 @@ start_slot() {
     # A login shell may reorder PATH; the boot command puts this order back.
     export WORK="$D" VIVI_SLOT_ROOT="$D" VIVI_SESSION_PATH="$PATH"
     cd "$D" || exit 1
-    nohup setsid bash -l -c 'PATH="$VIVI_SESSION_PATH:$PATH"; set -f; q=; IFS=:; for d in $PATH; do [ -n "$d" ] || continue; case ":$q:" in *":$d:"*) ;; *) q="${q:+$q:}$d" ;; esac; done; unset IFS; set +f; PATH=$q; unset VIVI_SESSION_PATH d q; echo $$ > "$WORK/boot.pid"; bash "$WORK/boot.sh"; rc=$?; echo "$rc" > "$WORK/exit_code"; exit "$rc"' \
+    detach bash -l -c 'PATH="$VIVI_SESSION_PATH:$PATH"; set -f; q=; IFS=:; for d in $PATH; do [ -n "$d" ] || continue; case ":$q:" in *":$d:"*) ;; *) q="${q:+$q:}$d" ;; esac; done; unset IFS; set +f; PATH=$q; unset VIVI_SESSION_PATH d q; echo $$ > "$WORK/boot.pid"; bash "$WORK/boot.sh"; rc=$?; echo "$rc" > "$WORK/exit_code"; exit "$rc"' \
       > "$D/boot.out" 2>&1 < /dev/null &
   )
   for _ in $(seq 100); do [ -s "$D/boot.pid" ] && return 0; sleep 0.05; done
@@ -250,10 +271,15 @@ probe() {
   echo "user=$(id -un)"
   echo "host=$(hostname 2>/dev/null)"
   echo "system=$(uname -s) $(uname -m)"
-  for t in git tar setsid timeout sha256sum ps od awk sed; do
+  for t in git tar timeout sha256sum ps od awk sed; do
     command -v "$t" > /dev/null 2>&1 || echo "missing=$t"
   done
-  [ -r /proc/self/environ ] || echo "missing=/proc"
+  if [ "$SYSTEM" = Darwin ]; then
+    command -v setsid >/dev/null 2>&1 || { command -v perl >/dev/null 2>&1 || echo "missing=perl (setsid fallback)"; }
+  else
+    command -v setsid >/dev/null 2>&1 || echo "missing=setsid"
+    [ -r /proc/self/environ ] || echo "missing=/proc"
+  fi
   echo | grep -z '' > /dev/null 2>&1 || echo "missing=grep -z"
   anchor=$R
   while [ ! -e "$anchor" ] && [ "$anchor" != / ]; do anchor=$(dirname "$anchor"); done

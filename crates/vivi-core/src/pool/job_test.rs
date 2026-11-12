@@ -51,6 +51,7 @@ fn plan() -> JobPlan {
         extras: Vec::new(),
         prepared_cache_key: None,
         prepared_local_source: None,
+        target_tree: None,
         ramdisk_size_gib: None,
         ramdisk_env: Vec::new(),
         job: "0123456789ab".into(),

@@ -1069,7 +1069,7 @@ Vivi task to one of them. A mailspace holds any number of **named pools**
 (`[pools.<name>]` in `.vivi/mailspace.toml`); each is complete on its own.
 Seven machine hosts exist, chosen by each pool's `provider`: `fly` (the default; Fly Machines, billed by the second),
 `docker` (containers on a Docker daemon: the local one, or a remote one over
-SSH; see "Docker provider" below) and `ssh` (a plain Linux host reached over
+SSH; see "Docker provider" below) and `ssh` (a plain Linux or macOS host reached over
 SSH, each slot a directory, no isolation; a minimal form, not the recommended
 one; see "SSH provider" below) and `local` (this machine: each slot a
 directory, the worker a process Vivi launches as you, no isolation, optionally
@@ -1251,6 +1251,20 @@ vivi pool unset glm image
   clean additionally names it (`-e /$BUILD_DIR`), so it survives even when not
   gitignored; on fly and docker it is a memory disk packed at seed and
   restored before every job instead. Fly and Docker work with or without it.
+- **`tree_root` optionally separates persistent target trees from slot control
+  files.** Set `tree_root = "/Volumes/Build/trees"` directly in
+  `[pools.<name>]` (or `vivi pool set <name> tree_root /Volumes/Build/trees`).
+  The path is absolute on the slot host, with no symlinks, `.` or `..`.
+  A target URL `git@hub.example:faberlang/radix.git` selects
+  `<tree_root>/faberlang/radix/<slot-name>/repo`; owner/repo are the URL's last
+  two path components, without `.git`, never the target alias. A local mirror
+  uses its publication remote URL. The directory above `repo` also holds the
+  `source`/`worktree_of` and preparation records. Jobs reuse it in place,
+  preserving unchanged source mtimes and ignored build output. Unset (the
+  default), target checkouts stay at `$WORK/targets/<checkout-key>/repo`.
+  Extra read-only targets and legacy non-target checkouts are unchanged.
+  Do not combine this setting with a per-job `workspace` disk. External trees
+  survive slot destruction; remove them explicitly only when idle.
 - **A `local` pool can give each job its own workspace disk.** A
   `[pools.<name>.workspace]` table with `enabled = true` makes a fresh disk for
   the job's temporary checkout and build output; it is removed when the job
@@ -1485,8 +1499,8 @@ when any check fails; warnings alone exit zero. `--json` gives the same data
   the unset ones: slots created now would lack them).
 - **Provider (SSH)**: the local `ssh` client runs; the host answers without a
   prompt (`BatchMode=yes`; a key in an agent, a known host key, a POSIX login
-  shell); it is Linux and has `git`, `tar`, `setsid`, `timeout`, `sha256sum`,
-  `ps` (a missing tool is a `fail` naming it; nothing is installed for you); the
+  shell); it is Linux or macOS and has `git`, `tar`, `timeout`, `sha256sum`,
+  `ps`, `grep -z`, and `setsid` (or Perl's POSIX module on macOS) (a missing tool is a `fail` naming it; nothing is installed for you); the
   root exists and is writable or can be created under a writable directory;
   free disk space is reported (`warn` under 20 GiB); the architecture is
   reported; every `harness.env` name is set in the login environment of
@@ -2373,8 +2387,9 @@ host = "user@server"          # required; anything `ssh` accepts, including a Ho
 ```
 
 - **Needs on the host**: SSH without a prompt (`BatchMode=yes`, connect timeout
-  on every call), a POSIX login shell, Linux (`/proc`), and `bash`, `git`, `tar`,
-  `setsid`, `timeout`, `sha256sum`, `ps`. Nothing else: no root, no `zstd`, no
+  on every call), a POSIX login shell, Linux or macOS, and `bash`, `git`, `tar`,
+  `timeout`, `sha256sum`, `ps`, `grep -z`, plus `setsid` on Linux (or Perl with
+  its POSIX module on macOS). Nothing else: no root, no `zstd`, no
   `curl`, no systemd, no Docker. Missing tools are a `doctor` failure; the slot
   scripts install nothing (no `apt-get`, `useradd`, `runuser`, `mount`, `chown`).
 - **What it deliberately lacks**: **no isolation.** The scripts and the agent run
@@ -2404,10 +2419,11 @@ host = "user@server"          # required; anything `ssh` accepts, including a Ho
   seed, not from a long-lived workspace — a clean checkout plus build is
   often several times smaller than a developer's accumulated build
   directory.
-- **Start/stop.** Start launches the boot script detached (`setsid`, a pid
-  file), so it outlives the SSH session. A slot "runs" while that process is
+- **Start/stop.** Start launches the boot script detached (`setsid`, or Perl's
+  `POSIX::setsid` on macOS when the utility is absent; a pid file), so it outlives the SSH session. A slot "runs" while that process is
   alive and carries `VIVI_SLOT_ROOT=<slot dir>` in its environment (a reused pid
-  is not mistaken for it). Stop kills every process carrying the tag, then
+  is not mistaken for it). Linux reads `/proc`; macOS finds exact environment
+  tokens through `ps -E`. Stop kills every process carrying the tag, then
   escalates to KILL, so nothing a job started outlives a stop; a process that
   scrubs its environment can escape. The hard job time limit, the idle stop and
   the linger work as on the other hosts.

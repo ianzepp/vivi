@@ -101,6 +101,9 @@ pub struct PoolConfig {
     /// a pool that sets none has no build directory handling at all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build_dir: Option<String>,
+    /// Absolute root for persistent target checkouts, separate from slot data.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tree_root: Option<String>,
     /// Baseline size in GiB a slot's build output is held to when it carries
     /// no `marks/build_baseline` mark, instead of the four-GiB default. A slot
     /// that predates the mark is then judged against this pool's own fresh
@@ -512,6 +515,7 @@ impl PoolConfig {
             }
             other => other,
         })?;
+        self.check_tree_root(&id.pool)?;
         self.check_depth(&id.pool)?;
         self.check_restore(&id.pool)
     }

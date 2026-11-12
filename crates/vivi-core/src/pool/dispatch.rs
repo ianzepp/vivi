@@ -189,6 +189,7 @@ fn assemble_job_plan(
         extras: Vec::new(),
         prepared_cache_key: None,
         prepared_local_source: None,
+        target_tree: None,
         ramdisk_size_gib: None,
         ramdisk_env: Vec::new(),
         job,
@@ -212,19 +213,25 @@ fn assemble_job_plan(
         model: flags.model.clone(),
         budget,
         depth: config.fetch_depth(),
-        harness_cmd: match (&flags.command, harness) {
-            (Some(command), _) => command.clone(),
-            (None, Some(harness)) => {
-                job::render_harness(&harness.run, &flags.model, reasoning.as_deref())
-            }
-            (None, None) => String::new(),
-        },
+        harness_cmd: planned_harness(flags, harness, reasoning.as_deref()),
         env_names: harness.map(|h| h.env.clone()).unwrap_or_default(),
         committer,
         read_only: flags.read_only,
         facts: config.facts.clone(),
         restore: config.restore.clone(),
         bridge: None,
+    }
+}
+
+fn planned_harness(
+    flags: &DispatchFlags,
+    harness: Option<&super::config::PoolHarness>,
+    reasoning: Option<&str>,
+) -> String {
+    match (&flags.command, harness) {
+        (Some(command), _) => command.clone(),
+        (None, Some(harness)) => job::render_harness(&harness.run, &flags.model, reasoning),
+        (None, None) => String::new(),
     }
 }
 
@@ -637,11 +644,24 @@ fn deliver(
         .checkout
         .as_ref()
         .map_or(plan.refs.from.as_str(), |c| c.start.as_str());
+    let target_tree = plan
+        .target
+        .as_ref()
+        .map(|target| {
+            super::config_tree::target_tree(
+                launch.config.tree_root.as_deref(),
+                target,
+                &claim.slot.name,
+            )
+        })
+        .transpose()?
+        .flatten();
     let prepared_workspace = provider.prepare_job(id, plan.target.as_ref(), start, &plan.job)?;
     for extra in &plan.extras {
         provider.prepare_extra_checkout(id, &extra.target, &extra.from)?;
     }
     let mut bundle_plan = plan.clone();
+    bundle_plan.target_tree = target_tree;
     bundle_plan.prepared_cache_key = prepared_workspace
         .as_ref()
         .map(|workspace| workspace.cache_key.clone());

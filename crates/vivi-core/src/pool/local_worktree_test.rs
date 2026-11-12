@@ -904,3 +904,60 @@ fn an_extra_checkout_is_a_plain_worktree_beside_the_jobs_own_and_goes_with_the_s
     rig.provider.destroy(&slot.id).unwrap();
     assert_eq!(Repo::new(&other.repo).worktrees().unwrap().len(), 1);
 }
+
+#[test]
+fn a_local_target_mirror_is_prepared_and_reused_under_the_configured_tree_root() {
+    let rig = Rig::new();
+    let trees = rig._root_dir.path().canonicalize().unwrap().join("trees");
+    let mut config = rig.config.clone();
+    config.tree_root = Some(trees.display().to_string());
+    let provider = LocalProvider::new(
+        &config,
+        &super::super::runpod::HostContext {
+            dir: rig._root_dir.path().join(".vivi"),
+            mailspace: "e2e".into(),
+            pool: "wt".into(),
+            pools: vec!["wt".into()],
+        },
+    );
+    let slot = provider.list().unwrap().remove(0);
+    let target = dispatch::target::JobTarget {
+        check: None,
+        id: "alias".into(),
+        source: rig.f.repo.display().to_string(),
+        publish_remote: Some("git@hub.example:faberlang/radix.git".into()),
+        cache_key: "a".repeat(64),
+        local_source: Some(rig.f.repo.display().to_string()),
+        seed: vec![],
+        requires: vec![],
+        build_dir: None,
+    };
+    provider
+        .prepare_target_checkout(&slot.id, &target, &rig.tip("main"), "first")
+        .unwrap();
+    let cache = trees.join("faberlang/radix").join(&slot.name);
+    assert_eq!(
+        std::fs::read_to_string(cache.join("worktree_of")).unwrap(),
+        rig.f.repo.to_str().unwrap()
+    );
+    std::fs::write(cache.join("repo/warm"), "kept").unwrap();
+    provider
+        .prepare_target_checkout(&slot.id, &target, &rig.tip("main"), "second")
+        .unwrap();
+    assert!(cache.join("repo/warm").exists());
+    assert_eq!(
+        Repo::new(&cache.join("repo")).common_dir().unwrap(),
+        Repo::new(&rig.f.repo).common_dir().unwrap()
+    );
+    assert!(!rig.root.join(&slot.id).join("targets").exists());
+    // Never follow a link in an external tree on provider preparation either.
+    std::fs::rename(&cache, cache.with_extension("saved")).unwrap();
+    std::os::unix::fs::symlink(cache.with_extension("saved"), &cache).unwrap();
+    assert!(
+        provider
+            .prepare_target_checkout(&slot.id, &target, &rig.tip("main"), "third")
+            .unwrap_err()
+            .to_string()
+            .contains("symlink")
+    );
+}

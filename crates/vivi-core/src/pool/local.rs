@@ -55,6 +55,7 @@ pub struct LocalProvider {
     /// doctor looks at it. The slots themselves carry what they need.
     source: Option<PathBuf>,
     build_dir: Option<String>,
+    tree_root: Option<String>,
     /// The pool's `build_baseline_gib` in bytes, for reclaim of a slot that
     /// carries no recorded baseline.
     build_baseline: Option<u64>,
@@ -82,6 +83,7 @@ impl LocalProvider {
             site,
             source: config.local.worktree_path(),
             build_dir: config.build_dir.clone(),
+            tree_root: config.tree_root.clone(),
             build_baseline: config.build_baseline_bytes(),
             workspace: config.workspace.clone(),
             ramdisk_runner: Arc::new(ramdisk::RealRunner),
@@ -517,12 +519,13 @@ fn add_target_worktree(cache: &Path, source: &str, start: &str) -> Result<(), Vi
 }
 
 impl LocalProvider {
-    /// The slot directory and the target's `<slot>/targets/<key>` cache path,
-    /// after the key is checked and no path on the way is a symlink.
+    /// The slot directory and the target cache (under the slot by default,
+    /// or `tree_root`), after checking the key and refusing symlinked paths.
     fn target_cache(
         &self,
         id: &str,
         target: &super::dispatch::target::JobTarget,
+        external: bool,
     ) -> Result<(PathBuf, PathBuf), VivariumError> {
         if target.cache_key.len() != 64 || !target.cache_key.bytes().all(|b| b.is_ascii_hexdigit())
         {
@@ -530,8 +533,19 @@ impl LocalProvider {
         }
         let slot = self.known(id)?;
         let targets = slot.join("targets");
-        let cache = targets.join(&target.cache_key);
-        reject_target_symlinks(&targets, &cache)?;
+        let tree = super::config_tree::target_tree(
+            self.tree_root.as_deref().filter(|_| external),
+            target,
+            &state::name_of(id),
+        )?;
+        let cache = tree.map_or_else(|| targets.join(&target.cache_key), PathBuf::from);
+        if external && self.tree_root.is_some() {
+            for parent in cache.ancestors() {
+                reject_target_symlinks(parent, &cache)?;
+            }
+        } else {
+            reject_target_symlinks(&targets, &cache)?;
+        }
         Ok((slot, cache))
     }
 }
@@ -661,7 +675,7 @@ impl PoolProvider for LocalProvider {
         if source.is_none() && !self.workspace.enabled {
             return Ok(());
         }
-        let (slot, cache) = self.target_cache(id, target)?;
+        let (slot, cache) = self.target_cache(id, target, true)?;
         std::fs::create_dir_all(&cache)?;
         if self.workspace.enabled {
             mount_job_ramdisk(self, id, job, &slot, &cache, source)?;
@@ -685,7 +699,7 @@ impl PoolProvider for LocalProvider {
         let Some(source) = target.local_source.as_deref() else {
             return Ok(());
         };
-        let (_slot, cache) = self.target_cache(id, target)?;
+        let (_slot, cache) = self.target_cache(id, target, false)?;
         std::fs::create_dir_all(&cache)?;
         add_target_worktree(&cache, source, start)
     }

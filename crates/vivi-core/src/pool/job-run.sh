@@ -6,6 +6,8 @@
 #   params.env   REMOTE FROM INTEGRATION_REF BRANCH DEPTH BUDGET MODEL SLOT SUBJECT JOB TASK
 #                COMMIT_NAME COMMIT_EMAIL ENV_NAMES RAMDISK_SIZE_GIB
 #                RAMDISK_ENV_COUNT and numbered RAMDISK_ENV_<n>_NAME/VALUE
+#                TARGET_TREE (optional absolute target cache directory, including
+#                its repo/ checkout and source/worktree_of records)
 #                READ_ONLY (set to 1 for a read-only job; BRANCH is then empty)
 #                (REMOTE is the full Git address; https gets the token below,
 #                a file:// address is used as given). A worktree slot has no
@@ -148,7 +150,12 @@ if [ -n "${UNPRIVILEGED:-}" ]; then
   rm -rf "$W/tmp" && mkdir -p "$W/tmp" && export TMPDIR="$W/tmp"
   AGENT_USER_HOME=${HOME:-$AGENT_HOME}
   agent_job_pids() {
-    grep -lzxF "VIVI_AGENT_JOB=$JOB" /proc/[0-9]*/environ 2>/dev/null | sed 's#/proc/\([0-9]*\)/environ#\1#'
+    if [ "$(uname -s)" = Darwin ]; then
+      ps -A -ww -E -o pid=,command= 2>/dev/null | awk -v tag="VIVI_AGENT_JOB=$JOB" '
+        { for (i = 2; i <= NF; i++) if ($i == tag) { print $1; break } }'
+    else
+      grep -lzxF "VIVI_AGENT_JOB=$JOB" /proc/[0-9]*/environ 2>/dev/null | sed 's#/proc/\([0-9]*\)/environ#\1#'
+    fi
   }
   no_agent_running() { [ -z "$(agent_job_pids)" ]; }
   kill_agent() {
@@ -607,9 +614,19 @@ finalize_targets() {
 # target's Git metadata or ignored build output.
 if [ -n "${CHECKOUT_KEY:-}" ]; then
   [[ "$CHECKOUT_KEY" =~ ^[0-9a-f]{64}$ ]] || finish target_key_invalid
-  CACHE=$W/targets/$CHECKOUT_KEY
+  CACHE=${TARGET_TREE:-$W/targets/$CHECKOUT_KEY}
   RD=$CACHE/repo
-  if [ -L "$W/targets" ] || [ -L "$CACHE" ] || [ -L "$RD" ]; then
+  if [ -n "${TARGET_TREE:-}" ]; then
+    case "$CACHE" in /) finish target_cache_invalid ;; /*) ;; *) finish target_cache_invalid ;; esac
+    # Refuse links in the configured tree and its ancestors, even when a
+    # leaf does not exist yet. Do not let mkdir or Git follow one outside it.
+    parent=$RD
+    while [ "$parent" != / ]; do
+      case "${parent##*/}" in ''|.|..) finish target_cache_invalid ;; esac
+      [ ! -L "$parent" ] || finish target_cache_invalid
+      parent=${parent%/*}; [ -n "$parent" ] || parent=/
+    done
+  elif [ -L "$W/targets" ] || [ -L "$CACHE" ] || [ -L "$RD" ]; then
     finish target_cache_invalid
   fi
   if [ -n "${TARGET_LOCAL_SOURCE:-}" ]; then

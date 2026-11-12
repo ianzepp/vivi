@@ -85,10 +85,13 @@ fn missing_tools_fail_and_the_fix_says_nothing_is_installed_for_you() {
 }
 
 #[test]
-fn a_host_that_is_not_linux_fails() {
+fn macos_is_supported_and_other_systems_fail() {
     let list = checks(&with(|p| p.system = "Darwin arm64".into()));
+    assert_eq!(check(&list, "system").status, Status::Ok);
+    assert_eq!(check(&list, "arch").detail, "Darwin arm64");
+    let list = checks(&with(|p| p.system = "FreeBSD amd64".into()));
     assert_eq!(check(&list, "system").status, Status::Fail);
-    assert!(check(&list, "system").detail.contains("not Linux"));
+    assert!(check(&list, "system").detail.contains("not Linux or macOS"));
 }
 
 #[test]

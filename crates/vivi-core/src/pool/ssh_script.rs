@@ -65,3 +65,7 @@ pub fn command_line_of(
 #[cfg(test)]
 #[path = "ssh_script_test.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "ssh_script_platform_test.rs"]
+mod platform_tests;

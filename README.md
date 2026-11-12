@@ -398,7 +398,7 @@ digest = "90d"
 
 A pool table is complete on its own: nothing is inherited. Keys: `provider`
 (`fly` by default, `docker`, `ssh`, `local`, `runpod`), `repo` (`owner/name`),
-`slots`, `fallback` (next pool in the role routing chain), `image`, `setup`, `seed`, `requires`, `facts`, `build_dir`, `depth`,
+`slots`, `fallback` (next pool in the role routing chain), `image`, `setup`, `seed`, `requires`, `facts`, `build_dir`, `tree_root`, `depth`,
 `restore`, and the sub-tables `bands` (`P0` to `P5`, each a list of
 `{ model, reasoning }`), `github` (`app_id`, `private_key`), `harness` (`name`,
 `run`, `models`, `env`, `rules`), `committer` (`name`, `email`), `bridge`
@@ -411,6 +411,41 @@ needed. Credentials are
 not kept in the config: the Fly token comes from
 `FLY_API_TOKEN` or `FLY_ACCESS_TOKEN` (or `fly auth token`), and a harness
 receives only the environment variables its `env` list names.
+
+For persistent directory checkouts on an SSH host (Linux or macOS), set
+`tree_root` directly on the pool in `.vivi/mailspace.toml`:
+
+```toml
+[pools.studio]
+provider = "ssh"
+slots = 4
+tree_root = "/Volumes/Build/trees"
+
+[pools.studio.ssh]
+host = "builder@studio"
+# root = "~/vivi-pool"  # slot control files; independent of tree_root
+```
+
+Add the pool's usual harness/committer settings and target repositories as
+normal. `tree_root` is an absolute path **on the slot host**, unset by default.
+A target URL such as `git@hub.example:faberlang/radix.git` yields
+`TARGET_TREE=/Volumes/Build/trees/faberlang/radix/<slot-name>`; the checkout is
+`repo/` beneath that directory, alongside its `source` or `worktree_of` record.
+The last two URL path components supply owner/repo (`.git` is removed); a local
+mirror uses its configured repository remote URL. Each job reuses the checkout
+in place: unchanged source mtimes and ignored build output survive. Symlinks
+in that path are refused; use a physical absolute path (no `.` or `..`).
+Leaving `tree_root` unset retains `$WORK/targets/<checkout-key>/repo` exactly.
+It applies to the job's selected target, not extra read-only targets or legacy
+non-target checkouts, and cannot be combined with a per-job `workspace` disk.
+Trees outside the slot control directory remain there when a slot is destroyed;
+clean them up explicitly only when no job uses them.
+
+On macOS the SSH host needs bash and the usual runner tools (`timeout`,
+`sha256sum`, and `grep -z`, for example from GNU packages). Slot processes are
+found by exact `VIVI_SLOT_ROOT` tags via `ps -E`, not `/proc`; when `setsid` is
+absent, Perl's `POSIX::setsid` detaches the boot process. No disk image is made
+or deleted per job by the `ssh` provider.
 
 `vivi pool doctor` checks pools, providers and repositories and names the fix
 for each finding. `doctor --test` creates throwaway slots (billable on Fly; on

@@ -40,6 +40,7 @@ pub mod config_bridge;
 pub mod config_depth;
 pub mod config_restore;
 pub mod config_ticket;
+pub mod config_tree;
 pub mod config_view;
 pub mod config_worker;
 pub mod dispatch;

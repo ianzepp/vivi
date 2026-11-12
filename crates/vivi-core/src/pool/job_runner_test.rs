@@ -550,3 +550,6 @@ mod cargo_tests;
 
 #[path = "job_runner_check_test.rs"]
 mod check_tests;
+
+#[path = "job_runner_tree_test.rs"]
+mod tree_tests;

@@ -340,6 +340,8 @@ pub struct JobPlan {
     pub prepared_cache_key: Option<String>,
     /// Provider-prepared local source for a no-target local-worktree job.
     pub prepared_local_source: Option<String>,
+    /// Target cache directory resolved after the slot is claimed.
+    pub target_tree: Option<String>,
     /// Size and environment settings for a provider-mounted per-job RAM disk.
     pub ramdisk_size_gib: Option<u64>,
     pub ramdisk_env: Vec<(String, String)>,
@@ -564,6 +566,9 @@ fn params_fields(spec: &JobPlan, slot: &str) -> Vec<ParamField> {
         fields.push(("READ_ONLY", "1".to_string()));
     }
     append_target_fields(&mut fields, spec);
+    if let Some(tree) = &spec.target_tree {
+        fields.push(("TARGET_TREE", tree.clone()));
+    }
     if let Some(checkout) = &spec.checkout {
         fields.extend([
             ("LOCAL_ACTION", checkout.action.word().to_string()),
