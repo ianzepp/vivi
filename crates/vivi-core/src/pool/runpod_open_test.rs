@@ -469,6 +469,7 @@ fn the_uncollected_note_states_the_cost_and_the_unverified_deadline() {
         start: "a".repeat(40),
         with: Vec::new(),
         budget: 600,
+        check_allowance_s: 0,
         at: NOW,
         read_only: false,
         hardware: "NVIDIA A100 80GB PCIe x1, $1.19/h".into(),

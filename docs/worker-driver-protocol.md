@@ -95,6 +95,14 @@ cap_gib = 32
 sccache = false
 ```
 
+To verify work without a second cold build, configure the target's fixed
+`[pump.targets.<id>.check]` (`command`, `timeout_s`) in the dispatching
+mailspace. The job runner executes it after the agent and its commit step,
+before publication, with this same slot's Cargo environment; a failing check
+still publishes and records `check_rc`, `check_s`, `check_tail`. See
+[fixed post-agent checks](../README.md#fixed-post-agent-checks-per-target)
+for the Rust example, bounds, skip rules and red-result behavior.
+
 The table is off when absent. `root` is an absolute worker build root, on the
 same filesystem as `apfs_dir`; when omitted it is the parent of `apfs_dir`.
 It must not be inside a job boundary. The driver resolves it on the worker,

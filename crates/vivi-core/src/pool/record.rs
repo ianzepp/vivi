@@ -44,6 +44,9 @@ pub struct DispatchRecord {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub with: Vec<String>,
     pub budget: u64,
+    /// Reserved post-agent check time, including kill grace.
+    #[serde(default, skip_serializing_if = "is_zero_cost")]
+    pub check_allowance_s: u64,
     /// Dispatch time, epoch seconds.
     pub at: u64,
     /// The job publishes nothing (`branch` is then empty). A record made

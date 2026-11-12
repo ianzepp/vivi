@@ -96,10 +96,23 @@
 # and whatever the agent left running is found by the VIVI_AGENT_JOB variable
 # that only its environment carries. The bridge.key file, when there is one,
 # is removed as soon as it is read, like the token.
+# Older, already-seeded slots may still launch this as a file. Snapshot the
+# entire runner before the agent starts, so same-uid edits to run.sh cannot
+# change instructions bash would otherwise read after waiting for the agent.
+if [ -n "${BASH_SOURCE[0]:-}" ]; then
+  exec /bin/bash -c "$(cat "${BASH_SOURCE[0]}")"
+fi
 W=${WORK:-/work}
 J=$W/job
 RD=$W/repo
 . "$J/params.env"
+# Capture config before the harness starts; never read a check from the checkout
+# (or re-read its delivered params after the agent could have touched them).
+readonly CHECK_COMMAND="${CHECK_COMMAND:-}" CHECK_TIMEOUT_S="${CHECK_TIMEOUT_S:-600}"
+readonly CHECK_TIMEOUT_BIN="$(command -v timeout)"
+CHECK_RC=
+CHECK_S=
+CHECK_TAIL=
 # A file:// address under /work means this slot's root, wherever it really is.
 case "$REMOTE" in
   file:///work|file:///work/*) REMOTE=file://$W${REMOTE#file:///work} ;;
@@ -319,6 +332,11 @@ finish() { # finish <push-outcome> [sha]
     echo "start=$START"
     echo "agent_rc=$AGENT_RC"
     echo "agent_s=$AGENT_S"
+    if [ -n "$CHECK_RC" ]; then
+      echo "check_rc=$CHECK_RC"
+      echo "check_s=$CHECK_S"
+      printf 'check_tail=%s\n' "$CHECK_TAIL"
+    fi
     echo "job_s=$(( $(now) - T0 ))"
     echo "model=$MODEL"
     echo "slot=$SLOT"
@@ -1129,6 +1147,39 @@ if [ -n "$CHANGED_PATHS" ]; then
     CHANGED_EXTRA+=$'\n'"changed_path_$i=$path"
   done <<< "$CHANGED_PATHS"
 fi
+# The check is runner configuration already captured above, not a repository
+# script. Run it only for a changed, committed candidate, after every agent
+# process is gone, with the very same build environment. Its independent
+# timeout includes a five-second kill grace. Stream combined output through
+# tail, retaining only 1024 bytes, never an unbounded log. Keep at most 40
+# lines, escaped to one result value of at most 4096 bytes. Do not use ulimit
+# here: it would also cap compiler artifacts. Stdin is never the agent's input.
+run_check() {
+  [ -n "$CHECK_COMMAND" ] || return 0
+  local c0 out
+  c0=$(now)
+  CHECK_RC=125
+  if no_agent_running; then
+    (
+      as_hand env -i "${HARNESS_ENV[@]}" "$CHECK_TIMEOUT_BIN" -k 5 "$CHECK_TIMEOUT_S" \
+        /bin/bash -c "$CHECK_COMMAND" < /dev/null
+      rc=$?
+      # Close inherited pipes too: a check's background children must not
+      # hold the bounded output reader open after the timeout has returned.
+      kill_agent || rc=125
+      printf '%s' "$rc" > "$J/check.rc"
+    ) 2>&1 | tail -c 1024 > "$J/check.out"
+    CHECK_RC=$(cat "$J/check.rc" 2>/dev/null)
+    CHECK_RC=${CHECK_RC:-125}
+  fi
+  CHECK_S=$(( $(now) - c0 ))
+  out=$(tail -c 1024 "$J/check.out" 2>/dev/null | tail -n 40 | tr -d '\000-\010\013-\037')
+  CHECK_TAIL=$(esc "$out")
+  rm -f "$J/check.out" "$J/check.rc"
+  echo "check_rc $CHECK_RC check_s $CHECK_S"
+}
+run_check
+
 # A refusal for a tracker handle in a commit message has its own outcome word.
 if [ -n "${LOCAL_ACTION:-}" ]; then
   if history_clean "$RUNNER_SHA"; then RUNNER_PUSH=committed; else RUNNER_PUSH=push_refused; fi

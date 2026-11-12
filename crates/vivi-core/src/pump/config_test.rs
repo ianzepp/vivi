@@ -941,3 +941,23 @@ fn the_subsystems_table_is_written_only_when_one_is_off() {
     cfg.subsystems.flow = false;
     assert!(toml::to_string(&cfg).unwrap().contains("[subsystems]"));
 }
+
+#[test]
+fn target_check_configuration_is_optional_validated_and_has_a_default_timeout() {
+    let config: PumpConfig =
+        toml::from_str("[targets.rust]\npath='.'\n[targets.rust.check]\ncommand='cargo test'\n")
+            .unwrap();
+    let check = config.targets["rust"].check.as_ref().unwrap();
+    assert_eq!(check.command, "cargo test");
+    assert_eq!(check.timeout_s, 600);
+    assert!(check.validate().is_ok());
+    for (command, timeout_s) in [("", 1), ("true", 0), ("true", 86401)] {
+        let check = crate::pool::check::JobCheck {
+            command: command.into(),
+            timeout_s,
+        };
+        assert!(check.validate().is_err());
+    }
+    assert!(PumpTarget::default().check.is_none());
+    assert!(toml::from_str::<crate::pool::check::JobCheck>("command='true'\ntimeot_s=2").is_err());
+}

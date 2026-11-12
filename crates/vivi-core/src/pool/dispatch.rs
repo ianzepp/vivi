@@ -574,6 +574,7 @@ fn record_of(
             .map(|w| format!("{}@{}", w.name, w.commit.get(..12).unwrap_or(&w.commit)))
             .collect(),
         budget: plan.budget,
+        check_allowance_s: plan.check_allowance(),
         at: now,
         read_only: plan.read_only,
         hardware,
@@ -609,7 +610,7 @@ fn take_slot(
                     pool: id,
                     task: &plan.task,
                     now,
-                    budget_secs: plan.budget,
+                    budget_secs: plan.budget + plan.check_allowance(),
                     spec: dispatch_spec(&machine_config, id, seed, provider),
                     progress: launch.progress,
                     ready_timeout_secs: launch.ready_timeout,

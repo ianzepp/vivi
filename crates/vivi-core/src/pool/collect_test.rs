@@ -26,6 +26,7 @@ fn open(task: &str, job: &str, at: u64) -> OpenDispatch {
             start: "f".repeat(40),
             with: Vec::new(),
             budget: 600,
+            check_allowance_s: 0,
             at,
             read_only: false,
             hardware: String::new(),
@@ -968,5 +969,22 @@ fn a_stopped_slot_reports_the_handed_in_reply_as_its_receipt() {
         done.receipt.starts_with("Submitted successfully."),
         "{}",
         done.receipt
+    );
+}
+
+#[test]
+fn collector_reserves_check_time_in_addition_to_agent_budget_and_grace() {
+    let fake = fake_with("started", "");
+    let mut d = open("aaaa1111", "j1", 1000);
+    d.record.check_allowance_s = 300;
+    let old_deadline = 1000 + d.record.budget + TIMEOUT_GRACE_SECS;
+    assert!(
+        poll(&fake, &d, old_deadline + 1, &pacing())
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        poll(&fake, &d, old_deadline + 301, &pacing()).unwrap(),
+        Some(Outcome::Timeout)
     );
 }

@@ -121,6 +121,7 @@ impl Rig {
         }
         params.push_str(extra_params);
         for (name, content) in [
+            ("run.sh", RUNNER),
             ("params.env", params.as_str()),
             ("token", ""),
             ("harness.cmd", harness),
@@ -141,8 +142,7 @@ impl Rig {
         let shims = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/pool/local-bin");
         let path = format!("{}:{}", shims.display(), std::env::var("PATH").unwrap());
         let out = Command::new("bash")
-            .arg("-c")
-            .arg(RUNNER)
+            .arg(job.join("run.sh"))
             .env("WORK", self.work.path())
             .env("UNPRIVILEGED", "1")
             .env("BUILD_DIR", build_dir)
@@ -547,3 +547,6 @@ fn one_slot_reuses_isolated_target_caches_across_a_b_a_jobs() {
 
 #[path = "job_runner_cargo_test.rs"]
 mod cargo_tests;
+
+#[path = "job_runner_check_test.rs"]
+mod check_tests;

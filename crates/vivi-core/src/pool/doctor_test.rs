@@ -59,6 +59,7 @@ fn open_dispatch(task: &str, machine: &str, at: u64, budget: u64) -> OpenDispatc
             start: "f".repeat(40),
             with: Vec::new(),
             budget,
+            check_allowance_s: 0,
             at,
             read_only: false,
             hardware: String::new(),

@@ -395,6 +395,18 @@ pub struct JobPlan {
     pub bridge: Option<Grant>,
 }
 
+impl JobPlan {
+    /// Extra wall time reserved for the configured check and its kill grace.
+    #[must_use]
+    pub fn check_allowance(&self) -> u64 {
+        self.target
+            .as_ref()
+            .and_then(|target| target.check.as_ref())
+            .filter(|_| !self.read_only)
+            .map_or(0, |check| check.timeout_s + 5)
+    }
+}
+
 /// One file inside the job archive, under `job/`.
 #[derive(Debug, Clone)]
 pub struct BundleFile {
@@ -455,7 +467,7 @@ pub fn build_bundle(spec: &JobPlan, slot: &str, token: &Secret) -> Bundle {
         file("id", &spec.job, 0o600),
         file(
             "limit",
-            &(spec.budget + RUNNER_SLACK_SECS).to_string(),
+            &(spec.budget + spec.check_allowance() + RUNNER_SLACK_SECS).to_string(),
             0o600,
         ),
         file("brief.md", &lf(&spec.brief), 0o644),
@@ -538,6 +550,16 @@ type ParamField = (&'static str, String);
 fn params_fields(spec: &JobPlan, slot: &str) -> Vec<ParamField> {
     let mut fields = core_fields(spec, slot);
     append_publish_fields(&mut fields, spec);
+    if let Some(check) = spec
+        .target
+        .as_ref()
+        .and_then(|target| target.check.as_ref())
+    {
+        fields.extend([
+            ("CHECK_COMMAND", check.command.clone()),
+            ("CHECK_TIMEOUT_S", check.timeout_s.to_string()),
+        ]);
+    }
     if spec.read_only {
         fields.push(("READ_ONLY", "1".to_string()));
     }

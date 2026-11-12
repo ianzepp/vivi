@@ -467,6 +467,7 @@ fn status_shows_how_long_a_busy_slot_has_run_and_its_budget() {
             start: "s".into(),
             with: Vec::new(),
             budget: 1800,
+            check_allowance_s: 0,
             at: 1000,
             read_only: false,
             hardware: String::new(),

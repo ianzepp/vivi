@@ -419,6 +419,9 @@ impl PumpConfig {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct PumpTarget {
+    /// Fixed command run by the runner after a written job, before publishing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub check: Option<crate::pool::check::JobCheck>,
     /// Repository root relative to the workspace/mailspace root.
     pub path: String,
     /// GitHub owner/name used for target-scoped job credentials.
@@ -443,6 +446,7 @@ pub struct PumpTarget {
 impl Default for PumpTarget {
     fn default() -> Self {
         Self {
+            check: None,
             path: String::from("."),
             github_repo: None,
             remote_url: None,

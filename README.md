@@ -472,6 +472,58 @@ Idle targets over the cap are removed, as are targets built by a different
 `CARGO_INCREMENTAL=0`. See [the worker driver reference](docs/worker-driver-protocol.md#persistent-cargo-output-opt-in)
 for defaults, filesystem checks and server settings.
 
+#### Fixed post-agent checks (per target)
+
+Set `[pump.targets.<id>.check]` in the **dispatching mailspace's**
+`mailspace.toml`, not in the job checkout. The setting follows that target
+across pools; it is off when the table is absent. `command` is a nonempty
+shell command (`/bin/bash -c`); `timeout_s` defaults to 600 and accepts
+1..=86400 seconds, independently of the agent's `--budget`.
+
+For example, for a Rust workspace with a changed `parser` crate:
+
+```toml
+[pump.targets.rust]
+path = "rust-workspace"
+remote_url = "https://github.com/example/rust-workspace.git"
+main = "main"
+
+[pump.targets.rust.check]
+timeout_s = 900
+command = """
+set -e
+cargo fmt --all -- --check
+cargo clippy -p parser --all-targets -- -D warnings
+cargo test -p parser --no-run
+cargo test -p parser rejects_malformed_input
+"""
+```
+
+Replace the crate and named test with the workspace's fixed proof commands
+(or a named corpus command). Dispatch with `--target rust`, or set the role's
+`target = "rust"`. These are configuration commands, not agent-reported tests;
+keep the configuration outside the agent's writable checkout and avoid
+sourcing a check script that the agent can edit if you need a fixed policy.
+
+For each written job with changes, the runner first ends the agent's process
+tree and commits its leftover work, then runs the captured command in that
+same checkout on the candidate being published. It uses the agent's clean
+environment, including the slot's `CARGO_TARGET_DIR`, `TMPDIR` and `PATH`, so
+builds reuse the warm slot target. The boot limit and collector deadline
+reserve the check timeout plus five seconds of kill grace in addition to the
+agent budget and normal runner slack. Unchanged and read-only jobs skip it.
+
+Combined stdout/stderr is streamed into a bounded tail, never an unbounded
+log: the last 1024 bytes and at most 40 lines, with control characters
+removed and backslashes/newlines escaped into one `check_tail` value (at most
+4096 bytes). The collected JSON record carries `check_rc`, `check_s` and
+`check_tail` beside `agent_rc`/`agent_s`; skipped checks omit those keys.
+A timeout records exit 124 (137 if forced kill was necessary). A failed check
+**still publishes the work**; the task result explicitly says
+`runner check: failed`, and the pump treats it as red even if the agent exited
+successfully. A failed check never becomes an agent success merely because
+the agent's reply claims green.
+
 A pool that needs no network, and that `vivi pool doctor` accepts:
 
 ```toml

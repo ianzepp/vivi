@@ -629,6 +629,7 @@ fn local_target(
 ) -> super::super::dispatch::target::JobTarget {
     let source = source.map(|path| path.to_string_lossy().into_owned());
     super::super::dispatch::target::JobTarget {
+        check: None,
         id: String::from("default"),
         source: source.clone().unwrap_or_default(),
         cache_key: cache_key.to_string().repeat(64),

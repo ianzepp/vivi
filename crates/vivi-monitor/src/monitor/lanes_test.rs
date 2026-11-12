@@ -22,6 +22,7 @@ fn dispatch(pool: &str) -> DispatchRecord {
         start: "main".into(),
         with: Vec::new(),
         budget: 600,
+        check_allowance_s: 0,
         at: 1000,
         read_only: true,
         hardware: String::new(),

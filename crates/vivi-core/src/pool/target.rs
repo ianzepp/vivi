@@ -11,6 +11,7 @@ use vivi_error::VivariumError;
 /// Repository selection delivered with one job. Cache names contain no paths.
 #[derive(Debug, Clone)]
 pub struct JobTarget {
+    pub check: Option<crate::pool::check::JobCheck>,
     pub id: String,
     pub source: String,
     /// Repository's configured push/fetch URL for local privileged publication.
@@ -29,6 +30,9 @@ pub struct Resolved {
 }
 
 /// Resolve only configured targets; unknown targets never fall back to pool.repo.
+///
+/// # Errors
+/// Returns an error for unknown targets, invalid checks or inaccessible sources.
 pub fn resolve(
     pool: &PoolConfig,
     pump: &PumpConfig,
@@ -38,6 +42,9 @@ pub fn resolve(
     let target = pump.target_configs().remove(id).ok_or_else(|| {
         VivariumError::Config(format!("unknown workspace repository target {id:?}"))
     })?;
+    if let Some(check) = &target.check {
+        check.validate()?;
+    }
     let path = pump
         .target_path(root, id)
         .ok_or_else(|| VivariumError::Config(format!("repository target {id:?} has no path")))?;
@@ -70,6 +77,7 @@ pub fn resolve(
     let cache_key = hex::encode(Sha256::digest(format!("{id}\0{source}")));
     Ok(Resolved {
         target: JobTarget {
+            check: target.check,
             id: id.to_string(),
             source,
             publish_remote,

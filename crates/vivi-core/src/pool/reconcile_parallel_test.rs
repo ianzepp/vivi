@@ -51,6 +51,7 @@ fn dispatched(space: &Mailspace, task: &str, pool: &str, machine: &str) {
         start: "f".repeat(40),
         with: Vec::new(),
         budget: 600,
+        check_allowance_s: 0,
         at: epoch_secs() - 100,
         read_only: false,
         hardware: String::new(),

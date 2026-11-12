@@ -26,6 +26,7 @@ pub mod apfs;
 pub mod bands;
 pub mod bootscript;
 pub mod bridge;
+pub mod check;
 pub mod claim;
 pub mod clean;
 pub mod clean_rule;

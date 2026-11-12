@@ -879,12 +879,18 @@ path = "gradus"
 remote_url = "git@github.com:faberlang/gradus.git"
 github_repo = "faberlang/gradus"
 branch = "next"
+[targets.gradus.check]
+command = "echo configured-check"
+timeout_s = 123
 "#,
     )
     .unwrap();
     let shared = config();
     let resolved =
         target::resolve(&shared, &pump, std::path::Path::new("/workspace"), "gradus").unwrap();
+    let check = resolved.target.check.as_ref().unwrap();
+    assert_eq!(check.command, "echo configured-check");
+    assert_eq!(check.timeout_s, 123);
     assert_eq!(resolved.config.repo.as_deref(), Some("faberlang/gradus"));
     assert_eq!(shared.repo.as_deref(), Some("o/r"));
     assert_eq!(

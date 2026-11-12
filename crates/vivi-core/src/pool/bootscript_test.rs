@@ -113,7 +113,9 @@ fn boot_script_has_valid_bash_syntax() {
 #[test]
 fn boot_script_bounds_every_job_and_keeps_results_until_replaced() {
     // Every job runs under the hard limit, with a default when none is given.
-    assert!(BOOT_SCRIPT.contains(r#"timeout -k 30 "$LIMIT" bash "$W/job/run.sh""#));
+    assert!(
+        BOOT_SCRIPT.contains(r#"timeout -k 30 "$LIMIT" /bin/bash -c "$(cat "$W/job/run.sh")""#)
+    );
     assert!(BOOT_SCRIPT.contains("LIMIT=3600"));
     // The job directory is only replaced by a new job, never wiped at boot.
     let wipes: Vec<&str> = BOOT_SCRIPT

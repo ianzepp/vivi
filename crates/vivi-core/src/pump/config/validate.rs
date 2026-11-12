@@ -285,6 +285,11 @@ fn validate_merge(merge: &MergeConfig, found: &mut Findings) {
 
 fn validate_target(id: &str, target: &PumpTarget, found: &mut Findings) {
     let prefix = format!("[pump.targets.{id}]");
+    if let Some(check) = &target.check
+        && let Err(error) = check.validate()
+    {
+        found.invalid(format!("{prefix} {error}"));
+    }
     if !valid_target_id(id) {
         found.invalid(format!(
             "{prefix} id must use lowercase letters, digits and hyphens"

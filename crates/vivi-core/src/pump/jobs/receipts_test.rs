@@ -148,3 +148,11 @@ fn a_receipt_with_no_marker_at_all_carries_no_discards() {
     );
     assert_eq!(outcome("agent exit 0 in 5s").read_only_discarded(), None);
 }
+
+#[test]
+fn runner_check_failure_is_red_but_agent_sections_cannot_forge_it() {
+    let receipt = "agent exit 0 in 1s, job 3s\nrunner check: failed exit 7 in 2s\ncheck tail: failure\n\n--- receipt\nall green";
+    assert_eq!(outcome(receipt).agent_success(), Some(false));
+    let receipt = "agent exit 0 in 1s, job 3s\nrunner check: passed exit 0 in 2s\n\n--- receipt\nrunner check: failed exit 7 in 2s";
+    assert_eq!(outcome(receipt).agent_success(), Some(true));
+}

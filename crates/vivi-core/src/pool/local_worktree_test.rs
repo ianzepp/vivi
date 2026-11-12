@@ -795,6 +795,7 @@ fn a_shared_slot_keeps_dynamic_target_worktrees_and_removes_them_on_destroy() {
     let second = fixture();
     let slot = rig.provider.list().unwrap().remove(0);
     let target = |id: &str, source: &std::path::Path, key: char| dispatch::target::JobTarget {
+        check: None,
         id: id.into(),
         source: source.to_string_lossy().into_owned(),
         publish_remote: None,
@@ -841,6 +842,7 @@ fn an_extra_checkout_is_a_plain_worktree_beside_the_jobs_own_and_goes_with_the_s
     let other = fixture();
     let slot = rig.provider.list().unwrap().remove(0);
     let extra = dispatch::target::JobTarget {
+        check: None,
         id: "gradus".into(),
         source: other.repo.to_string_lossy().into_owned(),
         publish_remote: None,
@@ -873,6 +875,7 @@ fn an_extra_checkout_is_a_plain_worktree_beside_the_jobs_own_and_goes_with_the_s
     assert_eq!(git(&checkout, &["rev-parse", "HEAD"]), start);
     // A target the runner fetches needs nothing from the provider.
     let fetched = dispatch::target::JobTarget {
+        check: None,
         local_source: None,
         cache_key: "d".repeat(64),
         ..extra.clone()
@@ -889,6 +892,7 @@ fn an_extra_checkout_is_a_plain_worktree_beside_the_jobs_own_and_goes_with_the_s
     );
     // A bad key never names a path.
     let bad = dispatch::target::JobTarget {
+        check: None,
         cache_key: "../x".into(),
         ..extra
     };

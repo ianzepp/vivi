@@ -75,9 +75,16 @@ fn sampled_first_path(lines: &mut std::str::Lines<'_>) -> Option<String> {
 }
 
 impl JobOutcome {
-    /// Whether the pool receipt explicitly reports a successful worker exit.
+    /// Whether the runner reports a successful worker exit without a failed check.
     #[must_use]
     pub fn agent_success(&self) -> Option<bool> {
+        if self
+            .summary_head()
+            .lines()
+            .any(|line| line.starts_with("runner check: failed "))
+        {
+            return Some(false);
+        }
         crate::pump::attempt_record::agent_exit(&self.receipt).map(|code| code == 0)
     }
 

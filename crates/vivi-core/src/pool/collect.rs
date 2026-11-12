@@ -259,6 +259,26 @@ impl JobResult {
                 self.get("publish_sha")
             ));
         }
+        if !self.get("check_rc").is_empty() {
+            let verdict = if self.get("check_rc") == "0" {
+                "passed"
+            } else {
+                "failed"
+            };
+            summary.push_str(
+                &[
+                    "\nrunner check: ",
+                    verdict,
+                    " exit ",
+                    self.get("check_rc"),
+                    " in ",
+                    self.get("check_s"),
+                    "s\ncheck tail: ",
+                    self.get("check_tail"),
+                ]
+                .concat(),
+            );
+        }
         append_runner_guards(&mut summary, self);
         summary
     }
@@ -419,7 +439,7 @@ pub fn poll(
     let record = &dispatch.record;
     let machine = provider.machine(&record.machine)?;
     let age = now.saturating_sub(record.at);
-    let overdue = age > record.budget + TIMEOUT_GRACE_SECS;
+    let overdue = age > record.budget + record.check_allowance_s + TIMEOUT_GRACE_SECS;
     let outcome = match machine.state.as_str() {
         "stopped" => collect_stopped(provider, dispatch, age, overdue, pacing),
         "destroyed" | "failed" => Ok(Some(Outcome::Lost)),

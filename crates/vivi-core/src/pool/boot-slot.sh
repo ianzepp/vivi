@@ -232,7 +232,10 @@ fi
 T1=$(now); echo "restore_s $(d $T0 $T1)" >> $L; echo "ready $T1 job $JOB" >> $L
 
 # Every job, whatever it is, runs under a hard time limit enforced here.
-timeout -k 30 "$LIMIT" bash "$W/job/run.sh" > "$W/job/run.log" 2>&1; RC=$?
+# Read the runner into memory before starting the agent. In an unprivileged
+# slot the same uid owns the delivered files: edits to run.sh must not change
+# the runner's post-agent instructions while bash is reading the script.
+timeout -k 30 "$LIMIT" /bin/bash -c "$(cat "$W/job/run.sh")" > "$W/job/run.log" 2>&1; RC=$?
 if [ ! -f "$W/job/result" ]; then
   printf 'job=%s\nstate=killed\npush=none\nrunner_rc=%s\n' "$JOB" "$RC" > "$W/job/result"
   if [ -f "$W/job/target-id" ]; then

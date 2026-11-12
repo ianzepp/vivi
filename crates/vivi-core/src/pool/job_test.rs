@@ -797,6 +797,7 @@ fn extra_checkouts_travel_in_a_root_only_file_that_holds_their_tokens() {
     use crate::pool::dispatch::target::JobTarget;
     let extra = |id: &str, key: char, token: &str, local: Option<&str>| ExtraCheckout {
         target: JobTarget {
+            check: None,
             id: id.into(),
             source: format!("https://github.com/acme/{id}.git"),
             publish_remote: None,
@@ -900,6 +901,7 @@ fn the_restore_list_travels_as_one_path_per_line_and_only_when_there_are_some() 
 fn target_jobs_deliver_cache_identity_and_repository_preparation() {
     let mut p = plan();
     p.target = Some(crate::pool::dispatch::target::JobTarget {
+        check: None,
         id: "radix".into(),
         source: p.remote.clone(),
         publish_remote: None,
@@ -968,4 +970,40 @@ fn the_integration_branch_may_appear_in_a_commit_message_but_need_and_unit_branc
 
     p.refs.from = "pump/old".into();
     assert!(forbidden_tokens(&p).iter().any(|t| t == "pump/old"));
+}
+
+#[test]
+fn configured_check_is_runner_only_and_reserves_an_independent_deadline() {
+    let mut p = plan();
+    p.target = Some(crate::pool::dispatch::target::JobTarget {
+        check: Some(crate::pool::check::JobCheck {
+            command: "echo 'fixed'; exit 7".into(),
+            timeout_s: 123,
+        }),
+        id: "rust".into(),
+        source: p.remote.clone(),
+        publish_remote: None,
+        cache_key: "a".repeat(64),
+        local_source: None,
+        seed: vec![],
+        requires: vec![],
+        build_dir: None,
+    });
+    let bundle = build_bundle(&p, "s", &Secret::new(String::new()));
+    let params = text(&bundle, "params.env");
+    assert!(params.contains(&format!(
+        "CHECK_COMMAND={}\n",
+        sh_quote("echo 'fixed'; exit 7")
+    )));
+    assert!(params.contains("CHECK_TIMEOUT_S='123'"));
+    assert_eq!(
+        text(&bundle, "limit"),
+        (p.budget + 128 + RUNNER_SLACK_SECS).to_string()
+    );
+    assert_eq!(p.check_allowance(), 128);
+    for file in bundle.agent_visible() {
+        assert!(!String::from_utf8_lossy(&file.content).contains("fixed"));
+    }
+    p.read_only = true;
+    assert_eq!(p.check_allowance(), 0);
 }

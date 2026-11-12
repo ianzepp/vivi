@@ -170,6 +170,7 @@ fn idle_slot(root: &Path) -> String {
 fn target(source: &Path) -> crate::pool::dispatch::target::JobTarget {
     let source = source.to_string_lossy().into_owned();
     crate::pool::dispatch::target::JobTarget {
+        check: None,
         id: String::from("default"),
         source: source.clone(),
         cache_key: "a".repeat(64),

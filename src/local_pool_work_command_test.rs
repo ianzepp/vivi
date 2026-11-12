@@ -231,6 +231,7 @@ fn record(with: &[String]) -> vivi_core::pool::record::DispatchRecord {
         start: "a".repeat(40),
         with: with.to_vec(),
         budget: 600,
+        check_allowance_s: 0,
         at: 1000,
         read_only: false,
         hardware: String::new(),

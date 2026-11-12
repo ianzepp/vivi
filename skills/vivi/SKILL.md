@@ -2006,7 +2006,7 @@ from it; units that need another unit's code start `--from` that unit's branch
   appends `with <ref>@<commit12> ...`.
 - `--budget` is the agent's hard time limit in seconds (default 1800). Every job
   also runs under a hard limit enforced by the slot's boot script (budget plus
-  ten minutes of slack).
+  ten minutes of slack, plus any configured post-agent check allowance).
 - Steps: mint a one-hour token; resolve `from` through GitHub; claim a free
   slot (the provider's atomic primitive serialises the check-and-mark: a Fly
   machine lease, or a claim container on Docker; two simultaneous dispatches
@@ -2024,6 +2024,38 @@ from it; units that need another unit's code start `--from` that unit's branch
 - A task with an open dispatch cannot be dispatched again until it is collected.
   After collection it can be dispatched again (for example to continue its
   branch).
+
+#### Fixed checks after written jobs
+
+`[pump.targets.<id>.check]` in the dispatching mailspace config sets a
+runner-owned post-agent check for that target, across all pools:
+
+```toml
+[pump.targets.rust.check]
+command = "cargo fmt --all -- --check && cargo clippy -p parser --all-targets -- -D warnings && cargo test -p parser --no-run && cargo test -p parser rejects_malformed_input"
+timeout_s = 900
+```
+
+Select it with `--target rust` or the role's `target = "rust"`. Absent table
+means off; `command` must be nonempty, and `timeout_s` defaults to 600
+(1..=86400). The independent check timeout plus five-second kill grace is
+reserved beyond the agent budget; it does not consume that budget.
+
+After the agent's process tree ends and the runner commits, the captured
+command runs via `/bin/bash -c` in the same checkout, before publication, with
+the agent's environment (`CARGO_TARGET_DIR`, `TMPDIR`, `PATH` included).
+No-change and read-only jobs skip it. Config is captured before the agent
+starts, never loaded from its checkout after it exits. Keep the dispatching
+config outside the agent's writable checkout and put policy in the command,
+not in a repository script the agent can rewrite.
+
+Results carry `check_rc`, `check_s`, and `check_tail` in the collected record;
+the task summary says `runner check: passed` or `runner check: failed`.
+Combined output capture keeps only the final 1024 bytes / 40 lines, stripped
+of controls and escaped into one value of at most 4096 bytes. Timeout is 124
+(or 137 after forced kill). Failure still publishes the branch, but the pump
+classifies it as red, regardless of the agent's exit or claims. Unset/skipped
+checks add no result fields.
 
 #### Dispatching by role and band
 
