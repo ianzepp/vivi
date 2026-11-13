@@ -98,3 +98,36 @@ fn a_nonnumeric_marker_keeps_the_repair_pass() {
     ensure_schema(&conn).unwrap();
     assert_eq!(marker(&conn), STORAGE_SCHEMA_VERSION);
 }
+
+/// A schema-9 store gains the Message-ID index, and the lookup by RFC
+/// Message-ID searches it instead of scanning every metadata row.
+#[test]
+fn a_schema_9_store_gains_the_message_id_index() {
+    let tmp = tempfile::tempdir().unwrap();
+    let conn = Connection::open(tmp.path().join("mail.sqlite")).unwrap();
+    ensure_schema(&conn).unwrap();
+    conn.execute_batch(
+        "DROP INDEX message_metadata_normalized_message_id_idx;
+         UPDATE storage_metadata SET value = '9' WHERE key = 'schema_version';",
+    )
+    .unwrap();
+
+    ensure_schema(&conn).unwrap();
+
+    assert_eq!(marker(&conn), STORAGE_SCHEMA_VERSION);
+    let plan: Vec<String> = conn
+        .prepare(
+            "EXPLAIN QUERY PLAN SELECT content_id FROM message_metadata
+             WHERE normalized_message_id = 'x'",
+        )
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(3))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert!(
+        plan.iter()
+            .any(|step| step.contains("message_metadata_normalized_message_id_idx")),
+        "{plan:?}"
+    );
+}

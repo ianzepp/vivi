@@ -32,7 +32,7 @@ fn schema_upgrade_creates_mid_version_tables_on_old_databases() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(version, "9");
+    assert_eq!(version, schema::STORAGE_SCHEMA_VERSION);
 }
 
 #[test]
@@ -132,7 +132,7 @@ fn schema_v7_adds_node_kind_and_edge_style_on_upgrade() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(version, "9");
+    assert_eq!(version, schema::STORAGE_SCHEMA_VERSION);
 }
 
 /// A deferral mark written by the receiver never lands in the table user
@@ -311,7 +311,7 @@ fn schema_upgrade_moves_deferral_marks_out_of_item_metadata() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(version, "9");
+    assert_eq!(version, schema::STORAGE_SCHEMA_VERSION);
 }
 
 #[test]
@@ -691,7 +691,7 @@ fn schema_v6_adds_from_addr_date_index_on_upgrade() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(version, "9");
+    assert_eq!(version, schema::STORAGE_SCHEMA_VERSION);
 }
 
 fn ingest_dated(

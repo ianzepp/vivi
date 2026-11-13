@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 use vivi_error::VivariumError;
 
-pub const STORAGE_SCHEMA_VERSION: &str = "9";
+pub const STORAGE_SCHEMA_VERSION: &str = "10";
 
 pub(super) fn ensure_schema(conn: &Connection) -> Result<(), VivariumError> {
     let existing: Option<String> = match conn.query_row(
@@ -31,6 +31,17 @@ pub(super) fn ensure_schema(conn: &Connection) -> Result<(), VivariumError> {
         [],
     )
     .map_err(|e| VivariumError::Other(format!("failed to create from_addr index: {e}")))?;
+    // Lookups by RFC Message-ID (`live_message_by_rfc_id`) run once per
+    // unbound event letter on every push and hosted index pass. Without this
+    // index each one scanned the whole metadata table: on a 200k-letter
+    // mailspace one hosted index pass took about 50 minutes of a core, and the
+    // next began as soon as it ended. Added in schema version 10.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS message_metadata_normalized_message_id_idx
+         ON message_metadata(normalized_message_id)",
+        [],
+    )
+    .map_err(|e| VivariumError::Other(format!("failed to create message-id index: {e}")))?;
     conn.execute(
         "INSERT OR REPLACE INTO storage_metadata (key, value) VALUES ('schema_version', ?1)",
         rusqlite::params![STORAGE_SCHEMA_VERSION],
