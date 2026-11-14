@@ -174,3 +174,38 @@ fn unlimited_check_output_is_capped_and_fails_without_losing_work() {
     assert_eq!(result.push(), "pushed");
     assert!(!rig.work.path().join("job/check.out").exists());
 }
+
+/// macOS shows no process environments, so there the runner finds the agent
+/// by the process groups of what it started under timeout (forced here on
+/// Linux). A child the agent left behind is killed before the check, and the
+/// search never mistakes its own process for the agent's.
+#[test]
+fn group_tracking_kills_the_agents_leftovers_then_runs_the_check_and_publishes() {
+    let rig = Rig::new();
+    let child = rig.work.path().join("child-pid");
+    let harness = format!(
+        "echo changed >> a.txt; (sleep 40) & echo $! > {}; echo done",
+        sh_quote(child.to_str().unwrap())
+    );
+    let check = format!(
+        "set -e; ! kill -0 $(cat {}) 2>/dev/null; git show HEAD:a.txt | grep changed",
+        sh_quote(child.to_str().unwrap())
+    );
+    let params = format!(
+        "READ_ONLY=''\nBRANCH='pool/check'\nBUDGET='20'\nCHECK_TIMEOUT_S='10'\nVIVI_AGENT_TRACKING='groups'\nCHECK_COMMAND={}\n",
+        sh_quote(&check)
+    );
+    let (result, log) =
+        rig.run_in_context_logged(&harness, "build", &[], &rig.f.repo, None, &params);
+    assert_eq!(result.get("check_rc"), "0", "{:?}\n{log}", result.fields);
+    assert_eq!(result.push(), "pushed", "{:?}", result.fields);
+    let left = std::fs::read_to_string(child).unwrap();
+    assert!(
+        !Command::new("kill")
+            .args(["-0", left.trim()])
+            .status()
+            .unwrap()
+            .success(),
+        "the agent's leftover child is gone"
+    );
+}

@@ -11,6 +11,7 @@
 #   claim          exists while a task holds the slot; written whole, then
 #                  hard-linked into place, so it appears complete or not at all
 #   boot.pid       process id of the slot's boot wrapper (start writes it)
+#   boot.start     macOS: the boot wrapper's start time (`ps -o lstart=`)
 #   exit_code      exit code of the last boot that ran to its end
 #   slot.env       the environment the boot script runs with (mode 600: a pod's
 #                  holds the harness environment values)
@@ -18,7 +19,16 @@
 # "Running" means boot.pid names a live process whose environment carries
 # VIVI_SLOT_ROOT=<the slot directory>: a reused pid is not mistaken for it. The
 # tag is inherited by everything the slot starts, so stopping finds the whole
-# tree, not only the process group. Linux reads /proc; macOS uses ps -E.
+# tree, not only the process group. Linux reads /proc.
+# macOS shows no process environments (macOS 27: `ps -E` prints none, and the
+# old tag search matched only awk's own arguments, so no slot could be stopped
+# and no job's check ever ran). There a slot's processes are its process
+# groups: the boot runs under setsid, so its group id is boot.pid, and the job
+# runner records each group it starts under timeout (agent, facts, check) in
+# job/agent.groups. Every recorded group carries its leader's start time; a
+# group whose id now names a process that started at another time is a reused
+# pid and not this slot's. A process that leaves its group (setsid, setpgid)
+# is not found.
 #
 # UMASK (077 unless the provider says otherwise) is the umask of everything the
 # script writes. A host that runs the slot's scripts as root and its agent as
@@ -58,21 +68,65 @@ need_slot() {
 }
 known() { [ -f "$D/marks/vivi_pool" ]; }
 
-# Processes whose environment holds the slot's tag.
+# One start time, spaces collapsed, as `ps -o lstart=` prints it.
+lstart_of() { ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' | sed 's/^ //; s/ $//'; }
+# macOS: the members of the groups named on stdin ("id|start" lines) that are
+# still the slot's. Arguments travel in the environment, never on awk's
+# command line, so the search cannot match its own process.
+group_members() {
+  VIVI_GROUPS=$(cat) VIVI_SNAP=$(ps -A -o pid=,pgid=,lstart= 2>/dev/null) awk '
+    BEGIN {
+      n = split(ENVIRON["VIVI_GROUPS"], g, "\n")
+      for (i = 1; i <= n; i++) {
+        k = index(g[i], "|"); if (k < 2) continue
+        id = substr(g[i], 1, k - 1); if (id !~ /^[0-9]+$/) continue
+        s = substr(g[i], k + 1); gsub(/ +/, " ", s); sub(/^ /, "", s); sub(/ $/, "", s)
+        want[id] = s
+      }
+      m = split(ENVIRON["VIVI_SNAP"], rows, "\n")
+      for (i = 1; i <= m; i++) {
+        c = split(rows[i], f, " "); if (c < 3) continue
+        s = f[3]; for (j = 4; j <= c; j++) s = s " " f[j]
+        start[f[1]] = s; grp[f[1]] = f[2]
+      }
+      for (p in grp) {
+        id = grp[p]
+        if (!(id in want)) continue
+        if ((id in start) && want[id] != "" && start[id] != want[id]) continue
+        print p
+      }
+    }'
+}
+darwin_groups() {
+  local p
+  p=$(cat "$1/boot.pid" 2>/dev/null)
+  [[ $p =~ ^[0-9]+$ ]] && printf '%s|%s\n' "$p" "$(cat "$1/boot.start" 2>/dev/null)"
+  grep -E '^[0-9]+[|]' "$1/job/agent.groups" 2>/dev/null
+  return 0
+}
+# Every process the slot runs: by the environment tag on Linux, by process
+# group on macOS.
 tagged() {
   if [ "$SYSTEM" = Darwin ]; then
-    ps -A -ww -E -o pid=,command= 2>/dev/null | awk -v tag="VIVI_SLOT_ROOT=$1" '
-      { for (i = 2; i <= NF; i++) if ($i == tag) { print $1; break } }'
+    darwin_groups "$1" | group_members | sort -n
   else
     grep -lzxF "VIVI_SLOT_ROOT=$1" /proc/[0-9]*/environ 2>/dev/null | sed 's#/proc/\([0-9]*\)/environ#\1#'
   fi
 }
 alive() {
-  local p
+  local p now
   p=$(cat "$1/boot.pid" 2>/dev/null) || return 1
   [[ $p =~ ^[0-9]+$ ]] || return 1
   if [ "$SYSTEM" = Darwin ]; then
-    ps -ww -E -o command= -p "$p" 2>/dev/null | tr ' \t' '\n\n' | grep -qxF "VIVI_SLOT_ROOT=$1"
+    now=$(lstart_of "$p")
+    [ -n "$now" ] || return 1
+    if [ -s "$1/boot.start" ]; then
+      [ "$now" = "$(tr -s ' ' < "$1/boot.start" | sed 's/^ //; s/ $//')" ]
+      return $?
+    fi
+    # A slot started before boot.start was recorded: the boot is a session
+    # (and group) leader, which an unrelated reuse of its pid rarely is.
+    [ "$(ps -o pgid= -p "$p" 2>/dev/null | tr -d ' ')" = "$p" ]
     return $?
   fi
   [ -r "/proc/$p/environ" ] || return 1
@@ -164,7 +218,7 @@ start_slot() {
   local _
   need_slot "$A1"; known || fail "no such slot: $A1"
   alive "$D" && return 0
-  rm -f "$D/exit_code" "$D/boot.pid"
+  rm -f "$D/exit_code" "$D/boot.pid" "$D/boot.start"
   (
     set -a; . "$D/slot.env"; set +a
     # A login shell may reorder PATH; the boot command puts this order back.
@@ -174,7 +228,13 @@ start_slot() {
     detach bash -l -c 'PATH="$VIVI_SESSION_PATH:$PATH"; set -f; q=; IFS=:; for d in $PATH; do [ -n "$d" ] || continue; case ":$q:" in *":$d:"*) ;; *) q="${q:+$q:}$d" ;; esac; done; unset IFS; set +f; PATH=$q; unset VIVI_SESSION_PATH d q; echo $$ > "$WORK/boot.pid"; bash "$WORK/boot.sh"; rc=$?; echo "$rc" > "$WORK/exit_code"; exit "$rc"' \
       > "$D/boot.out" 2>&1 < /dev/null &
   )
-  for _ in $(seq 100); do [ -s "$D/boot.pid" ] && return 0; sleep 0.05; done
+  for _ in $(seq 100); do
+    if [ -s "$D/boot.pid" ]; then
+      [ "$SYSTEM" != Darwin ] || lstart_of "$(cat "$D/boot.pid")" > "$D/boot.start"
+      return 0
+    fi
+    sleep 0.05
+  done
   fail "the slot did not start (see boot.out in $A1)"
 }
 
@@ -193,7 +253,7 @@ stop_slot() {
   done
   [ -z "$pids" ] || fail "could not stop processes of $A1: $pids"
   busy_release
-  rm -f "$D/boot.pid" "$D/exit_code"
+  rm -f "$D/boot.pid" "$D/boot.start" "$D/exit_code"
 }
 
 free_now() {

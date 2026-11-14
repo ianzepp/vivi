@@ -23,44 +23,64 @@ fn run(system: &str, setup: &str, body: &str) -> String {
     String::from_utf8(out.stdout).unwrap()
 }
 
-#[test]
-fn darwin_finds_only_exact_slot_tokens_and_checks_the_boot_pid_with_ps() {
-    let output = run(
-        "Darwin",
-        r#"
+/// What a Darwin `ps` prints for the group searches: a slot's boot group (12),
+/// an agent group (20), a recorded id now led by another process (30), an
+/// orphaned agent group whose leader is gone (41) and an unrelated group (50).
+const DARWIN_PS: &str = r#"
 ps() {
   echo "$*" >> "$ROOT/ps-calls"
   case "$*" in
-    '-A -ww -E -o pid=,command=')
-      printf '  12 bash VIVI_SLOT_ROOT=%s OTHER=x\n' "$ROOT"
-      printf '  13 bash VIVI_SLOT_ROOT=%s/other\n' "$ROOT"
-      printf '  14 bash NOT_VIVI_SLOT_ROOT=%s\n' "$ROOT"
-      printf '  15 bash X=VIVI_SLOT_ROOT=%s\n' "$ROOT"
-      printf '  16 compiler VIVI_SLOT_ROOT=%s\n' "$ROOT"
+    '-A -o pid=,pgid=,lstart=')
+      echo '   12    12 Fri Nov 13 10:00:00 2026   '
+      echo '   13    12 Fri Nov 13 10:00:01 2026   '
+      echo '   20    20 Fri Nov 13 10:05:00 2026   '
+      echo '   21    20 Fri Nov 13 10:05:01 2026   '
+      echo '   30    30 Sat Nov 14 09:00:00 2026   '
+      echo '   31    30 Sat Nov 14 09:00:01 2026   '
+      echo '   40    41 Fri Nov 13 10:06:01 2026   '
+      echo '   50    50 Fri Nov 13 10:07:00 2026   '
       ;;
-    '-ww -E -o command= -p 12') printf 'bash OTHER=x VIVI_SLOT_ROOT=%s\n' "$ROOT" ;;
-    '-ww -E -o command= -p 13') printf 'bash VIVI_SLOT_ROOT=%s/other\n' "$ROOT" ;;
-    *) echo 'unexpected ps arguments' >&2; return 99 ;;
+    '-o lstart= -p 12') echo 'Fri Nov 13 10:00:00 2026   ' ;;
+    '-o pgid= -p 12') echo '   12' ;;
+    '-o lstart= -p 99' | '-o pgid= -p 99') ;;
+    *) echo "unexpected ps arguments: $*" >&2; return 99 ;;
   esac
 }
-"#,
+"#;
+
+#[test]
+fn darwin_finds_a_slot_by_its_process_groups_and_rejects_reused_ids() {
+    let output = run(
+        "Darwin",
+        DARWIN_PS,
         r#"
 test "$SYSTEM" = Darwin
-test "$(tagged "$ROOT")" = $'12\n16'
+mkdir -p "$ROOT/job"
 echo 12 > "$ROOT/boot.pid"
+echo 'Fri Nov 13 10:00:00 2026' > "$ROOT/boot.start"
+printf '%s\n' '20|Fri Nov 13 10:05:00 2026' '30|Fri Nov 13 10:30:00 2026' '41|Fri Nov 13 10:06:00 2026' > "$ROOT/job/agent.groups"
+test "$(tagged "$ROOT" | tr '\n' ' ')" = '12 13 20 21 40 '
 alive "$ROOT"
-test "$(slot_pids "$ROOT")" = '12 16 '
-echo 13 > "$ROOT/boot.pid"
+test "$(slot_pids "$ROOT")" = '12 13 20 21 40 '
+echo 'Thu Nov 12 08:00:00 2026' > "$ROOT/boot.start"
+! alive "$ROOT"
+test "$(tagged "$ROOT" | tr '\n' ' ')" = '20 21 40 '
+rm "$ROOT/boot.start"
+alive "$ROOT"
+echo 99 > "$ROOT/boot.pid"
 ! alive "$ROOT"
 echo invalid > "$ROOT/boot.pid"
 ! alive "$ROOT"
-rm "$ROOT/boot.pid"
+rm "$ROOT/boot.pid" "$ROOT/job/agent.groups"
 ! alive "$ROOT"
+test -z "$(tagged "$ROOT")"
 cat "$ROOT/ps-calls"
 "#,
     );
-    assert!(output.contains("-A -ww -E -o pid=,command="));
-    assert!(output.contains("-ww -E -o command= -p 12"));
+    assert!(
+        !output.contains("-E"),
+        "macOS shows no environments: never search them"
+    );
     assert!(
         !output.contains("sid="),
         "Darwin never uses the Linux session query"
@@ -155,28 +175,24 @@ echo $$ > "$ROOT/boot.pid"
 }
 
 #[test]
-fn the_runner_also_uses_darwin_environment_tags_to_stop_leftover_agent_processes() {
+fn the_runner_finds_leftover_agent_processes_by_their_groups_on_darwin() {
     let runner = crate::pool::job::RUNNER;
     let start = runner.find("  agent_job_pids() {").unwrap();
     let end = start + runner[start..].find("\n  }\n").unwrap() + "\n  }".len();
     let body = format!(
         r#"
 {}
-JOB=example
-test "$(agent_job_pids)" = '42'
+AGENT_TRACKING=groups
+AGENT_GROUPS=$ROOT/agent.groups
+printf '%s\n' '20|Fri Nov 13 10:05:00 2026' '30|Fri Nov 13 10:30:00 2026' > "$AGENT_GROUPS"
+test "$(agent_job_pids | sort -n | tr '\n' ' ')" = '20 21 '
+test -s "$AGENT_GROUPS"
+printf '%s\n' '30|Fri Nov 13 10:30:00 2026' '60|Fri Nov 13 10:40:00 2026' > "$AGENT_GROUPS"
+test -z "$(agent_job_pids)"
+test ! -s "$AGENT_GROUPS"
+! grep -q -- -E "$ROOT/ps-calls"
 "#,
         &runner[start..end]
     );
-    run(
-        "Darwin",
-        r#"
-ps() {
-  test "$*" = '-A -ww -E -o pid=,command=' || return 99
-  echo '42 compiler VIVI_AGENT_JOB=example'
-  echo '43 compiler VIVI_AGENT_JOB=example-other'
-  echo '44 compiler NOT_VIVI_AGENT_JOB=example'
-}
-"#,
-        &body,
-    );
+    run("Darwin", DARWIN_PS, &body);
 }

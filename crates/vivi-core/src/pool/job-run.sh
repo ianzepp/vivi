@@ -145,12 +145,78 @@ if [ -n "${UNPRIVILEGED:-}" ]; then
   # A slot is reused only after its previous job's work was published (the
   # collector keeps unpublished slots), so that job's temp files, build
   # output included, are of no further use: start each job with an empty one.
-  rm -rf "$W/tmp" && mkdir -p "$W/tmp" && export TMPDIR="$W/tmp"
+  # A declared slot's $W is <slot>/.vivi, inside the slot's Git worktree, so
+  # its temp dir sits beside the slot instead: tools and tests that assume a
+  # temp dir is outside any repository, or that skip `.vivi` paths, misbehave
+  # inside one (2026-11-13: two of a repository's own script tests failed in
+  # every slot).
+  # Only beside a slot whose parent exists and has no symlink on its path:
+  # nothing may be written through a link before the tree checks below refuse
+  # it (a first job, or a refused tree, uses $W/tmp).
+  JOB_TMP=$W/tmp
+  if [ -n "${SLOT_DIR:-}" ]; then
+    slot=${SLOT_DIR%/}
+    parent=${slot%/*}
+    linked=
+    p=$parent
+    while [ -n "$p" ]; do
+      [ ! -L "$p" ] || linked=1
+      case $p in */*) p=${p%/*} ;; *) p= ;; esac
+    done
+    if [ "${slot#/}" != "$slot" ] && [ -n "$parent" ] && [ -z "$linked" ] && [ -d "$parent" ]; then
+      JOB_TMP=$parent/.${slot##*/}.tmp
+    fi
+  fi
+  rm -rf "$JOB_TMP" && mkdir -p "$JOB_TMP" && export TMPDIR="$JOB_TMP"
   AGENT_USER_HOME=${HOME:-$AGENT_HOME}
+  # Linux finds the agent's processes by the VIVI_AGENT_JOB variable in
+  # /proc/<pid>/environ. macOS shows no process environments (macOS 27), so
+  # there they are the process groups of the commands this runner starts under
+  # timeout (agent, facts, check), which makes itself a group leader. Each
+  # group is recorded with its leader's start time in $AGENT_GROUPS; the
+  # slot script reads the same file when it stops the slot. Arguments reach
+  # awk through the environment: a pattern on its command line would match
+  # awk itself (2026-11-13: it always did, so no check ever ran).
+  case "${VIVI_AGENT_TRACKING:-$(uname -s)}" in
+    Darwin|groups) AGENT_TRACKING=groups ;;
+    *) AGENT_TRACKING=env ;;
+  esac
+  AGENT_GROUPS=$J/agent.groups
+  : > "$AGENT_GROUPS"
+  note_agent_group() {
+    [ "$AGENT_TRACKING" = groups ] || return 0
+    printf '%s|%s\n' "$1" "$(ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' | sed 's/^ //; s/ $//')" >> "$AGENT_GROUPS"
+  }
   agent_job_pids() {
-    if [ "$(uname -s)" = Darwin ]; then
-      ps -A -ww -E -o pid=,command= 2>/dev/null | awk -v tag="VIVI_AGENT_JOB=$JOB" '
-        { for (i = 2; i <= NF; i++) if ($i == tag) { print $1; break } }'
+    local pids
+    if [ "$AGENT_TRACKING" = groups ]; then
+      [ -s "$AGENT_GROUPS" ] || return 0
+      pids=$(VIVI_GROUPS=$(cat "$AGENT_GROUPS") VIVI_SNAP=$(ps -A -o pid=,pgid=,lstart= 2>/dev/null) awk '
+        BEGIN {
+          n = split(ENVIRON["VIVI_GROUPS"], g, "\n")
+          for (i = 1; i <= n; i++) {
+            k = index(g[i], "|"); if (k < 2) continue
+            id = substr(g[i], 1, k - 1); if (id !~ /^[0-9]+$/) continue
+            s = substr(g[i], k + 1); gsub(/ +/, " ", s); sub(/^ /, "", s); sub(/ $/, "", s)
+            want[id] = s
+          }
+          m = split(ENVIRON["VIVI_SNAP"], rows, "\n")
+          for (i = 1; i <= m; i++) {
+            c = split(rows[i], f, " "); if (c < 3) continue
+            s = f[3]; for (j = 4; j <= c; j++) s = s " " f[j]
+            start[f[1]] = s; grp[f[1]] = f[2]
+          }
+          for (p in grp) {
+            id = grp[p]
+            if (!(id in want)) continue
+            if ((id in start) && want[id] != "" && start[id] != want[id]) continue
+            print p
+          }
+        }')
+      # An empty group's id can be reused by another launch on this host
+      # (another slot's job): forget the groups once none has a member.
+      [ -n "$pids" ] || : > "$AGENT_GROUPS"
+      [ -z "$pids" ] || printf '%s\n' "$pids"
     else
       grep -lzxF "VIVI_AGENT_JOB=$JOB" /proc/[0-9]*/environ 2>/dev/null | sed 's#/proc/\([0-9]*\)/environ#\1#'
     fi
@@ -164,6 +230,8 @@ if [ -n "${UNPRIVILEGED:-}" ]; then
   }
 else
   as_hand() { runuser -u hand -- "$@"; }
+  # Root finds the agent as the `hand` user; no groups to record.
+  note_agent_group() { :; }
   AGENT_HOME=/home/hand
   AGENT_USER_HOME=/home/hand
   no_agent_running() { ! pgrep -u hand >/dev/null 2>&1; }
@@ -1049,9 +1117,13 @@ esc() {
 }
 keep_head() { head -n 40 "$1" | head -c 4096 | tr -d '\000-\010\013-\037'; }
 run_fact() { # run_fact <command>: stdout to fact.out, stderr to fact.err; returns its exit code
+  # Started in the background only to learn the timeout's pid (its process
+  # group, see agent_job_pids); the runner waits for it at once.
   ( ulimit -f 8192
     as_hand env -i "HOME=$AGENT_USER_HOME" "PATH=$PATH" "VIVI_AGENT_JOB=$JOB" \
-      timeout -k 2 "$FACT_SECS" bash -c "$1" ) > "$J/fact.out" 2> "$J/fact.err" < /dev/null
+      timeout -k 2 "$FACT_SECS" bash -c "$1" &
+    note_agent_group $!
+    wait $! ) > "$J/fact.out" 2> "$J/fact.err" < /dev/null
 }
 run_facts() {
   [ -s "$J/facts.cmd" ] || return 0
@@ -1075,8 +1147,13 @@ run_facts() {
 run_facts
 [ "$RAMDISK_FULL_DETECTED" -ne 1 ] || finish ramdisk_full
 A0=$(now)
+# In the background only to learn the timeout's pid (the agent's process
+# group); the runner waits for it at once. A background command's stdin is
+# /dev/null; it is given explicitly.
 as_hand env -i "${HARNESS_ENV[@]}" timeout -k 15 "$BUDGET" bash -c "$HARNESS_CMD" \
-  > "$J/agent.out" 2> "$J/agent.err"
+  > "$J/agent.out" 2> "$J/agent.err" < /dev/null &
+note_agent_group $!
+wait $!
 AGENT_RC=$?
 AGENT_S=$(( $(now) - A0 ))
 echo "agent_rc $AGENT_RC agent_s $AGENT_S"
@@ -1211,7 +1288,9 @@ run_check() {
   if no_agent_running; then
     (
       as_hand env -i "${HARNESS_ENV[@]}" "$CHECK_TIMEOUT_BIN" -k 5 "$CHECK_TIMEOUT_S" \
-        /bin/bash -c "$CHECK_COMMAND" < /dev/null
+        /bin/bash -c "$CHECK_COMMAND" < /dev/null &
+      note_agent_group $!
+      wait $!
       rc=$?
       # Close inherited pipes too: a check's background children must not
       # hold the bounded output reader open after the timeout has returned.

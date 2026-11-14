@@ -243,3 +243,21 @@ fn unset_tree_keeps_the_existing_keyed_cache_location() {
     assert!(cache.join("source").is_file());
     assert!(!rig.work.path().join("trees").exists());
 }
+
+/// A declared slot's runner state is in `<slot>/.vivi`, inside the slot's Git
+/// worktree. Its temp dir must not be: tools and tests that assume a temp dir
+/// is outside any repository, or that skip `.vivi` paths, misbehave there.
+#[test]
+fn a_declared_slot_gets_an_empty_temp_dir_beside_the_slot_outside_its_worktree() {
+    let rig = Rig::new();
+    let tree = tree(&rig);
+    let expected = tree.parent().unwrap().join(".slot-1.tmp");
+    std::fs::create_dir_all(&expected).unwrap();
+    std::fs::write(expected.join("stale"), "from the previous job").unwrap();
+    let harness = format!(
+        "test \"$TMPDIR\" = {}; test -d \"$TMPDIR\"; test ! -e \"$TMPDIR/stale\"; ! git -C \"$TMPDIR\" rev-parse --git-dir 2>/dev/null",
+        sh_quote(&expected.to_string_lossy())
+    );
+    let result = run(&rig, &tree, &harness, "");
+    assert_eq!(result.get("agent_rc"), "0", "{:?}", result.fields);
+}
