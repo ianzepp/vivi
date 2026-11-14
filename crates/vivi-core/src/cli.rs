@@ -47,7 +47,7 @@ pub use mind_command::{
 pub use monitor_command::MonitorCommand;
 pub use pool_command::{
     PoolAddCommand, PoolBandsCommand, PoolCleanCommand, PoolConfigSetCommand, PoolCreateCommand,
-    PoolDestroyCommand, PoolDispatchCommand, PoolDoctorCommand, PoolListCommand,
+    PoolDestroyCommand, PoolDispatchCommand, PoolDoctorCommand, PoolLandedCommand, PoolListCommand,
     PoolReconcileCommand, PoolRemoveCommand, PoolResetCommand, PoolRunCommand, PoolScaleCommand,
     PoolShowCommand, PoolStatusCommand, PoolSubcommand, PoolUnsetCommand, PoolWaitCommand,
 };

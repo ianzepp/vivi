@@ -33,6 +33,7 @@ pub(crate) fn handle_pool_command(command: &PoolSubcommand) -> Result<(), Vivari
         PoolSubcommand::Dispatch(c) => work::dispatch(c),
         PoolSubcommand::Wait(c) => work::wait(c),
         PoolSubcommand::Reconcile(c) => work::reconcile(c),
+        PoolSubcommand::Landed(c) => crate::local_pool_landed_command::landed(c),
         PoolSubcommand::Doctor(c) => crate::local_pool_doctor_command::doctor(c),
         PoolSubcommand::Clean(c) => clean(c),
         PoolSubcommand::Reset(c) => reset(c),

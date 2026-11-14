@@ -256,6 +256,107 @@ fn rebuild_equals_the_incremental_rows_and_is_idempotent() {
     assert_eq!(world.all(), incremental);
 }
 
+const LANDED_AT: &str = "2026-11-01T10:09:00+00:00";
+const LANDED_EPOCH: i64 = 1_793_527_740;
+
+fn landed(job: &str, landing: &str, extra: serde_json::Value) -> String {
+    let mut note = serde_json::json!({ "job": job, "landing": landing });
+    for (key, value) in extra.as_object().unwrap() {
+        note[key] = value.clone();
+    }
+    note.to_string()
+}
+
+/// A world with `j1` dispatched and collected, then one landing recorded.
+fn landed_world(landing: &str, extra: serde_json::Value) -> (World, SlotRun) {
+    let world = World::new();
+    world.record(
+        "pool_dispatched",
+        &dispatched("j1", "slot-a"),
+        DISPATCHED_AT,
+    );
+    world.record("pool_collected", &collected("j1", "slot-a"), COLLECTED_AT);
+    world.record("pool_landed", &landed("j1", landing, extra), LANDED_AT);
+    let run = world.storage.slot_run("j1").unwrap().unwrap();
+    (world, run)
+}
+
+#[test]
+fn a_landed_or_raced_landing_sets_the_columns_and_no_reason() {
+    for word in ["landed", "raced"] {
+        let (_world, run) = landed_world(word, serde_json::json!({"base": "a", "tip": "b"}));
+        assert_eq!(run.landing.as_deref(), Some(word));
+        assert_eq!(run.landing_at, Some(LANDED_EPOCH));
+        assert_eq!(run.landing_reason, None);
+        assert_eq!(run.collected_at, Some(COLLECTED_EPOCH), "collect untouched");
+    }
+}
+
+#[test]
+fn a_red_landing_keeps_the_failing_command_as_its_reason() {
+    let (_world, run) = landed_world(
+        "red",
+        serde_json::json!({"command": "cargo test --workspace", "tail": "boom"}),
+    );
+    assert_eq!(run.landing.as_deref(), Some("red"));
+    assert_eq!(run.landing_at, Some(LANDED_EPOCH));
+    assert_eq!(
+        run.landing_reason.as_deref(),
+        Some("cargo test --workspace")
+    );
+}
+
+#[test]
+fn a_conflict_landing_keeps_the_files_one_per_line() {
+    let (_world, run) = landed_world(
+        "conflict",
+        serde_json::json!({"files": ["src/a.rs", "src/b.rs"], "command": "ignored"}),
+    );
+    assert_eq!(run.landing.as_deref(), Some("conflict"));
+    assert_eq!(run.landing_reason.as_deref(), Some("src/a.rs\nsrc/b.rs"));
+}
+
+#[test]
+fn a_landing_with_no_row_or_a_bad_word_changes_nothing() {
+    let world = World::new();
+    world.record(
+        "pool_landed",
+        &landed("ghost", "landed", serde_json::json!({})),
+        LANDED_AT,
+    );
+    assert!(world.all().is_empty());
+    world.record(
+        "pool_dispatched",
+        &dispatched("j1", "slot-a"),
+        DISPATCHED_AT,
+    );
+    world.record(
+        "pool_landed",
+        &landed("j1", "merged", serde_json::json!({})),
+        LANDED_AT,
+    );
+    world.record("pool_landed", r#"{"landing":"landed"}"#, LANDED_AT);
+    let run = world.storage.slot_run("j1").unwrap().unwrap();
+    assert_eq!(
+        (run.landing, run.landing_at, run.landing_reason),
+        (None, None, None)
+    );
+}
+
+#[test]
+fn rebuild_replays_landings() {
+    let (world, run) = landed_world("red", serde_json::json!({"command": "make check"}));
+    let before = world.all();
+    assert_eq!(run.landing.as_deref(), Some("red"));
+
+    assert_eq!(world.storage.rebuild_slot_runs().unwrap(), 1);
+
+    assert_eq!(world.all(), before);
+    let again = world.storage.slot_run("j1").unwrap().unwrap();
+    assert_eq!(again.landing_reason.as_deref(), Some("make check"));
+    assert_eq!(again.landing_at, Some(LANDED_EPOCH));
+}
+
 #[test]
 fn rebuild_drops_rows_that_no_event_backs() {
     let world = World::new();

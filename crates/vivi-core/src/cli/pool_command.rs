@@ -20,6 +20,8 @@ pub enum PoolSubcommand {
     Wait(PoolWaitCommand),
     /// Collect finished dispatches, stop overdue ones, free their slots (all pools, or --pool)
     Reconcile(PoolReconcileCommand),
+    /// Record how landing a dispatched job's branch ended (landed, red, conflict or raced) as a `pool_landed` event on its task
+    Landed(PoolLandedCommand),
     /// Check the pools, their providers and repositories, naming the fix for each finding; read-only unless --test (which needs --pool when there are several)
     Doctor(PoolDoctorCommand),
     /// Reclaim disposable build output on free slots
@@ -246,6 +248,48 @@ pub struct PoolReconcileCommand {
     /// Pool name (`[pools.<name>]`); without it, every pool
     #[arg(long)]
     pub pool: Option<String>,
+
+    /// Project root that owns .vivi/ (also accepted globally)
+    #[arg(long)]
+    pub project: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+pub struct PoolLandedCommand {
+    /// Task handle the job was dispatched for
+    pub task: String,
+
+    /// The dispatched job whose landing this records (`pool_dispatched` on the task)
+    #[arg(long)]
+    pub job: String,
+
+    /// How the landing ended: landed, red, conflict or raced
+    #[arg(long)]
+    pub outcome: String,
+
+    /// The main commit the landing started from
+    #[arg(long)]
+    pub base: Option<String>,
+
+    /// The commit main ended at
+    #[arg(long)]
+    pub tip: Option<String>,
+
+    /// Seconds the landing took
+    #[arg(long)]
+    pub secs: Option<u64>,
+
+    /// The command that failed (red)
+    #[arg(long)]
+    pub command: Option<String>,
+
+    /// A file holding the failing command's output; its last 4096 bytes are kept
+    #[arg(long, value_name = "PATH")]
+    pub tail_file: Option<PathBuf>,
+
+    /// A conflicting file (conflict), repeatable
+    #[arg(long = "file", value_name = "PATH")]
+    pub files: Vec<String>,
 
     /// Project root that owns .vivi/ (also accepted globally)
     #[arg(long)]

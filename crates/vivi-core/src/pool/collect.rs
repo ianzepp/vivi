@@ -232,6 +232,14 @@ impl JobResult {
         }
     }
 
+    /// ` (cpu <n>s)` when the runner measured that stage's CPU time, else nothing.
+    fn cpu_clause(&self, key: &str) -> String {
+        match self.get(key) {
+            "" => String::new(),
+            seconds => format!(" (cpu {seconds}s)"),
+        }
+    }
+
     /// Two plain lines for the receipt.
     #[must_use]
     pub fn summary(&self) -> String {
@@ -241,10 +249,11 @@ impl JobResult {
             "push"
         };
         let mut summary = format!(
-            "{label}: {}\nagent exit {} in {}s, job {}s, started from {}",
+            "{label}: {}\nagent exit {} in {}s{}, job {}s, started from {}",
             self.push_line(),
             self.get("agent_rc"),
             self.get("agent_s"),
+            self.cpu_clause("agent_cpu_s"),
             self.get("job_s"),
             self.get("start")
                 .get(..10)
@@ -273,7 +282,9 @@ impl JobResult {
                     self.get("check_rc"),
                     " in ",
                     self.get("check_s"),
-                    "s\ncheck tail: ",
+                    "s",
+                    &self.cpu_clause("check_cpu_s"),
+                    "\ncheck tail: ",
                     self.get("check_tail"),
                 ]
                 .concat(),

@@ -1110,6 +1110,7 @@ vivi pool wait [--pool <name>] [<task>...] [--timeout SECS] [--porcelain]
 vivi pool reconcile [--pool <name>] [--porcelain]
 vivi pool clean [--pool <name>] [--dry-run] [--base <branch>] [--porcelain]
 vivi pool reset [<slot>] [--pool <name>] [--base <branch>] [--porcelain]
+vivi pool landed <task> --job <job> --outcome landed|red|conflict|raced [--base <sha>] [--tip <sha>] [--secs N] [--command <text>] [--tail-file <path>] [--file <path>]...
 vivi pool doctor [--pool <name>] [--json | --porcelain]
 vivi pool doctor --pool <name> --test [--long] [--allow-spend] [--json | --porcelain]
 vivi pool run <server-url> --job <job-id> [--detach]   # the worker end of a job ticket; not a pool command (see Job tickets under Server)
@@ -1120,6 +1121,14 @@ has no flag (`fly.app`, `ssh.host`, `runpod.api_key_file`, a container
 `image`, a worker's `host` and `kind`): `vivi config validate` reports each as
 not ready, naming the key, and the commands that create machines or dispatch
 refuse the pool until `pool set` has filled it in.
+
+`pool landed` records how landing a job's branch ended, as a `pool_landed`
+event on the task. `--job` must name a job dispatched for that task; `--outcome`
+is `landed`, `red`, `conflict` or `raced`. A red landing takes `--command` (the
+failing command) and `--tail-file` (the end of its output; the last 4096 bytes
+are kept); a conflict takes one `--file` per conflicting path. The event does
+not close or reopen a dispatch, so a landing of an older job leaves a newer
+open dispatch of the same task open. `vivi slot history` shows the landing.
 
 #### Role → pool
 

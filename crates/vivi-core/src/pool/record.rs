@@ -176,11 +176,18 @@ pub fn target_text(record: &DispatchRecord) -> String {
 }
 
 /// Open dispatches among `events` (oldest first): a task's latest
-/// `pool_dispatched` not followed by a `pool_collected`.
+/// `pool_dispatched` not followed by a `pool_collected`. Any other event type
+/// (a `pool_landed`, say, which may name an old job) changes nothing.
 #[must_use]
 pub fn fold_open(events: &[PoolEventRow]) -> Vec<OpenDispatch> {
     let mut open: Vec<OpenDispatch> = Vec::new();
     for event in events {
+        if !matches!(
+            event.event_type.as_str(),
+            "pool_dispatched" | "pool_collected"
+        ) {
+            continue;
+        }
         open.retain(|d| d.task != event.handle);
         if event.event_type != "pool_dispatched" {
             continue;

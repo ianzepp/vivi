@@ -118,10 +118,39 @@ case "$REMOTE" in
   file:///work|file:///work/*) REMOTE=file://$W${REMOTE#file:///work} ;;
 esac
 now() { date +%s; }
+# CPU time of the stages. The `times` builtin's second line is the user and
+# system time of this shell's waited-for children (including, through them,
+# the descendants they waited for): a process nobody waited for, such as a
+# daemon the agent left behind, is not counted. `times` must run in this shell,
+# not in a $(...) subshell, whose own children time starts at zero; so it
+# writes to a file. Both bash 3.2 (macOS) and Linux print `XmY.ZZZs XmY.ZZZs`.
+CPU_MS=
+children_cpu_ms() { # sets CPU_MS to the children's user + system milliseconds, empty if unreadable
+  local line tok total=0 min sec frac
+  CPU_MS=
+  times > "$J/times.out" 2>/dev/null || return 0
+  { IFS= read -r line && IFS= read -r line; } < "$J/times.out"
+  rm -f "$J/times.out"
+  [ -n "$line" ] || return 0
+  for tok in $line; do
+    tok=${tok//,/.}
+    [[ "$tok" =~ ^([0-9]+)m([0-9]+)(\.([0-9]+))?s$ ]] || return 0
+    min=${BASH_REMATCH[1]} sec=${BASH_REMATCH[2]} frac=${BASH_REMATCH[4]:-0}
+    frac=${frac}000
+    total=$(( total + (10#$min * 60 + 10#$sec) * 1000 + 10#${frac:0:3} ))
+  done
+  CPU_MS=$total
+}
+cpu_secs() { # cpu_secs <start-ms> <end-ms>: whole seconds between, rounded; nothing if either is missing
+  [ -n "$1" ] && [ -n "$2" ] || return 0
+  echo $(( ($2 - $1 + 500) / 1000 ))
+}
 T0=$(now)
 START=
 AGENT_RC=
 AGENT_S=
+AGENT_CPU_S=
+CHECK_CPU_S=
 PUBLISH_STATE=
 PUBLISH_CANDIDATE=
 PUBLISH_SHA=
@@ -428,9 +457,11 @@ finish() { # finish <push-outcome> [sha]
     echo "start=$START"
     echo "agent_rc=$AGENT_RC"
     echo "agent_s=$AGENT_S"
+    [ -z "$AGENT_CPU_S" ] || echo "agent_cpu_s=$AGENT_CPU_S"
     if [ -n "$CHECK_RC" ]; then
       echo "check_rc=$CHECK_RC"
       echo "check_s=$CHECK_S"
+      [ -z "$CHECK_CPU_S" ] || echo "check_cpu_s=$CHECK_CPU_S"
       printf 'check_tail=%s\n' "$CHECK_TAIL"
     fi
     echo "job_s=$(( $(now) - T0 ))"
@@ -1146,6 +1177,7 @@ run_facts() {
 }
 run_facts
 [ "$RAMDISK_FULL_DETECTED" -ne 1 ] || finish ramdisk_full
+children_cpu_ms; A_CPU0=$CPU_MS
 A0=$(now)
 # In the background only to learn the timeout's pid (the agent's process
 # group); the runner waits for it at once. A background command's stdin is
@@ -1156,6 +1188,7 @@ note_agent_group $!
 wait $!
 AGENT_RC=$?
 AGENT_S=$(( $(now) - A0 ))
+children_cpu_ms; AGENT_CPU_S=$(cpu_secs "$A_CPU0" "$CPU_MS")
 echo "agent_rc $AGENT_RC agent_s $AGENT_S"
 # An accepted vivi-submit reply is the job's receipt (see COLLECT_SCRIPT).
 if [ -s "$REPLY_OUT" ]; then
@@ -1282,7 +1315,8 @@ fi
 # here: it would also cap compiler artifacts. Stdin is never the agent's input.
 run_check() {
   [ -n "$CHECK_COMMAND" ] || return 0
-  local c0 out
+  local c0 out c_cpu0
+  children_cpu_ms; c_cpu0=$CPU_MS
   c0=$(now)
   CHECK_RC=125
   if no_agent_running; then
@@ -1301,6 +1335,7 @@ run_check() {
     CHECK_RC=${CHECK_RC:-125}
   fi
   CHECK_S=$(( $(now) - c0 ))
+  children_cpu_ms; CHECK_CPU_S=$(cpu_secs "$c_cpu0" "$CPU_MS")
   out=$(tail -c 1024 "$J/check.out" 2>/dev/null | tail -n 40 | tr -d '\000-\010\013-\037')
   CHECK_TAIL=$(esc "$out")
   rm -f "$J/check.out" "$J/check.rc"

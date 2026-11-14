@@ -1,6 +1,7 @@
 //! `slot_runs`: one derived row per pool job, kept in step with the pool events.
 //!
-//! The `pool_dispatched` and `pool_collected` events stay the source of truth.
+//! The `pool_dispatched`, `pool_collected` and `pool_landed` events stay the
+//! source of truth.
 //! The row is written in the same transaction as the event, so the index never
 //! drifts from the log, and [`Storage::rebuild_slot_runs`] replays the log to
 //! make it again.
@@ -104,6 +105,7 @@ pub(super) fn apply_event(
     let outcome = match event.event_type {
         "pool_dispatched" => upsert_dispatched(tx, event),
         "pool_collected" => upsert_collected(tx, event),
+        "pool_landed" => set_landing(tx, event),
         _ => return Ok(()),
     };
     match outcome {
@@ -262,6 +264,53 @@ fn upsert_collected(tx: &Transaction<'_>, event: &PoolEvent<'_>) -> Result<(), S
     Ok(())
 }
 
+/// The landing words a `pool_landed` note may carry.
+const LANDINGS: [&str; 4] = ["landed", "red", "conflict", "raced"];
+
+/// Set the landing columns of the job a `pool_landed` note names. `landing_at`
+/// is the event's time; `landing_reason` is the failing command for `red`, the
+/// conflicting files (one per line) for `conflict`, and empty otherwise. A job
+/// with no row, or a note that names no job or an unknown landing, is skipped.
+fn set_landing(tx: &Transaction<'_>, event: &PoolEvent<'_>) -> Result<(), Skip> {
+    let note: Value =
+        serde_json::from_str(note_of(event)?).map_err(|error| Skip::Note(error.to_string()))?;
+    let (Some(job), Some(landing)) = (text(&note, "job"), text(&note, "landing")) else {
+        return Err(Skip::Note(
+            "the landing record names no job or landing".into(),
+        ));
+    };
+    if !LANDINGS.contains(&landing.as_str()) {
+        return Err(Skip::Note(format!("unknown landing {landing}")));
+    }
+    let landing_at = chrono::DateTime::parse_from_rfc3339(event.occurred_at)
+        .map_err(|error| Skip::Note(format!("event time {}: {error}", event.occurred_at)))?
+        .timestamp();
+    let reason = match landing.as_str() {
+        "red" => text(&note, "command"),
+        "conflict" => files_reason(&note),
+        _ => None,
+    };
+    let changed = tx.execute(
+        "UPDATE slot_runs SET landing = ?2, landing_at = ?3, landing_reason = ?4 WHERE job = ?1",
+        params![job, landing, landing_at, reason],
+    )?;
+    if changed == 0 {
+        return Err(Skip::Note(format!("no slot_runs row for job {job}")));
+    }
+    Ok(())
+}
+
+/// The `files` of a landing note joined by newlines; none when empty.
+fn files_reason(note: &Value) -> Option<String> {
+    let files: Vec<&str> = note
+        .get("files")?
+        .as_array()?
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    (!files.is_empty()).then(|| files.join("\n"))
+}
+
 /// One stored pool event: time, type, message id, note.
 type StoredPoolEvent = (String, String, String, Option<String>);
 
@@ -271,7 +320,7 @@ fn read_pool_events(tx: &Transaction<'_>) -> Result<Vec<StoredPoolEvent>, Vivari
     let mut stmt = tx
         .prepare(
             "SELECT occurred_at, event_type, message_id, note FROM mailspace_events
-             WHERE event_type IN ('pool_dispatched', 'pool_collected')
+             WHERE event_type IN ('pool_dispatched', 'pool_collected', 'pool_landed')
              ORDER BY occurred_at, event_id",
         )
         .map_err(fail)?;
@@ -285,7 +334,8 @@ fn read_pool_events(tx: &Transaction<'_>) -> Result<Vec<StoredPoolEvent>, Vivari
 
 impl Storage {
     /// Rebuild `slot_runs` from the pool events: in one transaction, drop every
-    /// row and replay each `pool_dispatched` and `pool_collected` event, oldest
+    /// row and replay each `pool_dispatched`, `pool_collected` and
+    /// `pool_landed` event, oldest
     /// first, through the code that writes the row as the event is recorded.
     /// Running it again gives the same rows. Returns the number of rows.
     ///

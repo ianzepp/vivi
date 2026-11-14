@@ -29,6 +29,7 @@ mod local_monitor_command;
 mod local_pool_command;
 mod local_pool_config_command;
 mod local_pool_doctor_command;
+mod local_pool_landed_command;
 mod local_pool_run_command;
 mod local_pool_scale_command;
 mod local_pool_work_command;

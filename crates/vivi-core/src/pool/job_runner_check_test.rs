@@ -116,6 +116,7 @@ fn unset_no_change_and_read_only_jobs_skip_check() {
         let result = run(&rig, harness, check, 1, 5);
         assert_eq!(result.get("check_rc"), "");
         assert_eq!(result.get("check_s"), "");
+        assert_eq!(result.get("check_cpu_s"), "");
         assert_eq!(result.get("check_tail"), "");
     }
     let rig = Rig::new();
@@ -208,4 +209,37 @@ fn group_tracking_kills_the_agents_leftovers_then_runs_the_check_and_publishes()
             .success(),
         "the agent's leftover child is gone"
     );
+}
+
+/// A shell loop that burns about two seconds of CPU.
+const BURN: &str = "end=$((SECONDS + 2)); while [ $SECONDS -lt $end ]; do :; done";
+
+#[test]
+fn the_result_carries_whole_cpu_seconds_of_the_agent_and_check_stages() {
+    let rig = Rig::new();
+    let harness = format!("{BURN}; echo changed >> a.txt");
+    let result = run(&rig, &harness, Some(BURN), 30, 30);
+
+    assert_eq!(result.get("check_rc"), "0", "{:?}", result.fields);
+    for key in ["agent_cpu_s", "check_cpu_s"] {
+        let cpu: u64 = result
+            .get(key)
+            .parse()
+            .unwrap_or_else(|_| panic!("{key} is an integer: {:?}", result.fields));
+        assert!(cpu >= 1, "{key} = {cpu}: {:?}", result.fields);
+        assert!(cpu <= 10, "{key} = {cpu}: {:?}", result.fields);
+    }
+}
+
+#[test]
+fn a_job_without_a_check_has_agent_cpu_and_no_check_cpu() {
+    let rig = Rig::new();
+    let result = run(&rig, "echo changed >> a.txt", None, 5, 10);
+
+    assert!(
+        result.get("agent_cpu_s").parse::<u64>().is_ok(),
+        "{:?}",
+        result.fields
+    );
+    assert_eq!(result.get("check_cpu_s"), "");
 }

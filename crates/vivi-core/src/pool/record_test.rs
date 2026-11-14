@@ -66,6 +66,27 @@ fn a_task_can_be_dispatched_again_after_collection() {
 }
 
 #[test]
+fn a_landing_of_an_old_job_never_closes_a_newer_open_dispatch() {
+    let landing = r#"{"job":"j1","landing":"landed"}"#;
+    let events = vec![
+        dispatched("aaaa1111", "j1"),
+        event("aaaa1111", "pool_collected", "{}".into()),
+        dispatched("aaaa1111", "j2"),
+        event("aaaa1111", "pool_landed", landing.into()),
+    ];
+    let open = fold_open(&events);
+    assert_eq!(open.len(), 1);
+    assert_eq!(open[0].record.job, "j2");
+
+    // A landing alone neither opens nor closes anything.
+    let only = vec![
+        dispatched("bbbb2222", "j3"),
+        event("bbbb2222", "pool_landed", landing.into()),
+    ];
+    assert_eq!(fold_open(&only).len(), 1);
+}
+
+#[test]
 fn unparseable_notes_are_not_dispatches() {
     let events = vec![event("aaaa1111", "pool_dispatched", "not json".into())];
     assert!(fold_open(&events).is_empty());
@@ -149,6 +170,41 @@ fn collected_records_carry_the_result_and_the_receipt() {
     assert!(text.contains("--- receipt\ndid the thing"));
     assert!(text.contains("--- runner log tail"));
     assert!(!text.contains("--- stderr"), "empty sections are left out");
+}
+
+#[test]
+fn cpu_seconds_reach_the_note_and_the_summary_only_when_the_runner_measured_them() {
+    let d = OpenDispatch {
+        task: "aaaa1111".into(),
+        record: record("j1"),
+    };
+    let with = finished_with(&[
+        ("agent_s", "312"),
+        ("agent_cpu_s", "905"),
+        ("check_rc", "0"),
+        ("check_s", "30"),
+        ("check_cpu_s", "88"),
+    ]);
+    let note: serde_json::Value = serde_json::from_str(&collected_note(&d, &with)).unwrap();
+    assert_eq!(note["agent_cpu_s"], "905");
+    assert_eq!(note["check_cpu_s"], "88");
+    let text = collected_text(&d, &with);
+    assert!(
+        text.contains("agent exit 0 in 312s (cpu 905s), job"),
+        "{text}"
+    );
+    assert!(
+        text.contains("runner check: passed exit 0 in 30s (cpu 88s)"),
+        "{text}"
+    );
+
+    let without = finished_with(&[("agent_s", "312"), ("check_rc", "0"), ("check_s", "30")]);
+    let note: serde_json::Value = serde_json::from_str(&collected_note(&d, &without)).unwrap();
+    assert!(note.get("agent_cpu_s").is_none());
+    let text = collected_text(&d, &without);
+    assert!(text.contains("agent exit 0 in 312s, job"), "{text}");
+    assert!(text.contains("in 30s\ncheck tail"), "{text}");
+    assert!(!text.contains("cpu"), "{text}");
 }
 
 #[test]

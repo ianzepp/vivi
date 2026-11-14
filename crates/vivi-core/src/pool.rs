@@ -64,6 +64,7 @@ pub mod fly_doctor;
 pub mod fly_token;
 pub mod github;
 pub mod job;
+pub mod landed;
 pub mod local;
 pub mod local_branch;
 pub mod local_doctor;
