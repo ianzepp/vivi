@@ -16,7 +16,6 @@ use crate::layout::{self, heading, notice};
 
 /// Menu segment and page name, for every page still to come.
 pub const UNBUILT: &[(&str, &str)] = &[
-    ("jobs", "Jobs"),
     ("needs", "Needs"),
     ("failures", "Failures"),
     ("pump", "Pump"),
@@ -24,8 +23,7 @@ pub const UNBUILT: &[(&str, &str)] = &[
     ("mail", "Mail"),
 ];
 
-/// Routes for each unbuilt page, and for a job's page (linked from the
-/// overview's failures).
+/// Routes for each unbuilt page.
 pub fn routes() -> Router<ConsoleState> {
     let mut router = Router::new();
     for (segment, name) in UNBUILT {
@@ -35,10 +33,7 @@ pub fn routes() -> Router<ConsoleState> {
             get(move |ctx: ProjectCtx| async move { page(&ctx, segment, name) }),
         );
     }
-    router.route(
-        "/ui/p/{project}/jobs/{job}",
-        get(|ctx: ProjectCtx| async move { page(&ctx, "jobs", "Job") }),
-    )
+    router
 }
 
 fn page(ctx: &ProjectCtx, active: &str, name: &str) -> Response {

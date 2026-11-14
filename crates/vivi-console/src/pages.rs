@@ -4,9 +4,15 @@
 //! is not built yet is served by `unbuilt`; the seat that builds it removes
 //! its entry from `unbuilt::UNBUILT` and adds its own route here.
 
+pub mod job;
+pub mod job_sections;
+pub mod jobs;
 pub mod overview;
 pub mod slot_history;
 pub mod slots;
+#[cfg(test)]
+pub mod test_support;
+pub mod text_block;
 pub mod unbuilt;
 pub mod widgets;
 
@@ -31,6 +37,8 @@ pub fn routes() -> Router<ConsoleState> {
             "/ui/p/{project}/slots/{pool}/{slot}",
             get(slot_history::handler),
         )
+        .route("/ui/p/{project}/jobs", get(jobs::handler))
+        .route("/ui/p/{project}/jobs/{job}", get(job::handler))
         .merge(unbuilt::routes())
 }
 

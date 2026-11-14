@@ -1,7 +1,7 @@
 //! The overview page's data: pump health, slots per pool, and the last day
 //! of runs.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use rusqlite::Connection;
@@ -9,7 +9,7 @@ use vivi_core::mailspace::MailspaceConfig;
 use vivi_core::pump::health::{HealthOptions, health};
 use vivi_error::VivariumError;
 
-use super::config::{self, DeclaredPool};
+use super::config::{self, DeclaredPool, DeclaredSlot};
 use super::runs::{self, HourCount, OutcomeCount, RunRow};
 use super::{RunsState, with_runs};
 
@@ -47,7 +47,11 @@ pub struct PumpHealthView {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PoolSlots {
     pub pool: String,
+    /// The pool's `slots` cap, or its named `[[slot]]` count when larger.
     pub declared: u32,
+    /// The named `[[slot]]` slots of the pool, each with whether it is busy
+    /// (`None` when there is no slot index to tell).
+    pub named: Vec<(String, Option<bool>)>,
     /// `None` when there is no slot index to count from.
     pub busy: Option<u32>,
 }
@@ -76,6 +80,8 @@ pub struct DayRuns {
     pub hours: Vec<HourBar>,
     pub failures: Vec<RunRow>,
     pub busy_by_pool: BTreeMap<String, u32>,
+    /// `(pool, slot)` of every open run.
+    pub busy_slots: BTreeSet<(String, String)>,
 }
 
 impl DayRuns {
@@ -117,7 +123,8 @@ pub fn load(root: &Path, now: i64) -> Result<Overview, VivariumError> {
     let config = config::load(root)?;
     let pump = pump_view(root, &config);
     let runs = with_runs(root, |conn| day_runs(conn, now))?;
-    let pools = pool_slots(&config::declared_pools(&config), &runs);
+    let named = config::declared_slots(&config);
+    let pools = pool_slots(&config::declared_pools(&config), &named, &runs);
     Ok(Overview {
         now,
         pump,
@@ -149,8 +156,10 @@ fn day_runs(conn: &Connection, now: i64) -> Result<DayRuns, VivariumError> {
     let hourly = runs::hourly_since(conn, first_hour * 3600)?;
     let open = runs::open_runs(conn, OPEN_RUN_LIMIT)?;
     let mut busy_by_pool: BTreeMap<String, u32> = BTreeMap::new();
+    let mut busy_slots = BTreeSet::new();
     for run in &open {
         *busy_by_pool.entry(run.pool.clone()).or_default() += 1;
+        busy_slots.insert((run.pool.clone(), run.slot.clone()));
     }
     Ok(DayRuns {
         dispatched: runs::dispatched_since(conn, since)?,
@@ -158,6 +167,7 @@ fn day_runs(conn: &Connection, now: i64) -> Result<DayRuns, VivariumError> {
         hours: hour_bars(&hourly, first_hour),
         failures: runs::failures_since(conn, since, FAILURE_ROWS)?,
         busy_by_pool,
+        busy_slots,
     })
 }
 
@@ -182,18 +192,44 @@ fn hour_bars(counts: &[HourCount], first_hour: i64) -> Vec<HourBar> {
 }
 
 /// Declared pools first, then any pool with open runs that config no longer
-/// declares (shown with zero declared slots).
-fn pool_slots(declared: &[DeclaredPool], runs: &RunsState<DayRuns>) -> Vec<PoolSlots> {
+/// declares (shown with zero declared slots). A pool that names its slots
+/// with `[[slot]]` blocks has at least that many.
+fn pool_slots(
+    declared: &[DeclaredPool],
+    named: &[DeclaredSlot],
+    runs: &RunsState<DayRuns>,
+) -> Vec<PoolSlots> {
     let busy_of = |pool: &str| match runs {
         RunsState::Ready(day) => Some(day.busy_by_pool.get(pool).copied().unwrap_or(0)),
         _ => None,
     };
+    let names_of = |pool: &str| -> Vec<(String, Option<bool>)> {
+        named
+            .iter()
+            .filter(|slot| slot.pools.iter().any(|name| name == pool))
+            .map(|slot| {
+                let busy = match runs {
+                    RunsState::Ready(day) => Some(
+                        day.busy_slots
+                            .contains(&(pool.to_string(), slot.name.clone())),
+                    ),
+                    _ => None,
+                };
+                (slot.name.clone(), busy)
+            })
+            .collect()
+    };
     let mut out: Vec<PoolSlots> = declared
         .iter()
-        .map(|pool| PoolSlots {
-            pool: pool.name.clone(),
-            declared: pool.slots,
-            busy: busy_of(&pool.name),
+        .map(|pool| {
+            let names = names_of(&pool.name);
+            let count = u32::try_from(names.len()).unwrap_or(u32::MAX);
+            PoolSlots {
+                pool: pool.name.clone(),
+                declared: pool.slots.max(count),
+                named: names,
+                busy: busy_of(&pool.name),
+            }
         })
         .collect();
     if let RunsState::Ready(day) = runs {
@@ -202,6 +238,7 @@ fn pool_slots(declared: &[DeclaredPool], runs: &RunsState<DayRuns>) -> Vec<PoolS
                 out.push(PoolSlots {
                     pool: pool.clone(),
                     declared: 0,
+                    named: Vec::new(),
                     busy: Some(*busy),
                 });
             }

@@ -96,7 +96,7 @@ fn codes(run: &RunRow) -> String {
     format!("{} / {}", code(run.agent_rc), code(run.check_rc))
 }
 
-fn wall(run: &RunRow, now: i64) -> String {
+pub(super) fn wall(run: &RunRow, now: i64) -> String {
     match (run.job_s, run.collected_at) {
         (Some(seconds), _) => format::duration(seconds),
         (None, Some(done)) => format::duration(done - run.dispatched_at),

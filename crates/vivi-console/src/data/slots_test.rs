@@ -1,5 +1,5 @@
 use super::*;
-use crate::data::config::DeclaredPool;
+use crate::data::config::{DeclaredPool, DeclaredSlot};
 
 fn known(pool: &str, slot: &str) -> KnownSlot {
     KnownSlot {
@@ -90,6 +90,65 @@ fn declared_slots_that_never_ran_are_counted_not_named() {
         vec![UnseenSlots {
             pool: "p".into(),
             count: 3
+        }]
+    );
+}
+
+fn named(name: &str, host: &str, pools: &[&str]) -> DeclaredSlot {
+    DeclaredSlot {
+        name: name.into(),
+        host: host.into(),
+        pools: pools.iter().map(ToString::to_string).collect(),
+    }
+}
+
+#[test]
+fn named_slots_that_never_ran_are_listed_free_in_each_pool_they_serve() {
+    let slots = add_declared(
+        merge(vec![known("p", "slot-1")], Vec::new()),
+        &[
+            named("radix-2", "studio-01", &["p", "q"]),
+            named("slot-1", "studio-09", &["p"]),
+            named("radix-10", "studio-01", &["p"]),
+        ],
+    );
+    let listed: Vec<(&str, &str)> = slots
+        .iter()
+        .map(|slot| (slot.pool.as_str(), slot.slot.as_str()))
+        .collect();
+    assert_eq!(
+        listed,
+        [
+            ("p", "radix-2"),
+            ("p", "radix-10"),
+            ("p", "slot-1"),
+            ("q", "radix-2")
+        ]
+    );
+    let never_ran = &slots[0];
+    assert_eq!(never_ran.machine, "studio-01");
+    assert_eq!(never_ran.state, SlotState::Free(None));
+    let ran = &slots[2];
+    assert_eq!(ran.machine, "m1", "a slot with a record keeps its record");
+    assert!(matches!(ran.state, SlotState::Free(Some(_))));
+}
+
+#[test]
+fn named_slots_count_against_a_pools_cap_so_only_the_rest_are_unseen() {
+    let declared = vec![DeclaredPool {
+        name: "p".into(),
+        slots: 4,
+    }];
+    let slots = add_declared(
+        Vec::new(),
+        &[named("a", "h", &["p"]), named("b", "h", &["p"])],
+    );
+    let unseen = unseen_slots(&declared, &slots);
+    assert_eq!(
+        unseen,
+        vec![UnseenSlots {
+            pool: "p".into(),
+            count: 2
         }]
     );
 }

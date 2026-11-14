@@ -3,6 +3,10 @@
 //! Everything here is blocking. Pages call it from `spawn_blocking`.
 
 pub mod config;
+pub mod job;
+pub mod job_notes;
+pub mod jobs;
+pub mod mail_read;
 pub mod overview;
 pub mod pump_db;
 pub mod runs;

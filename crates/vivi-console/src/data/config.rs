@@ -18,6 +18,17 @@ pub struct DeclaredPool {
     pub slots: u32,
 }
 
+/// A slot named by a `[[slot]]` declaration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeclaredSlot {
+    pub name: String,
+    /// The host the slot lives on.
+    pub host: String,
+    /// The pools that may use it: the declared ones, or every pool when the
+    /// declaration names none.
+    pub pools: Vec<String>,
+}
+
 /// Read and merge `.vivi/mailspace.toml` under `root`.
 ///
 /// # Errors
@@ -26,6 +37,24 @@ pub fn load(root: &Path) -> Result<MailspaceConfig, VivariumError> {
     let path = mailspace_dir(root).join(MAILSPACE_CONFIG);
     let raw = std::fs::read_to_string(&path)?;
     inherit::load_config(&path, &raw)
+}
+
+/// The named slots a config declares, in config order.
+#[must_use]
+pub fn declared_slots(config: &MailspaceConfig) -> Vec<DeclaredSlot> {
+    config
+        .slots
+        .iter()
+        .map(|slot| DeclaredSlot {
+            name: slot.name.clone(),
+            host: slot.host.clone(),
+            pools: if slot.pools.is_empty() {
+                config.pools.keys().cloned().collect()
+            } else {
+                slot.pools.clone()
+            },
+        })
+        .collect()
 }
 
 /// The pools a config declares, in name order, with their slot caps.

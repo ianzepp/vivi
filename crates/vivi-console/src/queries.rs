@@ -137,6 +137,95 @@ pub static SLOT_HISTORY: Query = Query {
     samples: &[Sample::Text("pool"), Sample::Text("slot"), Sample::Int(100)],
 };
 
+/// Every `slot_runs` column of one job, as [`crate::data::job::JobRun`] reads
+/// them, in order.
+macro_rules! job_columns {
+    () => {
+        "job, task_message_id, need, pool, slot, machine, model, kind, target, \
+         branch, start_sha, budget_s, read_only, dispatched_at, collected_at, \
+         outcome, push, sha, agent_rc, agent_s, check_rc, check_s, job_s, \
+         agent_cpu_s, check_cpu_s, landing, landing_at, landing_reason"
+    };
+}
+
+/// The jobs list page: runs dispatched in `[?1, ?2]`, newest first, at most
+/// `?4`, resuming below the cursor `(?2, ?3)` (dispatch time, row id).
+/// `?5..?8` are exact pool, slot and model and a need prefix; `?9` is an
+/// outcome word or `open`; `?10` is 1 to keep only failures. An unused filter
+/// is NULL (0 for `?10`). Only the time range uses an index (the dispatch
+/// time index, in order, so no sort); the other filters are applied to the
+/// rows of that range, which a window of at most seven days bounds.
+pub static JOBS_LIST: Query = Query {
+    name: "jobs_list",
+    sql: concat!(
+        "SELECT ",
+        run_columns!(),
+        ", rowid FROM slot_runs \
+         WHERE dispatched_at >= ?1 AND dispatched_at <= ?2 \
+           AND (dispatched_at < ?2 OR rowid < ?3) \
+           AND (?5 IS NULL OR pool = ?5) \
+           AND (?6 IS NULL OR slot = ?6) \
+           AND (?7 IS NULL OR model = ?7) \
+           AND (?8 IS NULL OR substr(need, 1, length(?8)) = ?8) \
+           AND (?9 IS NULL OR (?9 = 'open' AND collected_at IS NULL) \
+                OR (?9 != 'open' AND outcome = ?9)) \
+           AND (?10 = 0 OR (collected_at IS NOT NULL AND ",
+        failed_sql!(),
+        ") OR landing IN ('red', 'conflict', 'raced')) \
+         ORDER BY dispatched_at DESC, rowid DESC LIMIT ?4"
+    ),
+    samples: &[
+        Sample::Recent,
+        Sample::Int(i64::MAX),
+        Sample::Int(i64::MAX),
+        Sample::Int(101),
+        Sample::Text("pool"),
+        Sample::Text("slot"),
+        Sample::Text("model"),
+        Sample::Text("need"),
+        Sample::Text("finished"),
+        Sample::Int(1),
+    ],
+};
+
+/// One job's full row, by its primary key `?1`.
+pub static JOB_RUN: Query = Query {
+    name: "job_run",
+    sql: concat!("SELECT ", job_columns!(), " FROM slot_runs WHERE job = ?1"),
+    samples: &[Sample::Text("job-1")],
+};
+
+/// A task's events in time order, at most `?2`: message `?1`.
+pub static TASK_EVENTS: Query = Query {
+    name: "task_events",
+    sql: "SELECT occurred_at, event_type, command, actor_identity, note \
+          FROM mailspace_events WHERE message_id = ?1 \
+          ORDER BY occurred_at, event_id LIMIT ?2",
+    samples: &[Sample::Text("msg_0123456789abcdef0123"), Sample::Int(500)],
+};
+
+/// Where a message's text lives: blob path, content id, date, sender and
+/// subject of message `?1`.
+pub static MESSAGE_BLOB: Query = Query {
+    name: "message_blob",
+    sql: "SELECT b.blob_relpath, m.content_id, md.date, md.from_addr, md.subject \
+          FROM messages m JOIN blobs b ON b.content_id = m.content_id \
+          LEFT JOIN message_metadata md ON md.content_id = m.content_id \
+          WHERE m.message_id = ?1",
+    samples: &[Sample::Text("msg_0123456789abcdef0123")],
+};
+
+/// The letters linked as replies to the letter with content `?1`, at most
+/// `?2`: content id, blob path, date, sender and subject.
+pub static THREAD_CHILDREN: Query = Query {
+    name: "thread_children",
+    sql: "SELECT l.child_content_id, b.blob_relpath, md.date, md.from_addr, md.subject \
+          FROM mailspace_links l JOIN blobs b ON b.content_id = l.child_content_id \
+          LEFT JOIN message_metadata md ON md.content_id = l.child_content_id \
+          WHERE l.parent_content_id = ?1 ORDER BY l.rowid LIMIT ?2",
+    samples: &[Sample::Text("content"), Sample::Int(200)],
+};
+
 /// Every query the console runs. Later pages add theirs here.
 pub static REGISTRY: &[&Query] = &[
     &HAS_TABLE,
@@ -147,6 +236,11 @@ pub static REGISTRY: &[&Query] = &[
     &FAILURES_SINCE,
     &RECENT_RUNS,
     &SLOT_HISTORY,
+    &JOBS_LIST,
+    &JOB_RUN,
+    &TASK_EVENTS,
+    &MESSAGE_BLOB,
+    &THREAD_CHILDREN,
 ];
 
 #[cfg(test)]

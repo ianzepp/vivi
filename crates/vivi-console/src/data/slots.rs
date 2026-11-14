@@ -1,9 +1,10 @@
 //! The slots page's data.
 //!
-//! The console cannot see a slot's files. A slot it knows by name is one it
-//! has a record of: busy when it has an open run, otherwise free if it ran
-//! something in the last week. Declared slots that never ran anything have
-//! no name yet; they are counted, not listed.
+//! The console cannot see a slot's files. A slot it knows by name is one the
+//! config declares with a `[[slot]]` block, or one it has a record of: busy
+//! when it has an open run, otherwise free. Slots a pool only counts
+//! (`[pools.*].slots`) get a name once they have run something in the last
+//! week; until then they are counted, not listed.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -11,7 +12,7 @@ use std::path::Path;
 use rusqlite::Connection;
 use vivi_error::VivariumError;
 
-use super::config::{self, DeclaredPool};
+use super::config::{self, DeclaredPool, DeclaredSlot};
 use super::runs::{self, KnownSlot, RunRow};
 use super::{RunsState, with_runs};
 
@@ -67,18 +68,21 @@ pub struct SlotsData {
 /// # Errors
 /// Returns an error when the config or the store cannot be read.
 pub fn load(root: &Path, now: i64) -> Result<RunsState<SlotsData>, VivariumError> {
-    let declared = config::declared_pools(&config::load(root)?);
-    with_runs(root, |conn| slots_data(conn, now, &declared))
+    let config = config::load(root)?;
+    let declared = config::declared_pools(&config);
+    let named = config::declared_slots(&config);
+    with_runs(root, |conn| slots_data(conn, now, &declared, &named))
 }
 
 fn slots_data(
     conn: &Connection,
     now: i64,
     declared: &[DeclaredPool],
+    named: &[DeclaredSlot],
 ) -> Result<SlotsData, VivariumError> {
     let known = runs::known_slots(conn, now - KNOWN_WINDOW_SECS, KNOWN_LIMIT)?;
     let open = runs::open_runs(conn, OPEN_LIMIT)?;
-    let slots = merge(known, open);
+    let slots = add_declared(merge(known, open), named);
     let unseen = unseen_slots(declared, &slots);
     Ok(SlotsData { now, slots, unseen })
 }
@@ -121,9 +125,36 @@ fn merge(known: Vec<KnownSlot>, open: Vec<RunRow>) -> Vec<SlotView> {
         );
     }
     let mut slots: Vec<SlotView> = by_slot.into_values().collect();
+    sort_slots(&mut slots);
+    slots
+}
+
+fn sort_slots(slots: &mut [SlotView]) {
     slots.sort_by(|a, b| {
         (a.pool.as_str(), natural_key(&a.slot)).cmp(&(b.pool.as_str(), natural_key(&b.slot)))
     });
+}
+
+/// Add every `[[slot]]`-declared slot the history did not name, as a free
+/// slot with no last run, once per pool it serves. A declared slot that
+/// already has a record keeps it.
+fn add_declared(mut slots: Vec<SlotView>, named: &[DeclaredSlot]) -> Vec<SlotView> {
+    for slot in named {
+        for pool in &slot.pools {
+            let known = slots
+                .iter()
+                .any(|view| view.pool == *pool && view.slot == slot.name);
+            if !known {
+                slots.push(SlotView {
+                    pool: pool.clone(),
+                    slot: slot.name.clone(),
+                    machine: slot.host.clone(),
+                    state: SlotState::Free(None),
+                });
+            }
+        }
+    }
+    sort_slots(&mut slots);
     slots
 }
 

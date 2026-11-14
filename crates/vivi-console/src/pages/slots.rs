@@ -237,7 +237,7 @@ fn slot_row(ctx: &ProjectCtx, now: i64, slot: &SlotView) -> Html {
 
 fn last_cell(last: Option<&LastRun>, now: i64) -> Html {
     let Some(last) = last else {
-        return Html::new();
+        return Html::text("no runs recorded");
     };
     let mut out = Html::text("last: ");
     match (&last.outcome, last.collected_at) {
@@ -249,3 +249,7 @@ fn last_cell(last: Option<&LastRun>, now: i64) -> Html {
     }
     out
 }
+
+#[cfg(test)]
+#[path = "slots_test.rs"]
+mod tests;

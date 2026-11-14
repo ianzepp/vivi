@@ -20,3 +20,18 @@
     timer = box.checked ? setInterval(refresh, 10000) : null;
   });
 })();
+
+// Open the folded section a link or the address names (`#check`), so a
+// pasted section link lands on its text.
+(function () {
+  function openTarget() {
+    var id = decodeURIComponent(location.hash.slice(1));
+    var target = id && document.getElementById(id);
+    if (target && target.tagName === "DETAILS") {
+      target.open = true;
+      target.scrollIntoView();
+    }
+  }
+  window.addEventListener("hashchange", openTarget);
+  openTarget();
+})();

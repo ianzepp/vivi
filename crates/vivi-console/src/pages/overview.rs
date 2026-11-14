@@ -10,7 +10,7 @@ use crate::data::RunsState;
 use crate::data::overview::{self, DayRuns, HourBar, Overview, PoolSlots, PumpView};
 use crate::data::runs::RunRow;
 use crate::format;
-use crate::html::{Html, div, join, span, tag, text_tag};
+use crate::html::{Html, div, join, span, tag, text_tag, url_encode};
 use crate::layout::{self, heading, mono, pill, row_classed, table};
 
 /// The handler.
@@ -33,7 +33,7 @@ pub fn render(ctx: &ProjectCtx, data: &Overview) -> Html {
     let mut body = heading("Overview", &ctx.project.name);
     body.push(&cards(data));
     body.push(&text_tag("h2", &[], "Slots by pool"));
-    body.push(&pools_table(&data.pools));
+    body.push(&pools_table(ctx, &data.pools));
     match &data.runs {
         RunsState::Ready(day) => body.push(&last_day(ctx, data.now, day)),
         other => {
@@ -153,7 +153,7 @@ fn outcome_name(outcome: &str) -> &str {
     }
 }
 
-fn pools_table(pools: &[PoolSlots]) -> Html {
+fn pools_table(ctx: &ProjectCtx, pools: &[PoolSlots]) -> Html {
     if pools.is_empty() {
         return layout::notice("This project declares no pools.");
     }
@@ -171,10 +171,31 @@ fn pools_table(pools: &[PoolSlots]) -> Html {
                 ("num", Html::text(&pool.declared.to_string())),
                 ("num", Html::text(&busy)),
                 ("num", Html::text(&free)),
+                ("", named_tiles(ctx, pool)),
             ])
         })
         .collect();
-    table("table pools", &["Pool", "Declared", "Busy", "Free"], rows)
+    table(
+        "table pools",
+        &["Pool", "Declared", "Busy", "Free", "Slots"],
+        rows,
+    )
+}
+
+/// A tile per named slot of the pool, busy ones lit, each linking to the
+/// slot's history. A pool that only counts its slots has none.
+fn named_tiles(ctx: &ProjectCtx, pool: &PoolSlots) -> Html {
+    let tiles = pool.named.iter().map(|(name, busy)| {
+        let class = if *busy == Some(true) {
+            "tile tile-busy"
+        } else {
+            "tile tile-free"
+        };
+        let rest = format!("slots/{}/{}", url_encode(&pool.pool), url_encode(name));
+        let href = layout::project_path(&ctx.principal, &ctx.project, &rest);
+        tag("a", &[("class", class), ("href", &href)], &Html::text(name))
+    });
+    div("tiles", &join(tiles))
 }
 
 fn last_day(ctx: &ProjectCtx, now: i64, day: &DayRuns) -> Html {

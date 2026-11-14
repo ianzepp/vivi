@@ -69,7 +69,7 @@ pub struct HourCount {
     pub count: i64,
 }
 
-fn run_from_row(row: &Row<'_>) -> rusqlite::Result<RunRow> {
+pub(super) fn run_from_row(row: &Row<'_>) -> rusqlite::Result<RunRow> {
     Ok(RunRow {
         job: row.get(0)?,
         task_message_id: row.get(1)?,
@@ -90,7 +90,7 @@ fn run_from_row(row: &Row<'_>) -> rusqlite::Result<RunRow> {
     })
 }
 
-fn collect<T>(
+pub(super) fn collect<T>(
     conn: &Connection,
     query: &Query,
     params: &[&dyn ToSql],
