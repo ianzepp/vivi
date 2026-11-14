@@ -236,9 +236,7 @@ async fn an_unreadable_pump_store_is_named() {
     let store = seeded(true);
     seed_need(&store, &NeedSeed::default());
     drop(seed_pump(&store));
-    if store.root.join(".vivi/pump/pump.db-shm").exists() {
-        return; // the platform left the WAL index behind: nothing to refuse
-    }
+    std::fs::write(store.root.join(".vivi/pump/pump.db"), b"not a database").unwrap();
     let page = client(&store).await.get(&format!("{URL}?tab=flow")).await;
     assert_eq!(page.status, StatusCode::OK);
     assert!(
@@ -246,7 +244,6 @@ async fn an_unreadable_pump_store_is_named() {
         "{}",
         page.body
     );
-    assert!(!store.root.join(".vivi/pump/pump.db-shm").exists());
 }
 
 #[tokio::test]

@@ -68,16 +68,29 @@ fn an_existing_pump_store_reads_and_refuses_writes() {
 }
 
 #[test]
-fn a_wal_store_whose_writer_has_gone_is_refused_not_touched() {
+fn a_wal_store_whose_writer_has_gone_still_reads_and_is_not_changed() {
     let dir = project("name = \"demo\"\n\n[pump]\n");
     let path = pump_db_path(dir.path()).unwrap().unwrap();
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     drop(PumpStore::open(&path).unwrap());
-    let mut shm = path.as_os_str().to_owned();
-    shm.push("-shm");
-    if std::path::Path::new(&shm).exists() {
-        return; // not left in WAL mode on this platform: nothing to guard
-    }
+    let before = std::fs::read(&path).unwrap();
+    let read = PumpRead::open(dir.path()).unwrap().unwrap();
+    let units: i64 = read
+        .read(|conn| {
+            conn.query_row("SELECT count(*) FROM units", [], |row| row.get(0))
+                .map_err(|e| vivi_error::VivariumError::Other(e.to_string()))
+        })
+        .unwrap();
+    assert_eq!(units, 0);
+    drop(read);
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+}
+
+#[test]
+fn a_file_that_is_not_a_database_is_an_error() {
+    let dir = project("name = \"demo\"\n\n[pump]\n");
+    let path = pump_db_path(dir.path()).unwrap().unwrap();
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, b"not a database").unwrap();
     assert!(PumpRead::open(dir.path()).is_err());
-    assert!(!std::path::Path::new(&shm).exists());
 }

@@ -115,17 +115,19 @@ fn the_pump_state_is_named() {
     let data = load(&store.root, NOW, StateFilter::Open).unwrap().unwrap();
     assert_eq!(data.pump, PumpState::Ready(()));
     drop(pump);
-    let shm = store.root.join(".vivi/pump/pump.db-shm");
-    if shm.exists() {
-        return; // the platform left the WAL index behind: nothing to refuse
-    }
+    let data = load(&store.root, NOW, StateFilter::Open).unwrap().unwrap();
+    assert_eq!(
+        data.pump,
+        PumpState::Ready(()),
+        "a store whose writer has gone still reads"
+    );
+    std::fs::write(store.root.join(".vivi/pump/pump.db"), b"not a database").unwrap();
     let data = load(&store.root, NOW, StateFilter::Open).unwrap().unwrap();
     assert!(
         matches!(data.pump, PumpState::Unreadable(_)),
         "{:?}",
         data.pump
     );
-    assert!(!shm.exists(), "the console must not create the index file");
     assert_eq!(data.rows.len(), 2, "the list still reads without the pump");
 }
 

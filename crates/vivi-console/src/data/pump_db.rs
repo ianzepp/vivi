@@ -2,22 +2,18 @@
 //!
 //! The pump home is the `[pump] home` setting, or `<root>/.vivi/pump` when
 //! unset (`PumpConfig::home_dir`). The config is read without opening the
-//! mailspace, so nothing is minted or written. The connection follows the
-//! mailspace helper in `store.rs`: read-only flags, the query-only setting, a
-//! short busy timeout, and one read transaction per call.
+//! mailspace, so nothing is minted or written. The connection is the
+//! mailspace helper's (`store::open_reader`): it can never write, and it runs
+//! one read transaction per call.
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::Connection;
 use vivi_core::pump::store::DB_FILENAME;
 use vivi_error::VivariumError;
 
 use super::config;
-use super::store::db_err;
-use crate::queries::QUERY_ONLY;
-
-const BUSY_TIMEOUT: Duration = Duration::from_millis(250);
+use super::store::{db_err, open_reader};
 
 /// The pump store path for the project at `root`, or `None` when the project
 /// configures no pump.
@@ -42,7 +38,7 @@ impl PumpRead {
     ///
     /// # Errors
     /// Returns an error when the config cannot be read, or the store exists
-    /// but cannot be opened read-only, or would need a missing WAL sidecar.
+    /// but cannot be opened for reading (see `store::open_reader`).
     pub fn open(root: &Path) -> Result<Option<Self>, VivariumError> {
         let Some(path) = pump_db_path(root)? else {
             return Ok(None);
@@ -58,21 +54,9 @@ impl PumpRead {
         if !path.exists() {
             return Ok(None);
         }
-        if wal_index_missing(path) {
-            return Err(VivariumError::Other(
-                "the pump store cannot be read yet: its WAL index file is missing and \
-                 the console never creates it"
-                    .into(),
-            ));
-        }
-        let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
-        let conn =
-            Connection::open_with_flags(path, flags).map_err(db_err("open the pump store"))?;
-        conn.busy_timeout(BUSY_TIMEOUT)
-            .map_err(db_err("set the busy timeout"))?;
-        conn.execute_batch(QUERY_ONLY)
-            .map_err(db_err("set query_only"))?;
-        Ok(Some(Self { conn }))
+        Ok(Some(Self {
+            conn: open_reader(path, "the pump store")?,
+        }))
     }
 
     /// Run `f` inside one read transaction; it never writes.
@@ -89,23 +73,6 @@ impl PumpRead {
             .map_err(db_err("begin a read transaction"))?;
         f(&tx)
     }
-}
-
-/// Whether a WAL-mode database at `path` lacks its `-shm` sidecar, which a
-/// read-only open would have to create. The header bytes 18 and 19 are 2 in
-/// WAL mode.
-fn wal_index_missing(path: &Path) -> bool {
-    use std::io::Read;
-    let mut shm = path.as_os_str().to_owned();
-    shm.push("-shm");
-    if Path::new(&shm).exists() {
-        return false;
-    }
-    let Ok(mut file) = std::fs::File::open(path) else {
-        return false;
-    };
-    let mut header = [0_u8; 20];
-    file.read_exact(&mut header).is_ok() && header[18] == 2 && header[19] == 2
 }
 
 #[cfg(test)]

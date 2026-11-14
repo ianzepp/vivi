@@ -58,6 +58,10 @@ pub static HAS_TABLE: Query = Query {
     samples: &[Sample::Text("slot_runs")],
 };
 
+/// A read of the schema, run once at open so a file that is not a database
+/// fails there. `sqlite_master` is SQLite's own small table, not a store table.
+pub const SCHEMA_PROBE: &str = "SELECT count(*) FROM sqlite_master";
+
 // ---- Needs and the need page: mailspace store ----
 
 /// The columns of one backlog node as [`crate::data::needs::NeedNode`] reads

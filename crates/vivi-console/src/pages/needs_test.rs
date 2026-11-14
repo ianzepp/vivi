@@ -144,9 +144,7 @@ async fn an_unreadable_pump_is_named_and_the_list_still_shows() {
     let store = seeded(true);
     seed_three(&store);
     drop(seed_pump(&store));
-    if store.root.join(".vivi/pump/pump.db-shm").exists() {
-        return; // the platform left the WAL index behind: nothing to refuse
-    }
+    std::fs::write(store.root.join(".vivi/pump/pump.db"), b"not a database").unwrap();
     let page = client(&store).await.get("/ui/p/demo/needs").await;
     assert_eq!(page.status, StatusCode::OK);
     assert!(
