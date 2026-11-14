@@ -8,6 +8,7 @@ pub mod audit;
 pub mod auth;
 pub mod cli;
 pub mod config;
+pub mod console;
 pub mod crypto;
 pub mod entry;
 pub mod git_http;
@@ -244,5 +245,6 @@ pub fn router(state: AppState) -> Router {
     if state.moderation_token.is_some() {
         router = router.route("/v1/_health", get(admin::health_handler));
     }
-    router.with_state(state)
+    let console = console::router(&state);
+    router.with_state(state).merge(console)
 }

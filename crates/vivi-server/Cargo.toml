@@ -9,6 +9,7 @@ license = "MIT"
 vivi-util = { path = "../vivi-util" }
 vivi-storage = { path = "../vivi-storage" }
 vivi-core = { path = "../vivi-core" }
+vivi-console = { path = "../vivi-console" }
 aes-gcm = "0.10"
 axum = "0.8"
 base64 = "0.22"
@@ -36,3 +37,4 @@ libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
+tower = { version = "0.5", features = ["util"] }

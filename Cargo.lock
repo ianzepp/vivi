@@ -2599,6 +2599,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "vivi-console"
+version = "24.0.0"
+dependencies = [
+ "axum",
+ "chrono",
+ "getrandom 0.4.1",
+ "rusqlite",
+ "serde",
+ "tempfile",
+ "tokio",
+ "tower",
+ "tracing",
+ "vivi-core",
+ "vivi-error",
+ "vivi-storage",
+]
+
+[[package]]
 name = "vivi-core"
 version = "24.0.0"
 dependencies = [
@@ -2770,9 +2788,11 @@ dependencies = [
  "tokio",
  "toml",
  "toml_edit",
+ "tower",
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "vivi-console",
  "vivi-core",
  "vivi-error",
  "vivi-mail",
