@@ -9,50 +9,6 @@ use vivi_storage::storage::Storage;
 
 use crate::host::{ConsoleHost, Principal, ProjectRef};
 
-/// The agreed `slot_runs` DDL (storage schema 11), copied verbatim from the
-/// slot index seat's contract.
-///
-/// To be replaced by `vivi_storage::storage::slot_runs::SLOT_RUNS_DDL` once
-/// that lands in vivi-storage.
-pub const SLOT_RUNS_FIXTURE_DDL: &str = "
-CREATE TABLE IF NOT EXISTS slot_runs (
-  job TEXT PRIMARY KEY,
-  task_message_id TEXT NOT NULL,
-  need TEXT,
-  pool TEXT NOT NULL,
-  slot TEXT NOT NULL,
-  machine TEXT NOT NULL DEFAULT '',
-  model TEXT NOT NULL DEFAULT '',
-  kind TEXT,
-  target TEXT,
-  branch TEXT NOT NULL DEFAULT '',
-  start_sha TEXT NOT NULL DEFAULT '',
-  budget_s INTEGER,
-  read_only INTEGER NOT NULL DEFAULT 0,
-  dispatched_at INTEGER NOT NULL,
-  collected_at INTEGER,
-  outcome TEXT,
-  push TEXT,
-  sha TEXT,
-  agent_rc INTEGER,
-  agent_s INTEGER,
-  check_rc INTEGER,
-  check_s INTEGER,
-  job_s INTEGER,
-  agent_cpu_s INTEGER,
-  check_cpu_s INTEGER,
-  landing TEXT,
-  landing_at INTEGER,
-  landing_reason TEXT
-);
-CREATE INDEX IF NOT EXISTS slot_runs_slot_idx ON slot_runs(pool, slot, dispatched_at);
-CREATE INDEX IF NOT EXISTS slot_runs_need_idx ON slot_runs(need, dispatched_at);
-CREATE INDEX IF NOT EXISTS slot_runs_outcome_idx ON slot_runs(outcome, collected_at);
-CREATE INDEX IF NOT EXISTS slot_runs_dispatched_idx ON slot_runs(dispatched_at);
-CREATE INDEX IF NOT EXISTS slot_runs_collected_idx ON slot_runs(collected_at);
-CREATE INDEX IF NOT EXISTS slot_runs_task_idx ON slot_runs(task_message_id);
-";
-
 /// One `slot_runs` row to insert.
 pub struct SeedRun<'a> {
     pub job: &'a str,
@@ -116,14 +72,15 @@ pub fn project_without_store() -> (TempDir, PathBuf) {
     (dir, root)
 }
 
-/// A project with a full mailspace schema, and the `slot_runs` fixture when
-/// `with_slot_runs` is true.
+/// A project with the full mailspace schema. The schema includes
+/// `slot_runs`; `with_slot_runs = false` drops it to stand for a store made
+/// before schema 11.
 pub fn seeded(with_slot_runs: bool) -> Seeded {
     let (dir, root) = project_without_store();
     let writer = Storage::open_mailspace(&root.join(".vivi")).unwrap();
     let conn = Connection::open(root.join(".vivi/mail.sqlite")).unwrap();
-    if with_slot_runs {
-        conn.execute_batch(SLOT_RUNS_FIXTURE_DDL).unwrap();
+    if !with_slot_runs {
+        conn.execute_batch("DROP TABLE slot_runs").unwrap();
     }
     Seeded {
         _dir: dir,
