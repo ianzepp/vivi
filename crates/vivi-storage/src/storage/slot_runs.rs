@@ -120,6 +120,21 @@ pub(super) fn apply_event(
     }
 }
 
+/// [`apply_event`] for the live event write: a failed table write is logged
+/// and dropped, never returned. The events are the source of truth and the
+/// index is derived, so a fault in the index must not undo a pool event (and
+/// with it fail a dispatch or lose a result). `vivi slot rebuild` repairs any
+/// drift this leaves.
+pub(super) fn apply_event_or_warn(tx: &Transaction<'_>, event: &PoolEvent<'_>) {
+    if let Err(error) = apply_event(tx, event) {
+        tracing::warn!(
+            message_id = event.message_id,
+            "slot_runs: index not updated for a {} event: {error}; run `vivi slot rebuild`",
+            event.event_type
+        );
+    }
+}
+
 /// Why an event did not become a row.
 enum Skip {
     /// The note is not the record the event type promises.

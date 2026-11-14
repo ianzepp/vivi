@@ -1,7 +1,7 @@
 use rusqlite::Connection;
 
 use super::read::queries;
-use super::{PoolEvent, SLOT_RUNS_DDL, SlotRun, apply_event};
+use super::{PoolEvent, SLOT_RUNS_DDL, SlotRun, apply_event, apply_event_or_warn};
 use crate::storage::schema::{STORAGE_SCHEMA_VERSION, ensure_schema};
 use crate::storage::{MailspaceEventInput, Storage};
 
@@ -176,6 +176,56 @@ fn a_malformed_note_writes_the_event_and_no_row() {
         .list_mailspace_events_of_types(&["pool_dispatched", "pool_collected"])
         .unwrap();
     assert_eq!(events.len(), 4);
+}
+
+#[test]
+fn a_failed_index_write_on_the_live_path_keeps_the_event() {
+    let world = World::new();
+    world
+        .storage
+        .conn
+        .borrow()
+        .execute_batch("DROP TABLE slot_runs")
+        .unwrap();
+    let note = dispatched("j1", "radix-1");
+    let input = MailspaceEventInput {
+        command: "pool dispatched".into(),
+        event_type: "pool_dispatched".into(),
+        actor_identity: None,
+        account: "hand".into(),
+        message_id: "task-1".into(),
+        content_id: "c".into(),
+        from_role: None,
+        to_role: None,
+        from_identity: None,
+        to_identity: None,
+        subject: "s".into(),
+        note: Some(note.clone()),
+    };
+    world
+        .storage
+        .append_mailspace_event_at(&input, DISPATCHED_AT)
+        .unwrap();
+    let mut conn = world.storage.conn.borrow_mut();
+    let tx = conn.transaction().unwrap();
+    let event = PoolEvent {
+        event_type: "pool_dispatched",
+        note: Some(&note),
+        message_id: "task-1",
+        occurred_at: DISPATCHED_AT,
+    };
+    assert!(
+        apply_event(&tx, &event).is_err(),
+        "the strict form reports it"
+    );
+    apply_event_or_warn(&tx, &event);
+    tx.commit().unwrap();
+    drop(conn);
+    let events = world
+        .storage
+        .list_mailspace_events_of_types(&["pool_dispatched"])
+        .unwrap();
+    assert_eq!(events.len(), 1);
 }
 
 #[test]
