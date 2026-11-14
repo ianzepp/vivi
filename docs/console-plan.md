@@ -528,6 +528,11 @@ key is granted there; until then they live here.
    and a revoked key or grant ends its sessions within a minute.
 8. **Hub landing writes `pool_landed`.** Done when: hub's `orch/land-unit` records each
    outcome with `vivi pool landed`, after wave 2's S6 ships.
+9. **Flow steps have no times.** `flow_steps` records no start or end, so the needs
+   list estimates "stuck" from job dispatch times. Done when: steps carry `started_at`
+   (and `ended_at`) and the console uses them.
+10. **`vivi slot list` skips count-only pools.** It lists `[[slot]]` declarations only,
+    while the console also counts `[pools.*] slots`. Done when: both show the same slots.
 
 ## Not in scope
 
