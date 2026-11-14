@@ -6,7 +6,8 @@ use std::path::Path;
 use rusqlite::{Connection, OptionalExtension, Row};
 use vivi_error::VivariumError;
 
-use super::mail_read::{self, Letter};
+use super::letter::Letter;
+use super::mail_read;
 use super::store::db_err;
 use super::{RunsState, with_runs};
 use crate::queries::{JOB_RUN, TASK_EVENTS};

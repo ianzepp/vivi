@@ -42,6 +42,28 @@ macro_rules! run_columns {
     };
 }
 
+/// The failure kind of a collected `slot_runs` row, as a SQL expression.
+/// The first matching line wins; `landed` and `ok` are not failures. A
+/// finished, clean run counts as `not_pushed` when it neither pushed nor
+/// committed and was not a read-only job.
+macro_rules! kind_sql {
+    () => {
+        "CASE \
+           WHEN outcome = 'timeout' THEN 'timeout' \
+           WHEN outcome = 'lost' THEN 'lost' \
+           WHEN COALESCE(outcome, '') != 'finished' THEN 'other' \
+           WHEN COALESCE(agent_rc, 0) != 0 THEN 'agent' \
+           WHEN COALESCE(check_rc, 0) != 0 THEN 'check' \
+           WHEN landing = 'red' THEN 'landing_red' \
+           WHEN landing = 'conflict' THEN 'conflict' \
+           WHEN landing = 'raced' THEN 'raced' \
+           WHEN landing = 'landed' THEN 'landed' \
+           WHEN read_only = 0 AND COALESCE(push, '') NOT IN ('pushed', 'committed') \
+             THEN 'not_pushed' \
+           ELSE 'ok' END"
+    };
+}
+
 /// A collected run counts as a failure when its outcome is not `finished`
 /// or either exit code is non-zero. A missing code is not a failure.
 macro_rules! failed_sql {
@@ -418,8 +440,10 @@ macro_rules! job_columns {
 /// The jobs list page: runs dispatched in `[?1, ?2]`, newest first, at most
 /// `?4`, resuming below the cursor `(?2, ?3)` (dispatch time, row id).
 /// `?5..?8` are exact pool, slot and model and a need prefix; `?9` is an
-/// outcome word or `open`; `?10` is 1 to keep only failures. An unused filter
-/// is NULL (0 for `?10`). Only the time range uses an index (the dispatch
+/// outcome word or `open`; `?10` is 1 to keep only failures; `?11` is a
+/// failure kind code (see `kind_sql!`, the rule the failures page counts by),
+/// which keeps only collected runs of that kind. An unused filter is NULL (0
+/// for `?10`). Only the time range uses an index (the dispatch
 /// time index, in order, so no sort); the other filters are applied to the
 /// rows of that range, which a window of at most seven days bounds.
 pub static JOBS_LIST: Query = Query {
@@ -439,6 +463,9 @@ pub static JOBS_LIST: Query = Query {
            AND (?10 = 0 OR (collected_at IS NOT NULL AND ",
         failed_sql!(),
         ") OR landing IN ('red', 'conflict', 'raced')) \
+           AND (?11 IS NULL OR (collected_at IS NOT NULL AND ",
+        kind_sql!(),
+        " = ?11)) \
          ORDER BY dispatched_at DESC, rowid DESC LIMIT ?4"
     ),
     samples: &[
@@ -452,6 +479,7 @@ pub static JOBS_LIST: Query = Query {
         Sample::Text("need"),
         Sample::Text("finished"),
         Sample::Int(1),
+        Sample::Text("timeout"),
     ],
 };
 
@@ -525,28 +553,6 @@ pub static REGISTRY: &[&Query] = &[
 ];
 
 // ---- Failures page (mailspace store) -------------------------------------
-
-/// The failure kind of a collected `slot_runs` row, as a SQL expression.
-/// The first matching line wins; `landed` and `ok` are not failures. A
-/// finished, clean run counts as `not_pushed` when it neither pushed nor
-/// committed and was not a read-only job.
-macro_rules! kind_sql {
-    () => {
-        "CASE \
-           WHEN outcome = 'timeout' THEN 'timeout' \
-           WHEN outcome = 'lost' THEN 'lost' \
-           WHEN COALESCE(outcome, '') != 'finished' THEN 'other' \
-           WHEN COALESCE(agent_rc, 0) != 0 THEN 'agent' \
-           WHEN COALESCE(check_rc, 0) != 0 THEN 'check' \
-           WHEN landing = 'red' THEN 'landing_red' \
-           WHEN landing = 'conflict' THEN 'conflict' \
-           WHEN landing = 'raced' THEN 'raced' \
-           WHEN landing = 'landed' THEN 'landed' \
-           WHEN read_only = 0 AND COALESCE(push, '') NOT IN ('pushed', 'committed') \
-             THEN 'not_pushed' \
-           ELSE 'ok' END"
-    };
-}
 
 /// Runs collected since `?1`, counted by failure kind and by period: `0` is
 /// at or after `?2` (the window), `1` is before it (the window before).

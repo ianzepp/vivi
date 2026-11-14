@@ -6,52 +6,13 @@ use rusqlite::Connection;
 use vivi_error::VivariumError;
 
 use super::runs::{self, RunRow};
+use super::store::rows;
+use super::window::Window;
 use super::{RunsState, with_runs};
 use crate::queries::JOBS_LIST;
 
 /// Rows on one page.
 pub const PAGE_ROWS: i64 = 100;
-
-/// How far back the list reaches.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Window {
-    Hour,
-    Day,
-    Week,
-}
-
-impl Window {
-    /// `1h`, `24h` or `7d`; anything else is `None`.
-    #[must_use]
-    pub fn parse(text: &str) -> Option<Self> {
-        match text {
-            "1h" => Some(Self::Hour),
-            "24h" => Some(Self::Day),
-            "7d" => Some(Self::Week),
-            _ => None,
-        }
-    }
-
-    /// The word the query string carries.
-    #[must_use]
-    pub fn word(self) -> &'static str {
-        match self {
-            Self::Hour => "1h",
-            Self::Day => "24h",
-            Self::Week => "7d",
-        }
-    }
-
-    /// The window's length in seconds.
-    #[must_use]
-    pub fn secs(self) -> i64 {
-        match self {
-            Self::Hour => 3600,
-            Self::Day => 24 * 3600,
-            Self::Week => 7 * 24 * 3600,
-        }
-    }
-}
 
 /// The outcome filter words.
 pub const OUTCOMES: [&str; 4] = ["finished", "timeout", "lost", "open"];
@@ -61,6 +22,9 @@ pub const OUTCOMES: [&str; 4] = ["finished", "timeout", "lost", "open"];
 pub struct JobFilter {
     pub outcome: Option<String>,
     pub failed: bool,
+    /// A failure kind code from [`super::failures::KINDS`]: the rule the
+    /// failures page counts by. Keeps only collected runs of that kind.
+    pub kind: Option<String>,
     pub pool: Option<String>,
     pub slot: Option<String>,
     pub model: Option<String>,
@@ -74,6 +38,7 @@ impl Default for JobFilter {
         Self {
             outcome: None,
             failed: false,
+            kind: None,
             pool: None,
             slot: None,
             model: None,
@@ -130,7 +95,7 @@ fn page(
     let outcome = filter.outcome.as_deref();
     let failed = i64::from(filter.failed);
     let limit = PAGE_ROWS + 1;
-    let mut rows = runs::collect(
+    let mut found = rows(
         conn,
         &JOBS_LIST,
         &[
@@ -144,6 +109,7 @@ fn page(
             &filter.need,
             &outcome,
             &failed,
+            &filter.kind,
         ],
         |row| {
             Ok(JobListRow {
@@ -152,13 +118,13 @@ fn page(
             })
         },
     )?;
-    let more = rows.len() as i64 > PAGE_ROWS;
-    rows.truncate(PAGE_ROWS as usize);
-    let next = more.then(|| rows.last()).flatten().map(|last| Cursor {
+    let more = found.len() as i64 > PAGE_ROWS;
+    found.truncate(PAGE_ROWS as usize);
+    let next = more.then(|| found.last()).flatten().map(|last| Cursor {
         dispatched_at: last.run.dispatched_at,
         id: last.id,
     });
-    Ok(JobsPage { rows, next })
+    Ok(JobsPage { rows: found, next })
 }
 
 #[cfg(test)]

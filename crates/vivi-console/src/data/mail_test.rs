@@ -204,15 +204,6 @@ fn a_big_letter_is_cut_with_a_note() {
 }
 
 #[test]
-fn a_blob_path_cannot_leave_the_mailspace() {
-    let dir = std::path::Path::new("/mailspace");
-    assert!(blob_path(dir, "blobs/ab/cd.eml").is_some());
-    assert!(blob_path(dir, "../secret").is_none());
-    assert!(blob_path(dir, "/etc/passwd").is_none());
-    assert!(blob_path(dir, "blobs/../../x").is_none());
-}
-
-#[test]
 fn kinds_follow_folders() {
     assert_eq!(kind_of_role("needs"), "need");
     assert_eq!(kind_of_role("inbox"), "mail");

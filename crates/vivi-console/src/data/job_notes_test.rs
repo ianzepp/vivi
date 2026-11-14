@@ -12,10 +12,8 @@ fn event(kind: &str, note: &str) -> TaskEvent {
 
 fn letter(text: &str) -> Letter {
     Letter {
-        at: None,
-        from: String::new(),
-        subject: String::new(),
-        text: text.into(),
+        body: text.into(),
+        ..Letter::default()
     }
 }
 

@@ -27,7 +27,7 @@ fn a_job_with_no_collect_yet_has_a_run_a_brief_and_one_event() {
     assert_eq!(job.run.branch, "factory/x");
     assert_eq!(job.run.start_sha, "0123456789abcdef0123");
     assert_eq!(job.run.collected_at, None);
-    assert!(job.brief.unwrap().text.contains("Fix the edge case."));
+    assert!(job.brief.unwrap().body.contains("Fix the edge case."));
     let kinds: Vec<&str> = job.events.iter().map(|e| e.event_type.as_str()).collect();
     assert_eq!(kinds, ["delivered", "pool_dispatched"]);
     assert!(job.events[1].at > 0);
@@ -64,7 +64,7 @@ fn a_collected_job_carries_its_events_and_replies_in_order() {
             "pool_landed"
         ]
     );
-    let texts: Vec<&str> = job.replies.iter().map(|r| r.text.as_str()).collect();
+    let texts: Vec<&str> = job.replies.iter().map(|r| r.body.as_str()).collect();
     assert!(texts[0].starts_with("pool dispatch job-1"));
     assert!(texts[1].starts_with("pool result job-1"));
     assert!(texts[2].starts_with("pool landed job-1"));

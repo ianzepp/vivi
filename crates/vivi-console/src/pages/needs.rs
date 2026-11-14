@@ -9,7 +9,7 @@ use axum::http::StatusCode;
 use axum::response::Response;
 use serde::Deserialize;
 
-use super::widgets::{result_pills, time_cell};
+use super::widgets::{option, result_pills, select, time_cell};
 use super::{blocking, chrome_of, html_response, now_epoch, read_failed};
 use crate::auth::ProjectCtx;
 use crate::data::need_flow::PumpState;
@@ -138,22 +138,6 @@ fn pump_notice(pump: &PumpState<()>) -> Option<Html> {
         ),
     };
     Some(notice(&text))
-}
-
-fn option(value: &str, label: &str, selected: bool) -> Html {
-    let mut attrs = vec![("value", value)];
-    if selected {
-        attrs.push(("selected", ""));
-    }
-    text_tag("option", &attrs, label)
-}
-
-fn select(name: &str, all: &str, values: &[String], current: &str) -> Html {
-    let mut options = vec![option("", all, current.is_empty())];
-    for value in values {
-        options.push(option(value, value, value == current));
-    }
-    tag("select", &[("name", name)], &join(options))
 }
 
 fn filters(ctx: &ProjectCtx, data: &NeedsData, query: &NeedsQuery) -> Html {

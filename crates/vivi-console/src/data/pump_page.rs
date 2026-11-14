@@ -7,13 +7,13 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use rusqlite::{Connection, Params};
+use rusqlite::{Connection, ToSql};
 use vivi_error::VivariumError;
 
 use super::config;
 use super::overview::{PumpView, pump_view};
 use super::pump_db::PumpRead;
-use super::store::{db_err, has_table};
+use super::store::{self, has_table};
 use crate::queries::{
     PUMP_CONTROL, PUMP_EXCEPTIONS, PUMP_GATE_FAILURES, PUMP_GATES, PUMP_RECENT_STEP_TASKS,
     PUMP_RUNG_RUNS, PUMP_UNIT_COUNTS, PUMP_UNIT_EVENTS, Query,
@@ -140,37 +140,28 @@ fn read_data(conn: &Connection) -> Result<PumpData, VivariumError> {
 }
 
 /// Run `query` with `params`, mapping each row; an absent table gives none.
-fn rows<T, P: Params>(
+fn rows<T>(
     conn: &Connection,
     table: &str,
     query: &Query,
-    params: P,
+    params: &[&dyn ToSql],
     map: fn(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
 ) -> Result<Vec<T>, VivariumError> {
     if !has_table(conn, table)? {
         return Ok(Vec::new());
     }
-    let context = "read the pump store";
-    let mut stmt = conn.prepare_cached(query.sql).map_err(db_err(context))?;
-    let found = stmt.query_map(params, map).map_err(db_err(context))?;
-    found
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(db_err(context))
+    store::rows(conn, query, params, map)
 }
 
 fn read_control(conn: &Connection) -> Result<Option<(String, bool)>, VivariumError> {
-    let mut found = rows(
-        conn,
-        "pump_control",
-        &PUMP_CONTROL,
-        rusqlite::params![],
-        |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? != 0)),
-    )?;
+    let mut found = rows(conn, "pump_control", &PUMP_CONTROL, &[], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? != 0))
+    })?;
     Ok(found.pop())
 }
 
 fn read_units(conn: &Connection) -> Result<Vec<(String, i64)>, VivariumError> {
-    rows(conn, "units", &PUMP_UNIT_COUNTS, [""], |row| {
+    rows(conn, "units", &PUMP_UNIT_COUNTS, &[&""], |row| {
         Ok((row.get(0)?, row.get(1)?))
     })
 }
@@ -180,7 +171,7 @@ fn read_events(conn: &Connection) -> Result<Vec<UnitEvent>, VivariumError> {
         conn,
         "unit_events",
         &PUMP_UNIT_EVENTS,
-        [0, EVENT_ROWS],
+        &[&0, &EVENT_ROWS],
         |row| {
             Ok(UnitEvent {
                 unit: row.get(1)?,
@@ -195,7 +186,7 @@ fn read_events(conn: &Connection) -> Result<Vec<UnitEvent>, VivariumError> {
 }
 
 fn read_gates(conn: &Connection) -> Result<Vec<Gate>, VivariumError> {
-    let mut gates = rows(conn, "gates", &PUMP_GATES, [0, GATE_ROWS], |row| {
+    let mut gates = rows(conn, "gates", &PUMP_GATES, &[&0, &GATE_ROWS], |row| {
         Ok(Gate {
             id: row.get(0)?,
             tip: row.get(1)?,
@@ -214,7 +205,7 @@ fn read_gates(conn: &Connection) -> Result<Vec<Gate>, VivariumError> {
         conn,
         "gate_failures",
         &PUMP_GATE_FAILURES,
-        [oldest, newest, GATE_FAILURE_ROWS],
+        &[&oldest, &newest, &GATE_FAILURE_ROWS],
         |row| {
             Ok((
                 row.get::<_, i64>(0)?,
@@ -235,7 +226,7 @@ fn read_exceptions(conn: &Connection) -> Result<Vec<PumpException>, VivariumErro
         conn,
         "exceptions",
         &PUMP_EXCEPTIONS,
-        [0, EXCEPTION_ROWS],
+        &[&0, &EXCEPTION_ROWS],
         |row| {
             Ok(PumpException {
                 at: row.get(1)?,
@@ -253,12 +244,12 @@ fn read_rungs(conn: &Connection) -> Result<Vec<RungRun>, VivariumError> {
         conn,
         "flow_steps",
         &PUMP_RECENT_STEP_TASKS,
-        [0, RUNG_TASKS],
+        &[&0, &RUNG_TASKS],
         |row| row.get::<_, String>(0),
     )?;
     let mut runs: BTreeMap<(i64, String, String), RungRun> = BTreeMap::new();
     for task in &tasks {
-        for run in rows(conn, "rung_runs", &PUMP_RUNG_RUNS, [task], |row| {
+        for run in rows(conn, "rung_runs", &PUMP_RUNG_RUNS, &[&task], |row| {
             Ok(RungRun {
                 task: row.get(0)?,
                 rung: row.get(1)?,

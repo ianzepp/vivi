@@ -365,14 +365,6 @@ fn path_prefixes_stop_at_two_directories() {
 }
 
 #[test]
-fn windows_parse_and_default_to_a_day() {
-    assert_eq!(Window::parse("1h"), Window::Hour);
-    assert_eq!(Window::parse("7d"), Window::Week);
-    assert_eq!(Window::parse("24h"), Window::Day);
-    assert_eq!(Window::parse("junk"), Window::Day);
-}
-
-#[test]
 fn a_store_without_the_slot_index_reads_as_such() {
     let store = seeded(false);
     assert_eq!(

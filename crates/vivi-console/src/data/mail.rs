@@ -8,15 +8,14 @@
 //! the store is read with [`ReadStore`] and bodies are read from the blob
 //! files the store names.
 
-use std::io::Read;
-use std::path::{Component, Path, PathBuf};
+use std::path::Path;
 
 use rusqlite::Connection;
 use vivi_error::VivariumError;
 use vivi_storage::storage::short_handle;
 
 use super::config;
-use super::mail_body::read_letter;
+use super::letter::{self, BLOB_MAX, read_blob};
 use super::store::{ReadStore, db_err, mailspace_dir};
 use crate::queries::{MAIL_RESOLVE, MAIL_THREAD, MAIL_THREADS};
 
@@ -24,8 +23,6 @@ use crate::queries::{MAIL_RESOLVE, MAIL_THREAD, MAIL_THREADS};
 pub const LIST_ROWS: usize = 50;
 /// Letters read for one thread.
 pub const THREAD_LIMIT: i64 = 200;
-/// Bytes of one letter read for display.
-pub const BODY_CAP: u64 = 128 * 1024;
 /// The longest handle a request may carry.
 const MAX_TOKEN: usize = 100;
 
@@ -113,7 +110,7 @@ pub struct ThreadMessage {
     pub kind: Option<String>,
     pub event: Option<String>,
     pub body: String,
-    /// Set when the body was cut at [`BODY_CAP`], or the file is missing.
+    /// Set when the body was cut at [`BLOB_MAX`], or the file is missing.
     pub note: Option<String>,
 }
 
@@ -354,12 +351,13 @@ fn handle_of(raw: &Raw) -> String {
 
 fn message_of(dir: &Path, raw: &Raw, handles: &[(String, String)]) -> ThreadMessage {
     let (letter, note) = match read_blob(dir, &raw.relpath) {
-        Ok((bytes, cut)) => (
-            read_letter(&bytes),
-            cut.then(|| format!("Only the first {} KiB is shown.", BODY_CAP / 1024)),
+        Ok(blob) => (
+            letter::parse(&blob.bytes),
+            blob.cut
+                .then(|| format!("Only the first {} KiB is shown.", BLOB_MAX / 1024)),
         ),
         Err(_) => (
-            read_letter(b""),
+            letter::parse(b""),
             Some("The letter's file could not be read.".to_string()),
         ),
     };
@@ -382,29 +380,6 @@ fn message_of(dir: &Path, raw: &Raw, handles: &[(String, String)]) -> ThreadMess
         body: letter.body,
         note,
     }
-}
-
-/// The file a blob path names under the mailspace directory, or `None` for
-/// a path that would leave it (absolute, or with `..`).
-fn blob_path(dir: &Path, relpath: &str) -> Option<PathBuf> {
-    let relative = Path::new(relpath);
-    relative
-        .components()
-        .all(|part| matches!(part, Component::Normal(_)))
-        .then(|| dir.join(relative))
-}
-
-/// Up to [`BODY_CAP`] bytes of a blob, and whether more was left unread.
-fn read_blob(dir: &Path, relpath: &str) -> Result<(Vec<u8>, bool), VivariumError> {
-    let path = blob_path(dir, relpath)
-        .ok_or_else(|| VivariumError::Other("a blob path leaves the mailspace".into()))?;
-    let mut bytes = Vec::new();
-    std::fs::File::open(path)?
-        .take(BODY_CAP + 1)
-        .read_to_end(&mut bytes)?;
-    let cut = bytes.len() as u64 > BODY_CAP;
-    bytes.truncate(usize::try_from(BODY_CAP).unwrap_or(usize::MAX));
-    Ok((bytes, cut))
 }
 
 #[cfg(test)]

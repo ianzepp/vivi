@@ -27,6 +27,25 @@ pub fn row(label: &str, chips: &[Chip]) -> Html {
     div("chips", &join([span("chips-label", label), join(items)]))
 }
 
+/// A labelled row holding one lit chip and a link that removes it.
+#[must_use]
+pub fn removable(label: &str, text: &str, remove_href: &str) -> Html {
+    let chip = tag(
+        "span",
+        &[("class", "chip chip-on")],
+        &join([
+            Html::text(text),
+            Html::text(" "),
+            tag(
+                "a",
+                &[("href", remove_href), ("title", "remove this filter")],
+                &Html::text("\u{d7}"),
+            ),
+        ]),
+    );
+    div("chips", &join([span("chips-label", label), chip]))
+}
+
 /// `?a=1&b=2` from the pairs whose value is not empty, encoded. Empty when
 /// every value is empty.
 #[must_use]

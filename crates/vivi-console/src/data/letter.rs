@@ -1,196 +1,135 @@
-//! Reading a stored letter: the text body of an RFC 822 message, and the
-//! front matter of a need.
+//! The one reader of a stored letter: the blob file read read-only, its
+//! headers and plain-text body decoded by `mail-parser`, and the `+++` front
+//! matter of a need split off.
 //!
-//! The console depends on no mail parser. A stored letter is a plain text
-//! message made by vivi's own composer, so this reads what that composer can
-//! write: headers, a transfer encoding of 7bit, 8bit, quoted-printable or
-//! base64, and one level of multipart for the first text part. Anything else
-//! comes out as the raw text after the headers.
+//! Every page that shows a letter (the mail thread, a job's brief and
+//! replies, a need and its thread) goes through here. A letter that does not
+//! parse reads as its raw text, never as markup.
+
+use std::io::Read;
+use std::path::{Component, Path, PathBuf};
 
 use serde::Deserialize;
 use vivi_core::pump::envelope::{self, Validate};
+use vivi_error::VivariumError;
 
-/// A letter's headers and decoded text body.
+/// Most bytes read from one letter file. The mail page is the strictest
+/// caller (it shows the whole body); the job and need pages show less of a
+/// letter than this, so one cap fits every page.
+pub const BLOB_MAX: u64 = 128 * 1024;
+
+/// The bytes read from a letter file, and whether more was left unread.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Blob {
+    pub bytes: Vec<u8>,
+    pub cut: bool,
+}
+
+/// The file a blob path names under the mailspace directory `dir`, or `None`
+/// for a path that would leave it (absolute, or with `..`).
+fn blob_path(dir: &Path, relpath: &str) -> Option<PathBuf> {
+    let relative = Path::new(relpath);
+    relative
+        .components()
+        .all(|part| matches!(part, Component::Normal(_)))
+        .then(|| dir.join(relative))
+}
+
+/// Up to [`BLOB_MAX`] bytes of the letter file `relpath` under the mailspace
+/// directory `dir`, opened read-only.
+///
+/// # Errors
+/// Returns an error when the path leaves the mailspace or the file cannot be
+/// read.
+pub fn read_blob(dir: &Path, relpath: &str) -> Result<Blob, VivariumError> {
+    let path = blob_path(dir, relpath).ok_or_else(|| {
+        VivariumError::Other(format!(
+            "the store names a letter file outside itself: {relpath}"
+        ))
+    })?;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?
+        .take(BLOB_MAX + 1)
+        .read_to_end(&mut bytes)?;
+    let cut = bytes.len() as u64 > BLOB_MAX;
+    bytes.truncate(usize::try_from(BLOB_MAX).unwrap_or(usize::MAX));
+    Ok(Blob { bytes, cut })
+}
+
+/// What the pages show of one letter.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Letter {
-    headers: Vec<(String, String)>,
+    /// The `X-Vivi-Kind` header, lowercased.
+    pub kind: Option<String>,
+    /// The `X-Vivi-Event` header, lowercased.
+    pub event: Option<String>,
+    /// Epoch seconds from the `Date` header; `None` when absent or bad.
+    pub at: Option<i64>,
+    pub from: String,
+    pub subject: String,
+    /// The first `text/plain` part with LF line ends. Not markdown-rendered.
     pub body: String,
 }
 
 impl Letter {
-    /// The first header named `name`, ignoring case.
-    #[must_use]
-    pub fn header(&self, name: &str) -> Option<&str> {
-        self.headers
-            .iter()
-            .find(|(key, _)| key.eq_ignore_ascii_case(name))
-            .map(|(_, value)| value.as_str())
-    }
-
-    /// True for a lifecycle event letter (`done`, `marked`, ...): a record of
-    /// a state change, not a message.
+    /// True for a lifecycle event letter (`X-Vivi-Event` set and not empty):
+    /// a record of a state change, not thread content.
     #[must_use]
     pub fn is_event(&self) -> bool {
-        self.header("X-Vivi-Event")
-            .is_some_and(|value| !value.trim().is_empty())
+        self.event.is_some()
     }
 }
 
-/// Parse raw message bytes.
+/// A header value on one line: folds joined by single spaces.
+fn one_line(raw: &str) -> String {
+    raw.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Parse the raw bytes of a letter. Bytes that are not a message come back
+/// as a letter whose body is the bytes as text.
 #[must_use]
 pub fn parse(raw: &[u8]) -> Letter {
-    let text = String::from_utf8_lossy(raw);
-    let (head, body) = split_head(&text);
-    let headers = unfold(head);
-    let mut letter = Letter {
-        headers,
-        body: String::new(),
-    };
-    letter.body = text_of(&letter, body);
-    letter
-}
-
-fn split_head(text: &str) -> (&str, &str) {
-    for (marker, skip) in [("\r\n\r\n", 4), ("\n\n", 2)] {
-        if let Some(at) = text.find(marker) {
-            return (&text[..at], &text[at + skip..]);
-        }
-    }
-    (text, "")
-}
-
-fn unfold(head: &str) -> Vec<(String, String)> {
-    let mut headers: Vec<(String, String)> = Vec::new();
-    for line in head.lines() {
-        if line.starts_with([' ', '\t']) {
-            if let Some((_, value)) = headers.last_mut() {
-                value.push(' ');
-                value.push_str(line.trim());
-            }
-        } else if let Some((name, value)) = line.split_once(':') {
-            headers.push((name.trim().to_string(), value.trim().to_string()));
-        }
-    }
-    headers
-}
-
-fn text_of(letter: &Letter, body: &str) -> String {
-    let content_type = letter.header("Content-Type").unwrap_or("text/plain");
-    if content_type.to_ascii_lowercase().starts_with("multipart/") {
-        return multipart_text(content_type, body);
-    }
-    let encoding = letter
-        .header("Content-Transfer-Encoding")
-        .unwrap_or("7bit")
-        .to_ascii_lowercase();
-    decode(&encoding, body)
-}
-
-fn decode(encoding: &str, body: &str) -> String {
-    match encoding {
-        "quoted-printable" => quoted_printable(body),
-        "base64" => base64(body),
-        _ => body.replace("\r\n", "\n"),
-    }
-}
-
-/// The first part of a multipart body that is text (or has no type).
-fn multipart_text(content_type: &str, body: &str) -> String {
-    let Some(boundary) = parameter(content_type, "boundary") else {
-        return body.to_string();
-    };
-    let marker = format!("--{boundary}");
-    for part in body.split(&marker).skip(1) {
-        if part.starts_with("--") {
-            break;
-        }
-        let part = part.trim_start_matches(['\r', '\n']);
-        let inner = parse(part.as_bytes());
-        let kind = inner.header("Content-Type").unwrap_or("text/plain");
-        if kind.to_ascii_lowercase().starts_with("text/plain") {
-            // The line break before a boundary belongs to the boundary.
-            return inner
-                .body
-                .strip_suffix('\n')
-                .unwrap_or(&inner.body)
-                .to_string();
-        }
-    }
-    String::new()
-}
-
-fn parameter(header: &str, name: &str) -> Option<String> {
-    header.split(';').skip(1).find_map(|part| {
-        let (key, value) = part.split_once('=')?;
-        key.trim()
-            .eq_ignore_ascii_case(name)
-            .then(|| value.trim().trim_matches('"').to_string())
-    })
-}
-
-fn quoted_printable(body: &str) -> String {
-    let mut bytes: Vec<u8> = Vec::with_capacity(body.len());
-    let lines: Vec<&str> = body.lines().collect();
-    for (index, line) in lines.iter().enumerate() {
-        let (line, soft) = match line.strip_suffix('=') {
-            Some(rest) => (rest, true),
-            None => (*line, false),
+    let Some(parsed) = mail_parser::MessageParser::default().parse(raw) else {
+        return Letter {
+            body: String::from_utf8_lossy(raw).replace("\r\n", "\n"),
+            ..Letter::default()
         };
-        let raw = line.as_bytes();
-        let mut at = 0;
-        while at < raw.len() {
-            match (raw[at], hex_pair(raw.get(at + 1..at + 3))) {
-                (b'=', Some(byte)) => {
-                    bytes.push(byte);
-                    at += 3;
-                }
-                (other, _) => {
-                    bytes.push(other);
-                    at += 1;
-                }
-            }
-        }
-        if !soft && index + 1 < lines.len() {
-            bytes.push(b'\n');
-        }
+    };
+    let header = |name: &str| {
+        parsed
+            .header_raw(name)
+            .map(one_line)
+            .filter(|value| !value.is_empty())
+    };
+    Letter {
+        kind: header("X-Vivi-Kind").map(|value| value.to_ascii_lowercase()),
+        event: header("X-Vivi-Event").map(|value| value.to_ascii_lowercase()),
+        at: parsed.date().map(mail_parser::DateTime::to_timestamp),
+        from: header("From").unwrap_or_default(),
+        subject: parsed.subject().unwrap_or_default().to_string(),
+        body: parsed
+            .body_text(0)
+            .map(|body| body.replace("\r\n", "\n"))
+            .unwrap_or_default(),
     }
-    String::from_utf8_lossy(&bytes).into_owned()
 }
 
-fn hex_pair(pair: Option<&[u8]>) -> Option<u8> {
-    let pair = pair?;
-    let high = char::from(pair[0]).to_digit(16)?;
-    let low = char::from(pair[1]).to_digit(16)?;
-    // Two hex digits are at most 255.
-    Some(u8::try_from(high * 16 + low).unwrap_or(0))
+/// `text` without a leading `+++` front matter fence.
+#[must_use]
+pub fn strip_front(text: &str) -> &str {
+    let Some(rest) = text.strip_prefix("+++\n") else {
+        return text;
+    };
+    match rest.find("\n+++\n") {
+        Some(end) => rest[end + "\n+++\n".len()..].trim_start_matches('\n'),
+        None => text,
+    }
 }
 
-fn base64(body: &str) -> String {
-    let mut bytes: Vec<u8> = Vec::with_capacity(body.len() / 4 * 3);
-    let (mut buffer, mut bits) = (0_u32, 0_u32);
-    for ch in body.chars() {
-        let Some(value) = sextet(ch) else {
-            continue;
-        };
-        buffer = (buffer << 6) | value;
-        bits += 6;
-        if bits >= 8 {
-            bits -= 8;
-            bytes.push(u8::try_from((buffer >> bits) & 0xFF).unwrap_or(0));
-        }
-    }
-    String::from_utf8_lossy(&bytes).replace("\r\n", "\n")
-}
-
-fn sextet(ch: char) -> Option<u32> {
-    match ch {
-        'A'..='Z' => Some(u32::from(ch) - u32::from('A')),
-        'a'..='z' => Some(u32::from(ch) - u32::from('a') + 26),
-        '0'..='9' => Some(u32::from(ch) - u32::from('0') + 52),
-        '+' => Some(62),
-        '/' => Some(63),
-        _ => None,
-    }
+/// Order `items` oldest first by the epoch `key` gives. Items with no date
+/// go last, and items of one second keep the order they came in.
+pub fn oldest_first<T>(items: &mut [T], key: impl Fn(&T) -> Option<i64>) {
+    items.sort_by_key(|item| key(item).unwrap_or(i64::MAX));
 }
 
 /// What a need letter says in its front matter that the console shows.

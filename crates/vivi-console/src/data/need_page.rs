@@ -1,12 +1,12 @@
 //! The need page's data: the backlog node, the letter and its thread, the
 //! attempts, and the flow tab's pump view.
 
-use std::path::{Component, Path, PathBuf};
+use std::path::Path;
 
 use rusqlite::{Connection, OptionalExtension, Row, ToSql};
 use vivi_error::VivariumError;
 
-use super::letter::{self, NeedText};
+use super::letter::{self, NeedText, read_blob};
 use super::need_flow::{self, FlowView, PumpState};
 use super::needs::{AttemptRow, Attempts, NeedNode, attempts_of, epoch_of, node_from_row};
 use super::pump_db::PumpRead;
@@ -215,16 +215,10 @@ struct Stored {
     relpath: String,
 }
 
+/// The bytes of a stored letter, or `None` when its file cannot be read.
 fn read_letter_bytes(root: &Path, relpath: &str) -> Option<Vec<u8>> {
-    let relative = PathBuf::from(relpath);
-    if relative
-        .components()
-        .any(|part| !matches!(part, Component::Normal(_)))
-    {
-        return None;
-    }
-    match std::fs::read(mailspace_dir(root).join(relative)) {
-        Ok(bytes) => Some(bytes),
+    match read_blob(&mailspace_dir(root), relpath) {
+        Ok(blob) => Some(blob.bytes),
         Err(_) => None,
     }
 }
@@ -261,7 +255,7 @@ fn thread_of(conn: &Connection, root: &Path, handle: &str) -> Result<Thread, Viv
         }
         replies.push(reply_of(&item, parsed.body));
     }
-    replies.sort_by_key(|reply| reply.epoch.unwrap_or(i64::MAX));
+    letter::oldest_first(&mut replies, |reply| reply.epoch);
     Ok(Thread {
         letter,
         replies,

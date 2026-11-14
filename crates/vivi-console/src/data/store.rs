@@ -9,11 +9,11 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, Row, ToSql};
 use vivi_core::mailspace::MAILSPACE_DIR;
 use vivi_error::VivariumError;
 
-use crate::queries::{HAS_TABLE, QUERY_ONLY, SCHEMA_PROBE};
+use crate::queries::{HAS_TABLE, QUERY_ONLY, Query, SCHEMA_PROBE};
 
 const DB_FILE: &str = "mail.sqlite";
 const BUSY_TIMEOUT: Duration = Duration::from_millis(250);
@@ -132,6 +132,24 @@ pub fn has_table(conn: &Connection, name: &str) -> Result<bool, VivariumError> {
     conn.prepare_cached(HAS_TABLE.sql)
         .and_then(|mut stmt| stmt.exists([name]))
         .map_err(db_err("look for a table"))
+}
+
+/// Run `query` with `params` and map every row.
+///
+/// # Errors
+/// Returns an error when the query fails or a row cannot be mapped.
+pub fn rows<T>(
+    conn: &Connection,
+    query: &Query,
+    params: &[&dyn ToSql],
+    map: fn(&Row<'_>) -> rusqlite::Result<T>,
+) -> Result<Vec<T>, VivariumError> {
+    let context = "run a console query";
+    let mut stmt = conn.prepare_cached(query.sql).map_err(db_err(context))?;
+    let found = stmt.query_map(params, map).map_err(db_err(context))?;
+    found
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(db_err(context))
 }
 
 /// An error mapper that names what was being done.

@@ -66,6 +66,12 @@ pub fn short(id: &str) -> String {
     id.chars().take(8).collect()
 }
 
+/// The first twelve characters of a commit id.
+#[must_use]
+pub fn short_sha(sha: &str) -> String {
+    sha.chars().take(12).collect()
+}
+
 #[cfg(test)]
 #[path = "format_test.rs"]
 mod tests;

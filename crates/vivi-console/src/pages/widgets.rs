@@ -1,11 +1,42 @@
 //! Pieces several pages use: times, run results, the runtime meter, and the
 //! notice for a store that has no slot index.
 
+use crate::auth::ProjectCtx;
 use crate::data::RunsState;
 use crate::data::runs::RunRow;
 use crate::format;
-use crate::html::{Html, join, link_text, span, tag, url_encode};
-use crate::layout::{mono, notice, pill};
+use crate::html::{Html, join, link_text, span, tag, text_tag, url_encode};
+use crate::layout::{self, mono, notice, pill};
+
+/// One `<option>` of a filter menu.
+#[must_use]
+pub fn option(value: &str, label: &str, selected: bool) -> Html {
+    let mut attrs = vec![("value", value)];
+    if selected {
+        attrs.push(("selected", ""));
+    }
+    text_tag("option", &attrs, label)
+}
+
+/// A filter menu: `all` (the empty value) and one option per value.
+#[must_use]
+pub fn select(name: &str, all: &str, values: &[String], current: &str) -> Html {
+    let mut options = vec![option("", all, current.is_empty())];
+    for value in values {
+        options.push(option(value, value, value == current));
+    }
+    tag("select", &[("name", name)], &join(options))
+}
+
+/// The address of a slot's history page.
+#[must_use]
+pub fn slot_href(ctx: &ProjectCtx, pool: &str, slot: &str) -> String {
+    layout::project_path(
+        &ctx.principal,
+        &ctx.project,
+        &format!("slots/{}/{}", url_encode(pool), url_encode(slot)),
+    )
+}
 
 /// A time with its full UTC stamp as a tooltip.
 #[must_use]

@@ -12,8 +12,9 @@ use super::{blocking, chrome_of, html_response, now_epoch, read_failed};
 use crate::auth::ProjectCtx;
 use crate::data::RunsState;
 use crate::data::failures::{
-    self, FailuresData, HotPath, KindCount, RedCommand, RepeatNeed, Trend, Window,
+    self, FailuresData, HotPath, KindCount, RedCommand, RepeatNeed, Trend,
 };
+use crate::data::window::Window;
 use crate::html::{Html, join, link_text, span, tag, text_tag, url_encode};
 use crate::layout::{self, heading, mono, notice, pill, project_path, row_classed, table};
 
@@ -28,7 +29,7 @@ pub struct FailuresQuery {
 pub async fn handler(ctx: ProjectCtx, Query(query): Query<FailuresQuery>) -> Response {
     let root = ctx.project.mailspace_root.clone();
     let now = now_epoch();
-    let window = Window::parse(query.window.as_deref().unwrap_or(""));
+    let window = Window::parse(query.window.as_deref().unwrap_or_default()).unwrap_or_default();
     let pool = query.pool.unwrap_or_default().trim().to_string();
     match blocking(move || failures::load(&root, now, window, &pool)).await {
         Ok(data) => {

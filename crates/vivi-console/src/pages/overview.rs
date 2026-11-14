@@ -3,14 +3,14 @@
 use axum::http::StatusCode;
 use axum::response::Response;
 
-use super::widgets::{job_link, missing_runs_notice, task_cell, time_cell};
+use super::widgets::{job_link, missing_runs_notice, slot_href, task_cell, time_cell};
 use super::{blocking, chrome_of, html_response, now_epoch, read_failed};
 use crate::auth::ProjectCtx;
 use crate::data::RunsState;
 use crate::data::overview::{self, DayRuns, HourBar, Overview, PoolSlots, PumpView};
 use crate::data::runs::RunRow;
 use crate::format;
-use crate::html::{Html, div, join, span, tag, text_tag, url_encode};
+use crate::html::{Html, div, join, span, tag, text_tag};
 use crate::layout::{self, heading, mono, pill, row_classed, table};
 
 /// The handler.
@@ -191,8 +191,7 @@ fn named_tiles(ctx: &ProjectCtx, pool: &PoolSlots) -> Html {
         } else {
             "tile tile-free"
         };
-        let rest = format!("slots/{}/{}", url_encode(&pool.pool), url_encode(name));
-        let href = layout::project_path(&ctx.principal, &ctx.project, &rest);
+        let href = slot_href(ctx, &pool.pool, name);
         tag("a", &[("class", class), ("href", &href)], &Html::text(name))
     });
     div("tiles", &join(tiles))

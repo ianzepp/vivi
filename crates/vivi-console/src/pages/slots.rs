@@ -8,13 +8,13 @@ use axum::http::StatusCode;
 use axum::response::Response;
 use serde::Deserialize;
 
-use super::widgets::{meter, missing_runs_notice, task_cell, time_cell};
+use super::widgets::{meter, missing_runs_notice, select, slot_href, task_cell, time_cell};
 use super::{blocking, chrome_of, html_response, now_epoch, read_failed};
 use crate::auth::ProjectCtx;
 use crate::data::RunsState;
 use crate::data::slots::{self, LastRun, SlotState, SlotView, SlotsData};
 use crate::format;
-use crate::html::{Html, div, join, link, link_text, span, tag, text_tag, url_encode};
+use crate::html::{Html, div, join, link, link_text, span, tag, text_tag};
 use crate::layout::{self, heading, mono, notice, pill, row_classed, table};
 
 /// The query string.
@@ -95,22 +95,6 @@ fn machine_name(machine: &str) -> &str {
     }
 }
 
-fn option(value: &str, label: &str, selected: bool) -> Html {
-    let mut attrs = vec![("value", value)];
-    if selected {
-        attrs.push(("selected", ""));
-    }
-    text_tag("option", &attrs, label)
-}
-
-fn select(name: &str, all: &str, values: &[String], current: &str) -> Html {
-    let mut options = vec![option("", all, current.is_empty())];
-    for value in values {
-        options.push(option(value, value, value == current));
-    }
-    tag("select", &[("name", name)], &join(options))
-}
-
 fn filters(ctx: &ProjectCtx, data: &SlotsData, query: &SlotsQuery) -> Html {
     let mut pools: Vec<String> = data.slots.iter().map(|slot| slot.pool.clone()).collect();
     pools.dedup();
@@ -134,18 +118,6 @@ fn filters(ctx: &ProjectCtx, data: &SlotsData, query: &SlotsQuery) -> Html {
         "form",
         &[("method", "get"), ("action", &action), ("class", "filters")],
         &inner,
-    )
-}
-
-fn slot_href(ctx: &ProjectCtx, slot: &SlotView) -> String {
-    layout::project_path(
-        &ctx.principal,
-        &ctx.project,
-        &format!(
-            "slots/{}/{}",
-            url_encode(&slot.pool),
-            url_encode(&slot.slot)
-        ),
     )
 }
 
@@ -189,7 +161,7 @@ fn tile(ctx: &ProjectCtx, slot: &SlotView) -> Html {
         "a",
         &[
             ("class", class),
-            ("href", &slot_href(ctx, slot)),
+            ("href", &slot_href(ctx, &slot.pool, &slot.slot)),
             ("title", &title),
         ],
         &Html::text(&slot.slot),
@@ -207,7 +179,7 @@ fn slot_table(ctx: &ProjectCtx, now: i64, slots: &[&SlotView]) -> Html {
 
 fn slot_row(ctx: &ProjectCtx, now: i64, slot: &SlotView) -> Html {
     let name = link(
-        &slot_href(ctx, slot),
+        &slot_href(ctx, &slot.pool, &slot.slot),
         &join([span("dim", &format!("{} / ", slot.pool)), mono(&slot.slot)]),
     );
     match &slot.state {

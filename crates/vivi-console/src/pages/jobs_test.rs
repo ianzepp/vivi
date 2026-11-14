@@ -190,3 +190,28 @@ async fn a_store_without_slot_runs_gets_the_friendly_page() {
     let body = page(&store, "").await;
     assert!(body.contains("no slot index"));
 }
+
+#[tokio::test]
+async fn a_kind_link_from_the_failures_page_lists_that_kind_with_a_removable_chip() {
+    let store = seeded(true);
+    seed(&store);
+    let body = page(&store, "?failed=1&kind=timeout&window=24h").await;
+    order(&body, &["job-timeout"]);
+    assert!(!body.contains("jobs/job-red\""));
+    assert!(!body.contains("jobs/job-good\""));
+    assert!(body.contains("chip-on\">timeout "), "{body}");
+    assert!(
+        body.contains("href=\"/ui/p/demo/jobs?failed=1\""),
+        "the chip's link drops the kind and keeps the rest"
+    );
+    assert!(body.contains("name=\"kind\" value=\"timeout\""));
+}
+
+#[tokio::test]
+async fn an_unknown_kind_is_ignored() {
+    let store = seeded(true);
+    seed(&store);
+    let body = page(&store, "?kind=bogus").await;
+    order(&body, &["job-open", "job-good", "job-red", "job-timeout"]);
+    assert!(!body.contains("chip-on"));
+}

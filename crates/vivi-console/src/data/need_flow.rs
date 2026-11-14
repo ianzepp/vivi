@@ -9,9 +9,8 @@ use std::path::Path;
 use rusqlite::{Connection, OptionalExtension, Row, ToSql};
 use vivi_error::VivariumError;
 
-use super::json_list::json_strings;
 use super::pump_db::{PumpRead, pump_db_path};
-use super::store::{db_err, has_table};
+use super::store::{db_err, has_table, rows};
 use crate::queries::{
     FANOUT_OPEN, FANOUT_START, FLOW_RUN_LATEST, FLOW_RUNS, FLOW_STEP_CURRENT, FLOW_STEPS,
     NEED_BRANCH, PLAN_REVISIONS, Query, RESTART_ENTRIES, RUN_DISPATCHED, RUNG_RUNS_OF_TASK,
@@ -118,20 +117,6 @@ fn step_from_row(row: &Row<'_>) -> rusqlite::Result<StepInfo> {
         state: row.get(2)?,
         verdict: row.get(3)?,
     })
-}
-
-fn rows<T>(
-    conn: &Connection,
-    query: &Query,
-    params: &[&dyn ToSql],
-    map: fn(&Row<'_>) -> rusqlite::Result<T>,
-) -> Result<Vec<T>, VivariumError> {
-    let context = "read the pump store";
-    let mut stmt = conn.prepare_cached(query.sql).map_err(db_err(context))?;
-    let found = stmt.query_map(params, map).map_err(db_err(context))?;
-    found
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(db_err(context))
 }
 
 fn one<T>(
@@ -383,7 +368,7 @@ fn slice_from_row(row: &Row<'_>) -> rusqlite::Result<SliceInfo> {
     let list = |index: usize| -> rusqlite::Result<Vec<String>> {
         Ok(row
             .get::<_, Option<String>>(index)?
-            .map(|text| json_strings(&text))
+            .map(|text| serde_json::from_str::<Vec<String>>(&text).unwrap_or_default())
             .unwrap_or_default())
     };
     let holders = list(7)?;

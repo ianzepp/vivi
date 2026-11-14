@@ -13,6 +13,7 @@ use vivi_error::VivariumError;
 
 use super::config;
 use super::store::db_err;
+use super::window::Window;
 use super::{RunsState, with_runs};
 use crate::queries::{FAILURE_KINDS, LANDING_REASONS, NEED_KINDS};
 
@@ -23,48 +24,6 @@ pub const REPEAT_RUNS: i64 = 3;
 /// Groups read from the landing and need queries.
 const LANDING_GROUPS: i64 = 5000;
 const NEED_GROUPS: i64 = 20_000;
-
-/// How far back the page looks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Window {
-    Hour,
-    Day,
-    Week,
-}
-
-impl Window {
-    /// Every window, in menu order.
-    pub const ALL: [Window; 3] = [Window::Hour, Window::Day, Window::Week];
-
-    /// The query-string word: `1h`, `24h` or `7d`.
-    #[must_use]
-    pub fn word(self) -> &'static str {
-        match self {
-            Self::Hour => "1h",
-            Self::Day => "24h",
-            Self::Week => "7d",
-        }
-    }
-
-    /// The window a query-string word names; anything else is 24 h.
-    #[must_use]
-    pub fn parse(word: &str) -> Self {
-        Self::ALL
-            .into_iter()
-            .find(|window| window.word() == word)
-            .unwrap_or(Self::Day)
-    }
-
-    /// Length in seconds.
-    #[must_use]
-    pub fn secs(self) -> i64 {
-        match self {
-            Self::Hour => 3600,
-            Self::Day => 24 * 3600,
-            Self::Week => 7 * 24 * 3600,
-        }
-    }
-}
 
 /// The failure kinds, in display order: the query's code and its label.
 pub const KINDS: [(&str, &str); 9] = [

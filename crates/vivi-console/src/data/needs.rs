@@ -15,7 +15,7 @@ use vivi_error::VivariumError;
 
 use super::SLOT_RUNS_TABLE;
 use super::need_flow::{self, FlowPos, PumpState};
-use super::runs::RunRow;
+use super::runs::{RunRow, run_from_row};
 use super::store::{ReadStore, db_err, has_table};
 use crate::queries::{NEED_ATTEMPT_COUNT, NEED_ATTEMPTS, NEEDS_LIST, Query};
 
@@ -100,24 +100,7 @@ pub struct AttemptRow {
 
 fn attempt_from_row(row: &Row<'_>) -> rusqlite::Result<AttemptRow> {
     Ok(AttemptRow {
-        run: RunRow {
-            job: row.get(0)?,
-            task_message_id: row.get(1)?,
-            need: row.get(2)?,
-            pool: row.get(3)?,
-            slot: row.get(4)?,
-            machine: row.get(5)?,
-            model: row.get(6)?,
-            kind: row.get(7)?,
-            dispatched_at: row.get(8)?,
-            budget_s: row.get(9)?,
-            collected_at: row.get(10)?,
-            outcome: row.get(11)?,
-            agent_rc: row.get(12)?,
-            check_rc: row.get(13)?,
-            job_s: row.get(14)?,
-            landing: row.get(15)?,
-        },
+        run: run_from_row(row)?,
         landing_reason: row.get(16)?,
     })
 }

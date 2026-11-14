@@ -3,29 +3,18 @@
 //! index rows only say where.
 
 use std::collections::HashSet;
-use std::io::Read;
-use std::path::{Component, Path};
+use std::path::Path;
 
 use rusqlite::{Connection, OptionalExtension};
 use vivi_error::VivariumError;
 
+use super::letter::{self, Letter, read_blob};
+use super::needs::epoch_of;
 use super::store::{db_err, mailspace_dir};
 use crate::queries::{MESSAGE_BLOB, THREAD_CHILDREN};
 
-/// Most bytes read from one letter file.
-const BLOB_MAX: u64 = 4 * 1024 * 1024;
 /// Most replies read for one thread.
 pub const THREAD_LIMIT: usize = 200;
-
-/// One letter: who sent it, when, and its text.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Letter {
-    /// Epoch seconds from the `Date` header; `None` when it did not parse.
-    pub at: Option<i64>,
-    pub from: String,
-    pub subject: String,
-    pub text: String,
-}
 
 /// An index row for a letter, before its file is read.
 struct Located {
@@ -36,66 +25,21 @@ struct Located {
     subject: Option<String>,
 }
 
-fn read_blob(root: &Path, relpath: &str) -> Result<Vec<u8>, VivariumError> {
-    let relative = Path::new(relpath);
-    if relative
-        .components()
-        .any(|part| !matches!(part, Component::Normal(_)))
-    {
-        return Err(VivariumError::Other(format!(
-            "the store names a letter file outside itself: {relpath}"
-        )));
+/// Read the letter an index row names. The index's date, sender and subject
+/// win; the letter's own headers fill what the index lacks.
+fn load(root: &Path, found: &Located) -> Result<Letter, VivariumError> {
+    let blob = read_blob(&mailspace_dir(root), &found.relpath)?;
+    let mut letter = letter::parse(&blob.bytes);
+    letter.at = found.date.as_deref().and_then(epoch_of).or(letter.at);
+    for (own, indexed) in [
+        (&mut letter.from, &found.from),
+        (&mut letter.subject, &found.subject),
+    ] {
+        if let Some(text) = indexed.as_ref().filter(|text| !text.is_empty()) {
+            own.clone_from(text);
+        }
     }
-    let mut bytes = Vec::new();
-    std::fs::File::open(mailspace_dir(root).join(relative))?
-        .take(BLOB_MAX)
-        .read_to_end(&mut bytes)?;
-    Ok(bytes)
-}
-
-/// The text of a letter with LF line ends, and whether it is a lifecycle
-/// event letter (`X-Vivi-Event`), which records a state change and not
-/// thread content.
-fn parse(bytes: &[u8]) -> (String, bool) {
-    let Some(parsed) = mail_parser::MessageParser::default().parse(bytes) else {
-        return (String::from_utf8_lossy(bytes).replace("\r\n", "\n"), false);
-    };
-    let text = parsed
-        .body_text(0)
-        .map(|body| body.replace("\r\n", "\n"))
-        .unwrap_or_default();
-    (text, parsed.header_raw("X-Vivi-Event").is_some())
-}
-
-/// `text` without a leading `+++` front matter fence.
-#[must_use]
-pub fn strip_front(text: &str) -> &str {
-    let Some(rest) = text.strip_prefix("+++\n") else {
-        return text;
-    };
-    match rest.find("\n+++\n") {
-        Some(end) => rest[end + "\n+++\n".len()..].trim_start_matches('\n'),
-        None => text,
-    }
-}
-
-fn epoch_of(date: Option<&str>) -> Option<i64> {
-    let date = date?.trim();
-    chrono::DateTime::parse_from_rfc2822(date)
-        .or_else(|_| chrono::DateTime::parse_from_rfc3339(date))
-        .map_or_else(|_| None, |when| Some(when.timestamp()))
-}
-
-fn letter(root: &Path, found: &Located) -> Result<(Letter, bool), VivariumError> {
-    let bytes = read_blob(root, &found.relpath)?;
-    let (text, event) = parse(&bytes);
-    let letter = Letter {
-        at: epoch_of(found.date.as_deref()),
-        from: found.from.clone().unwrap_or_default(),
-        subject: found.subject.clone().unwrap_or_default(),
-        text,
-    };
-    Ok((letter, event))
+    Ok(letter)
 }
 
 /// The letter of message `message_id`, front matter included, and its
@@ -128,7 +72,7 @@ pub fn task_letter(
     let Some(found) = found else {
         return Ok(None);
     };
-    let (letter, _) = letter(root, &found)?;
+    let letter = load(root, &found)?;
     Ok(Some((found.content_id, letter)))
 }
 
@@ -173,9 +117,9 @@ pub fn replies(
                 if !seen.insert(child.content_id.clone()) {
                     continue;
                 }
-                let (mut reply, event) = letter(root, &child)?;
-                if !event {
-                    reply.text = strip_front(&reply.text).to_string();
+                let mut reply = load(root, &child)?;
+                if !reply.is_event() {
+                    reply.body = letter::strip_front(&reply.body).to_string();
                     found.push(reply);
                 }
                 next.push(child.content_id);
@@ -184,8 +128,7 @@ pub fn replies(
         frontier = next;
     }
     found.truncate(THREAD_LIMIT);
-    // Stable: replies from one second keep the order they were stored in.
-    found.sort_by_key(|reply| reply.at.unwrap_or(0));
+    letter::oldest_first(&mut found, |reply| reply.at);
     Ok(found)
 }
 

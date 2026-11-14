@@ -5,7 +5,7 @@ use axum::http::StatusCode;
 use axum::response::Response;
 
 use super::job_sections;
-use super::widgets::{landing_pill, missing_runs_notice, time_cell};
+use super::widgets::{landing_pill, missing_runs_notice, slot_href, time_cell};
 use super::{blocking, chrome_of, html_response, now_epoch, read_failed};
 use crate::auth::ProjectCtx;
 use crate::data::RunsState;
@@ -122,17 +122,9 @@ fn fact(label: &str, value: Html) -> (String, Html) {
     (label.to_string(), value)
 }
 
-fn short_sha(sha: &str) -> String {
-    sha.chars().take(12).collect()
-}
-
 /// The facts grid: where it ran, what it started from, and the clocks.
 fn facts(ctx: &ProjectCtx, now: i64, run: &JobRun) -> Html {
-    let slot_href = layout::project_path(
-        &ctx.principal,
-        &ctx.project,
-        &format!("slots/{}/{}", url_encode(&run.pool), url_encode(&run.slot)),
-    );
+    let slot_href = slot_href(ctx, &run.pool, &run.slot);
     let mut items = vec![
         fact(
             "pool / slot",
@@ -162,10 +154,14 @@ fn placed(run: &JobRun) -> Vec<(String, Html)> {
     };
     items.push(fact("branch", mono(&branch)));
     if !run.start_sha.is_empty() {
-        items.push(fact("start", mono(&short_sha(&run.start_sha))));
+        items.push(fact("start", mono(&format::short_sha(&run.start_sha))));
     }
     if let Some(push) = run.push.as_deref().filter(|push| !push.is_empty()) {
-        let sha = run.sha.as_deref().map(short_sha).unwrap_or_default();
+        let sha = run
+            .sha
+            .as_deref()
+            .map(format::short_sha)
+            .unwrap_or_default();
         items.push(fact(
             "push",
             Html::text(&format!("{push} {sha}").trim_end().to_string()),

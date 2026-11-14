@@ -5,7 +5,7 @@ use super::text_block::{Keep, pre};
 use super::widgets::time_cell;
 use crate::data::job::{JobDetail, TaskEvent};
 use crate::data::job_notes::{self, JobRecords, Landing, Receipt};
-use crate::data::mail_read::Letter;
+use crate::data::letter::Letter;
 use crate::format;
 use crate::html::{Html, join, span, tag, text_tag};
 use crate::layout::{mono, notice, pill, row_classed, table};
@@ -63,7 +63,7 @@ fn brief(detail: &JobDetail) -> Html {
                 "Brief",
                 &hint,
                 true,
-                &pre(&letter.text, Keep::Head),
+                &pre(&letter.body, Keep::Head),
             )
         }
         None => section(
@@ -206,10 +206,10 @@ fn landing_detail(note: &Landing) -> Html {
     let mut out = Html::new();
     let mut facts = Vec::new();
     if let Some(base) = &note.base {
-        facts.push(format!("base {}", short_sha(base)));
+        facts.push(format!("base {}", format::short_sha(base)));
     }
     if let Some(tip) = &note.tip {
-        facts.push(format!("tip {}", short_sha(tip)));
+        facts.push(format!("tip {}", format::short_sha(tip)));
     }
     if let Some(secs) = note.secs {
         facts.push(format!("took {}", format::duration(secs)));
@@ -231,10 +231,6 @@ fn landing_detail(note: &Landing) -> Html {
         out.push(&tag("ul", &[("class", "files")], &join(items)));
     }
     out
-}
-
-fn short_sha(sha: &str) -> String {
-    sha.chars().take(12).collect()
 }
 
 fn thread(replies: &[Letter]) -> Html {
@@ -264,7 +260,7 @@ fn reply(letter: &Letter) -> Html {
         &[("class", "reply")],
         &join([
             tag("h3", &[("class", "reply-head")], &Html::text(&who)),
-            pre(&letter.text, Keep::Head),
+            pre(&letter.body, Keep::Head),
         ]),
     )
 }

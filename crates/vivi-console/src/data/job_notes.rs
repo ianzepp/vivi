@@ -4,7 +4,7 @@
 use serde_json::Value;
 
 use super::job::TaskEvent;
-use super::mail_read::Letter;
+use super::letter::Letter;
 
 /// The note of each pool event of one job, as stored (JSON text).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -133,8 +133,8 @@ pub fn receipt_of(replies: &[Letter], job: &str) -> Option<Receipt> {
     let reply = replies
         .iter()
         .rev()
-        .find(|reply| reply.text.trim_start().starts_with(&opening))?;
-    Some(split_receipt(&reply.text))
+        .find(|reply| reply.body.trim_start().starts_with(&opening))?;
+    Some(split_receipt(&reply.body))
 }
 
 fn section_title(line: &str) -> Option<&'static str> {

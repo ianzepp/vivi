@@ -6,12 +6,15 @@ use axum::http::StatusCode;
 use axum::response::Response;
 use serde::Deserialize;
 
+use super::chips;
 use super::slot_history::wall;
-use super::widgets::{missing_runs_notice, result_pills, time_cell};
+use super::widgets::{missing_runs_notice, option, result_pills, slot_href, time_cell};
 use super::{blocking, chrome_of, html_response, now_epoch, read_failed};
 use crate::auth::ProjectCtx;
 use crate::data::RunsState;
-use crate::data::jobs::{self, Cursor, JobFilter, JobListRow, JobsPage, OUTCOMES, Window};
+use crate::data::failures::KINDS;
+use crate::data::jobs::{self, Cursor, JobFilter, JobListRow, JobsPage, OUTCOMES};
+use crate::data::window::Window;
 use crate::format;
 use crate::html::{Html, join, link, link_text, span, tag, text_tag, url_encode, void};
 use crate::layout::{self, heading, mono, notice, row_classed, table};
@@ -22,6 +25,7 @@ use crate::layout::{self, heading, mono, notice, row_classed, table};
 pub struct JobsQuery {
     pub outcome: Option<String>,
     pub failed: Option<String>,
+    pub kind: Option<String>,
     pub pool: Option<String>,
     pub slot: Option<String>,
     pub model: Option<String>,
@@ -44,6 +48,8 @@ impl JobsQuery {
             outcome: nonblank(self.outcome.as_ref())
                 .filter(|word| OUTCOMES.contains(&word.as_str())),
             failed: self.failed.as_deref() == Some("1"),
+            kind: nonblank(self.kind.as_ref())
+                .filter(|code| KINDS.iter().any(|(known, _)| known == code)),
             pool: nonblank(self.pool.as_ref()),
             slot: nonblank(self.slot.as_ref()),
             model: nonblank(self.model.as_ref()),
@@ -52,7 +58,7 @@ impl JobsQuery {
                 .window
                 .as_deref()
                 .and_then(Window::parse)
-                .unwrap_or(Window::Day),
+                .unwrap_or_default(),
         }
     }
 
@@ -104,6 +110,9 @@ pub fn render(
         return body;
     };
     body.push(&filter_form(ctx, filter));
+    if let Some(chip) = kind_chip(ctx, filter) {
+        body.push(&chip);
+    }
     if page.rows.is_empty() {
         body.push(&notice(if paged {
             "No older jobs match."
@@ -119,14 +128,6 @@ pub fn render(
 
 fn path(ctx: &ProjectCtx, rest: &str) -> String {
     layout::project_path(&ctx.principal, &ctx.project, rest)
-}
-
-fn option(value: &str, label: &str, selected: bool) -> Html {
-    let mut attrs = vec![("value", value)];
-    if selected {
-        attrs.push(("selected", ""));
-    }
-    text_tag("option", &attrs, label)
 }
 
 fn text_input(name: &str, value: Option<&String>, size: &str) -> Html {
@@ -156,7 +157,15 @@ fn filter_form(ctx: &ProjectCtx, filter: &JobFilter) -> Html {
         failed.push(("checked", ""));
     }
     let action = path(ctx, "jobs");
+    // The kind has no field of its own: carry it through a filter submit.
+    let kind = filter.kind.as_deref().map_or_else(Html::new, |code| {
+        void(
+            "input",
+            &[("type", "hidden"), ("name", "kind"), ("value", code)],
+        )
+    });
     let inner = join([
+        kind,
         tag("select", &[("name", "outcome")], &join(outcomes)),
         tag(
             "label",
@@ -176,6 +185,26 @@ fn filter_form(ctx: &ProjectCtx, filter: &JobFilter) -> Html {
         &[("method", "get"), ("action", &action), ("class", "filters")],
         &inner,
     )
+}
+
+/// The active failure kind as a chip that links to the list without it.
+fn kind_chip(ctx: &ProjectCtx, filter: &JobFilter) -> Option<Html> {
+    let code = filter.kind.as_deref()?;
+    let label = KINDS
+        .iter()
+        .find(|(known, _)| *known == code)
+        .map_or(code, |(_, label)| *label);
+    let without = JobFilter {
+        kind: None,
+        ..filter.clone()
+    };
+    let query = filter_query(&without);
+    let href = if query.is_empty() {
+        path(ctx, "jobs")
+    } else {
+        path(ctx, &format!("jobs?{query}"))
+    };
+    Some(chips::removable("Kind", label, &href))
 }
 
 fn job_table(ctx: &ProjectCtx, now: i64, rows: &[JobListRow]) -> Html {
@@ -204,10 +233,7 @@ fn job_table(ctx: &ProjectCtx, now: i64, rows: &[JobListRow]) -> Html {
 fn job_row(ctx: &ProjectCtx, base: &str, now: i64, row: &JobListRow) -> Html {
     let run = &row.run;
     let job_href = format!("{base}/jobs/{}", url_encode(&run.job));
-    let slot_href = path(
-        ctx,
-        &format!("slots/{}/{}", url_encode(&run.pool), url_encode(&run.slot)),
-    );
+    let slot_href = slot_href(ctx, &run.pool, &run.slot);
     let need = run
         .need
         .as_deref()
@@ -245,6 +271,9 @@ fn filter_query(filter: &JobFilter) -> String {
     }
     if filter.failed {
         pairs.push(("failed", "1".into()));
+    }
+    if let Some(kind) = &filter.kind {
+        pairs.push(("kind", kind.clone()));
     }
     for (name, value) in [
         ("pool", &filter.pool),

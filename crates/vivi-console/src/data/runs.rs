@@ -1,12 +1,12 @@
 //! Reads over the `slot_runs` index. Every query is a named
 //! [`crate::queries::Query`]; this module only binds and decodes.
 
-use rusqlite::{Connection, Row, ToSql};
+use rusqlite::{Connection, Row};
 use vivi_error::VivariumError;
 
-use super::store::db_err;
+use super::store::{db_err, rows};
 use crate::queries::{
-    DISPATCHED_SINCE, FAILURES_SINCE, HOURLY_SINCE, OPEN_RUNS, OUTCOMES_SINCE, Query, RECENT_RUNS,
+    DISPATCHED_SINCE, FAILURES_SINCE, HOURLY_SINCE, OPEN_RUNS, OUTCOMES_SINCE, RECENT_RUNS,
     SLOT_HISTORY,
 };
 
@@ -90,24 +90,12 @@ pub(super) fn run_from_row(row: &Row<'_>) -> rusqlite::Result<RunRow> {
     })
 }
 
-pub(super) fn collect<T>(
-    conn: &Connection,
-    query: &Query,
-    params: &[&dyn ToSql],
-    map: fn(&Row<'_>) -> rusqlite::Result<T>,
-) -> Result<Vec<T>, VivariumError> {
-    let context = "run a console query";
-    let mut stmt = conn.prepare_cached(query.sql).map_err(db_err(context))?;
-    let rows = stmt.query_map(params, map).map_err(db_err(context))?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(db_err(context))
-}
-
 /// Runs dispatched and not yet collected, newest first, at most `limit`.
 ///
 /// # Errors
 /// Returns an error when the query fails.
 pub fn open_runs(conn: &Connection, limit: i64) -> Result<Vec<RunRow>, VivariumError> {
-    let mut rows = collect(conn, &OPEN_RUNS, &[&limit], run_from_row)?;
+    let mut rows = rows(conn, &OPEN_RUNS, &[&limit], run_from_row)?;
     rows.sort_by(|a, b| b.dispatched_at.cmp(&a.dispatched_at));
     Ok(rows)
 }
@@ -127,7 +115,7 @@ pub fn dispatched_since(conn: &Connection, since: i64) -> Result<i64, VivariumEr
 /// # Errors
 /// Returns an error when the query fails.
 pub fn outcomes_since(conn: &Connection, since: i64) -> Result<Vec<OutcomeCount>, VivariumError> {
-    collect(conn, &OUTCOMES_SINCE, &[&since], |row| {
+    rows(conn, &OUTCOMES_SINCE, &[&since], |row| {
         Ok(OutcomeCount {
             outcome: row.get(0)?,
             failed: row.get::<_, i64>(1)? != 0,
@@ -141,7 +129,7 @@ pub fn outcomes_since(conn: &Connection, since: i64) -> Result<Vec<OutcomeCount>
 /// # Errors
 /// Returns an error when the query fails.
 pub fn hourly_since(conn: &Connection, since: i64) -> Result<Vec<HourCount>, VivariumError> {
-    collect(conn, &HOURLY_SINCE, &[&since], |row| {
+    rows(conn, &HOURLY_SINCE, &[&since], |row| {
         Ok(HourCount {
             hour: row.get(0)?,
             failed: row.get::<_, i64>(1)? != 0,
@@ -159,7 +147,7 @@ pub fn failures_since(
     since: i64,
     limit: i64,
 ) -> Result<Vec<RunRow>, VivariumError> {
-    collect(conn, &FAILURES_SINCE, &[&since, &limit], run_from_row)
+    rows(conn, &FAILURES_SINCE, &[&since, &limit], run_from_row)
 }
 
 /// The slots dispatched to since `since`, each with its newest run's machine
@@ -172,7 +160,7 @@ pub fn known_slots(
     since: i64,
     limit: i64,
 ) -> Result<Vec<KnownSlot>, VivariumError> {
-    let recent = collect(conn, &RECENT_RUNS, &[&since, &limit], |row| {
+    let recent = rows(conn, &RECENT_RUNS, &[&since, &limit], |row| {
         Ok(KnownSlot {
             pool: row.get(0)?,
             slot: row.get(1)?,
@@ -200,5 +188,5 @@ pub fn slot_history(
     slot: &str,
     limit: i64,
 ) -> Result<Vec<RunRow>, VivariumError> {
-    collect(conn, &SLOT_HISTORY, &[&pool, &slot, &limit], run_from_row)
+    rows(conn, &SLOT_HISTORY, &[&pool, &slot, &limit], run_from_row)
 }

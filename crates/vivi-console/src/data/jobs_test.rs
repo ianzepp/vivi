@@ -233,3 +233,53 @@ fn a_store_without_slot_runs_reads_as_such() {
         RunsState::NoSlotRuns
     );
 }
+
+#[test]
+fn a_kind_filter_agrees_with_the_failures_page_counts() {
+    use crate::data::failures::{self, KINDS};
+    let store = seeded(true);
+    seed(&store);
+    store.insert(&SeedRun {
+        agent_rc: Some(2),
+        ..finished("agent-red", 700)
+    });
+    let RunsState::Ready(data) = failures::load(&store.root, NOW, Window::Day, "").unwrap() else {
+        panic!("expected a ready failures page");
+    };
+    let mut seen = 0;
+    for (code, _) in KINDS {
+        let filter = JobFilter {
+            kind: Some(code.into()),
+            ..JobFilter::default()
+        };
+        let listed = jobs(&store, &filter, None).rows.len() as i64;
+        let counted = data
+            .kinds
+            .iter()
+            .find(|kind| kind.code == code)
+            .map_or(0, |kind| kind.count);
+        assert_eq!(listed, counted, "{code}");
+        seen += listed;
+    }
+    assert!(seen >= 4, "the seed covers several kinds");
+}
+
+#[test]
+fn a_kind_filter_names_its_runs_and_skips_open_ones() {
+    let store = seeded(true);
+    seed(&store);
+    let by = |code: &str| {
+        let filter = JobFilter {
+            kind: Some(code.into()),
+            ..JobFilter::default()
+        };
+        names(&jobs(&store, &filter, None))
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(by("check"), ["red-check"]);
+    assert_eq!(by("timeout"), ["timeout"]);
+    assert_eq!(by("landing_red"), ["red-landing"]);
+    assert!(by("other").is_empty(), "an open run has no kind yet");
+}
