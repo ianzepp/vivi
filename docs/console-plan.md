@@ -498,6 +498,37 @@ parent runs `cargo test --workspace` (about 4 minutes) once per wave.
    faberlang's flow tab stays empty and its needs show only the attempts tab until work
    runs through the flow again. Not checked against the live config.
 
+## Follow-ups to file as needs
+
+Found during wave 1 (2026-11-14). To be filed on hub's vivi project once this laptop's
+key is granted there; until then they live here.
+
+1. **A failing pool test prints the process environment.** A `vivi-core` pool test,
+   when it fails, prints the whole environment, API keys included, into test output.
+   Done when: no test prints environment values on failure.
+2. **Seven `vivi-core` pool tests fail on macOS at `vivi/main` `bee46eb0`.** They are
+   `explicit_provider` (claims by declared name, concurrent claims, host budget, exact
+   dir reuse) and `worker::cargo_tests` (persistent cargo off, paths, sccache). The
+   first trips on the `/var` → `/private/var` temp link. Done when:
+   `cargo test -p vivi-core --lib pool::` passes on a Mac.
+3. **Check that hub's dispatches carry the need.** `DispatchRecord.need` is set only
+   when the dispatcher has a source; hub's `unit-dispatch` calls `vivi pool dispatch`
+   directly. Done when: `slot_runs.need` is filled for hub's unit jobs, or the console
+   says why it is empty.
+4. **Prove `slot_runs` sees every pool event.** Only `record_pool_note` updates it.
+   Done when: every path that can create a `pool_*` event (sync and letter ingestion
+   included) updates the index, or is shown not to exist.
+5. **Pump health writes.** `vivi_core::pump::health` goes through
+   `Mailspace::discover`, which can mint an id or write `.gitignore`. Both the
+   `/v1/projects/{id}/pump/health` route and the console use it. Done when: health
+   opens nothing for writing.
+6. **Console speed on a real store.** Done when: the overview, slots and jobs pages are
+   timed against a copy of faberlang's store and each answers in under 200 ms.
+7. **Console sign-in hardening.** Done when: sign-in is rate-limited through a host hook,
+   and a revoked key or grant ends its sessions within a minute.
+8. **Hub landing writes `pool_landed`.** Done when: hub's `orch/land-unit` records each
+   outcome with `vivi pool landed`, after wave 2's S6 ships.
+
 ## Not in scope
 
 - Any write action: pause, dispatch, retry, close, unhold, config edits.
