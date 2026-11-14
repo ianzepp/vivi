@@ -235,3 +235,20 @@ pre.block {
 }
 .reply-head { text-transform: none; letter-spacing: 0; }
 ul.files { margin: .25rem 0 .8rem; padding-left: 1.2rem; }
+/* filter chips (failures, mail) */
+.chips { display: flex; flex-wrap: wrap; align-items: center; gap: .35rem; margin: .4rem 0; }
+.chips-label { color: var(--muted); font-size: .8rem; min-width: 4.5rem; text-transform: uppercase; letter-spacing: .04em; }
+.chip { padding: .1rem .6rem; border: 1px solid var(--line); border-radius: 999px; font-size: .85rem; }
+.chip a { color: var(--fg); }
+.chip a:hover { text-decoration: none; color: var(--accent); }
+.chip-on { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+/* mail letters */
+.letter { margin: 1rem 0; padding: .8rem 1rem; border: 1px solid var(--line); border-radius: 8px; }
+.letter-open { border-color: var(--accent); }
+.letter-head { margin-bottom: .3rem; }
+pre.mailbody {
+  margin: .6rem 0 0; padding: .6rem .8rem; background: var(--surface);
+  border-radius: 6px; font: .9em/1.45 var(--mono);
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}

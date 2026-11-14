@@ -133,7 +133,9 @@ pub fn load(root: &Path, now: i64) -> Result<Overview, VivariumError> {
     })
 }
 
-fn pump_view(root: &Path, config: &MailspaceConfig) -> PumpView {
+/// The pump health verdict for the project at `root`, as the overview and
+/// the pump page show it.
+pub fn pump_view(root: &Path, config: &MailspaceConfig) -> PumpView {
     if config.pump.is_none() {
         return PumpView::NoPump;
     }

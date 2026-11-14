@@ -4,10 +4,15 @@
 //! is not built yet is served by `unbuilt`; the seat that builds it removes
 //! its entry from `unbuilt::UNBUILT` and adds its own route here.
 
+pub mod chips;
+pub mod failures;
 pub mod job;
 pub mod job_sections;
 pub mod jobs;
+pub mod mail;
 pub mod overview;
+pub mod pools;
+pub mod pump;
 pub mod slot_history;
 pub mod slots;
 #[cfg(test)]
@@ -15,6 +20,9 @@ pub mod test_support;
 pub mod text_block;
 pub mod unbuilt;
 pub mod widgets;
+
+#[cfg(test)]
+mod browser_test;
 
 use axum::Router;
 use axum::http::StatusCode;
@@ -39,6 +47,11 @@ pub fn routes() -> Router<ConsoleState> {
         )
         .route("/ui/p/{project}/jobs", get(jobs::handler))
         .route("/ui/p/{project}/jobs/{job}", get(job::handler))
+        .route("/ui/p/{project}/failures", get(failures::handler))
+        .route("/ui/p/{project}/pump", get(pump::handler))
+        .route("/ui/p/{project}/pools", get(pools::handler))
+        .route("/ui/p/{project}/mail", get(mail::list_handler))
+        .route("/ui/p/{project}/mail/{handle}", get(mail::thread_handler))
         .merge(unbuilt::routes())
 }
 

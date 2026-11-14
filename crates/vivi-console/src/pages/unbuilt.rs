@@ -15,13 +15,7 @@ use crate::html::join;
 use crate::layout::{self, heading, notice};
 
 /// Menu segment and page name, for every page still to come.
-pub const UNBUILT: &[(&str, &str)] = &[
-    ("needs", "Needs"),
-    ("failures", "Failures"),
-    ("pump", "Pump"),
-    ("pools", "Pools and roles"),
-    ("mail", "Mail"),
-];
+pub const UNBUILT: &[(&str, &str)] = &[("needs", "Needs")];
 
 /// Routes for each unbuilt page.
 pub fn routes() -> Router<ConsoleState> {

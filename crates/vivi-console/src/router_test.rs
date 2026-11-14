@@ -384,7 +384,7 @@ async fn a_project_with_no_store_yet_gets_a_friendly_page() {
 async fn unbuilt_pages_say_so() {
     let store = seeded(true);
     let (app, cookie) = signed_in_app(&store).await;
-    for segment in ["needs", "failures", "pump", "pools", "mail"] {
+    for segment in ["needs"] {
         let page = get(&app, &format!("/ui/p/demo/{segment}"), &cookie).await;
         assert_eq!(page.status, StatusCode::OK, "{segment}");
         assert!(page.body.contains("not built yet"), "{segment}");

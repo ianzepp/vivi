@@ -3,12 +3,17 @@
 //! Everything here is blocking. Pages call it from `spawn_blocking`.
 
 pub mod config;
+pub mod failures;
 pub mod job;
 pub mod job_notes;
 pub mod jobs;
+pub mod mail;
+pub mod mail_body;
 pub mod mail_read;
 pub mod overview;
+pub mod pools;
 pub mod pump_db;
+pub mod pump_page;
 pub mod runs;
 pub mod slots;
 pub mod store;

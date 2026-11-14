@@ -241,6 +241,225 @@ pub static REGISTRY: &[&Query] = &[
     &TASK_EVENTS,
     &MESSAGE_BLOB,
     &THREAD_CHILDREN,
+    &FAILURE_KINDS,
+    &LANDING_REASONS,
+    &NEED_KINDS,
+    &MAIL_THREADS,
+    &MAIL_RESOLVE,
+    &MAIL_THREAD,
+];
+
+// ---- Failures page (mailspace store) -------------------------------------
+
+/// The failure kind of a collected `slot_runs` row, as a SQL expression.
+/// The first matching line wins; `landed` and `ok` are not failures. A
+/// finished, clean run counts as `not_pushed` when it neither pushed nor
+/// committed and was not a read-only job.
+macro_rules! kind_sql {
+    () => {
+        "CASE \
+           WHEN outcome = 'timeout' THEN 'timeout' \
+           WHEN outcome = 'lost' THEN 'lost' \
+           WHEN COALESCE(outcome, '') != 'finished' THEN 'other' \
+           WHEN COALESCE(agent_rc, 0) != 0 THEN 'agent' \
+           WHEN COALESCE(check_rc, 0) != 0 THEN 'check' \
+           WHEN landing = 'red' THEN 'landing_red' \
+           WHEN landing = 'conflict' THEN 'conflict' \
+           WHEN landing = 'raced' THEN 'raced' \
+           WHEN landing = 'landed' THEN 'landed' \
+           WHEN read_only = 0 AND COALESCE(push, '') NOT IN ('pushed', 'committed') \
+             THEN 'not_pushed' \
+           ELSE 'ok' END"
+    };
+}
+
+/// Runs collected since `?1`, counted by failure kind and by period: `0` is
+/// at or after `?2` (the window), `1` is before it (the window before).
+/// `?3` is a pool name, or `''` for every pool.
+pub static FAILURE_KINDS: Query = Query {
+    name: "failure_kinds",
+    sql: concat!(
+        "SELECT ",
+        kind_sql!(),
+        ", CASE WHEN collected_at >= ?2 THEN 0 ELSE 1 END, COUNT(*) FROM slot_runs \
+         WHERE collected_at >= ?1 AND (?3 = '' OR pool = ?3) GROUP BY 1, 2"
+    ),
+    samples: &[Sample::Recent, Sample::Recent, Sample::Text("")],
+};
+
+/// Landings that conflicted or went red since `?1`, with their recorded
+/// reason, counted. `?2` is a pool name or `''`; `?3` caps the groups.
+pub static LANDING_REASONS: Query = Query {
+    name: "landing_reasons",
+    sql: "SELECT landing, landing_reason, COUNT(*) FROM slot_runs \
+          WHERE collected_at >= ?1 AND landing IN ('conflict', 'red') \
+          AND landing_reason IS NOT NULL AND (?2 = '' OR pool = ?2) \
+          GROUP BY 1, 2 LIMIT ?3",
+    samples: &[Sample::Recent, Sample::Text(""), Sample::Int(5000)],
+};
+
+/// Runs of needs collected since `?1`, counted by need and failure kind.
+/// `?2` is a pool name or `''`; `?3` caps the groups. The time index is
+/// named because, left alone, the planner walks the whole need index to
+/// avoid sorting the groups.
+pub static NEED_KINDS: Query = Query {
+    name: "need_kinds",
+    sql: concat!(
+        "SELECT need, ",
+        kind_sql!(),
+        ", COUNT(*) FROM slot_runs INDEXED BY slot_runs_collected_idx \
+         WHERE collected_at >= ?1 AND COALESCE(need, '') != '' AND (?2 = '' OR pool = ?2) \
+         GROUP BY 1, 2 LIMIT ?3"
+    ),
+    samples: &[Sample::Recent, Sample::Text(""), Sample::Int(20000)],
+};
+
+// ---- Mail page (mailspace store) ------------------------------------------
+//
+// No alias on `messages`: the plan check looks for `SCAN messages`.
+
+/// Thread roots filed under account `?1` and folder `?2`, newest first, at
+/// most `?3`. A root is a letter no `mailspace_links` row names as a child.
+/// The last column counts its direct replies.
+pub static MAIL_THREADS: Query = Query {
+    name: "mail_threads",
+    sql: "SELECT messages.message_id, messages.account, messages.local_role, \
+          messages.content_id, messages.updated_at, message_metadata.date, \
+          message_metadata.from_addr, message_metadata.subject, \
+          (SELECT COUNT(*) FROM mailspace_links \
+             WHERE mailspace_links.parent_content_id = messages.content_id) \
+          FROM messages JOIN message_metadata \
+            ON message_metadata.content_id = messages.content_id \
+          WHERE messages.account = ?1 AND messages.local_role = ?2 \
+            AND messages.deleted_at IS NULL \
+            AND NOT EXISTS (SELECT 1 FROM mailspace_links \
+                              WHERE mailspace_links.child_content_id = messages.content_id) \
+          ORDER BY messages.updated_at DESC LIMIT ?3",
+    samples: &[Sample::Text("a"), Sample::Text("inbox"), Sample::Int(50)],
+};
+
+/// Messages whose id is in the range `[?1, ?2)`: how a handle (a prefix of
+/// an id) resolves. At most three rows, so ambiguity shows.
+pub static MAIL_RESOLVE: Query = Query {
+    name: "mail_resolve",
+    sql: "SELECT messages.message_id, messages.content_id FROM messages \
+          WHERE messages.message_id >= ?1 AND messages.message_id < ?2 \
+            AND messages.deleted_at IS NULL LIMIT 3",
+    samples: &[Sample::Text("msg_a"), Sample::Text("msg_b")],
+};
+
+/// Every letter of the thread holding content `?1`, oldest first, at most
+/// `?2`: the ancestors of `?1`, then everything below them. One row per
+/// content: its metadata and blob path, the id of one live message holding
+/// it, when it was first stored, and its parent content (if linked).
+pub static MAIL_THREAD: Query = Query {
+    name: "mail_thread",
+    sql: "WITH RECURSIVE \
+          up(cid) AS ( \
+            SELECT ?1 \
+            UNION SELECT parent_content_id FROM mailspace_links, up \
+              WHERE child_content_id = up.cid), \
+          comp(cid) AS ( \
+            SELECT cid FROM up \
+            UNION SELECT child_content_id FROM mailspace_links, comp \
+              WHERE parent_content_id = comp.cid) \
+          SELECT message_metadata.content_id, message_metadata.date, \
+            message_metadata.from_addr, message_metadata.to_addr, \
+            message_metadata.cc_addr, message_metadata.subject, blobs.blob_relpath, \
+            (SELECT messages.message_id FROM messages \
+               WHERE messages.content_id = message_metadata.content_id \
+                 AND messages.deleted_at IS NULL \
+               ORDER BY messages.message_id LIMIT 1), \
+            (SELECT MIN(messages.discovered_at) FROM messages \
+               WHERE messages.content_id = message_metadata.content_id), \
+            (SELECT mailspace_links.parent_content_id FROM mailspace_links \
+               WHERE mailspace_links.child_content_id = message_metadata.content_id) \
+          FROM comp CROSS JOIN message_metadata \
+            ON message_metadata.content_id = comp.cid \
+          CROSS JOIN blobs ON blobs.content_id = message_metadata.content_id \
+          ORDER BY message_metadata.date, message_metadata.content_id LIMIT ?2",
+    samples: &[Sample::Text("c"), Sample::Int(200)],
+};
+
+// ---- Pump page (pump.db) ----------------------------------------------------
+//
+// These run on the pump store, not the mailspace store, so they have their
+// own list and plan check ([`PUMP_REGISTRY`]). Newest-first reads use a
+// rowid range (`> ?1` with `0`) so the plan is a SEARCH walked from the end,
+// never a SCAN.
+
+/// The pump's control mode.
+pub static PUMP_CONTROL: Query = Query {
+    name: "pump_control",
+    sql: "SELECT mode, shutdown_requested FROM pump_control WHERE singleton = 1",
+    samples: &[],
+};
+
+/// Units counted by status. `?1` is `''`: every status sorts above it, and
+/// the range makes the grouped count a covering-index search.
+pub static PUMP_UNIT_COUNTS: Query = Query {
+    name: "pump_unit_counts",
+    sql: "SELECT status, COUNT(*) FROM units WHERE status > ?1 GROUP BY status",
+    samples: &[Sample::Text("")],
+};
+
+/// The newest unit events: ids above `?1`, newest first, at most `?2`.
+pub static PUMP_UNIT_EVENTS: Query = Query {
+    name: "pump_unit_events",
+    sql: "SELECT event_id, unit, attempt, model, why, detail, at FROM unit_events \
+          WHERE event_id > ?1 ORDER BY event_id DESC LIMIT ?2",
+    samples: &[Sample::Int(0), Sample::Int(50)],
+};
+
+/// The newest gates: ids above `?1`, newest first, at most `?2`.
+pub static PUMP_GATES: Query = Query {
+    name: "pump_gates",
+    sql: "SELECT gate_id, tip, at, merges FROM gates \
+          WHERE gate_id > ?1 ORDER BY gate_id DESC LIMIT ?2",
+    samples: &[Sample::Int(0), Sample::Int(10)],
+};
+
+/// Failures of the gates with ids from `?1` to `?2`, at most `?3`.
+pub static PUMP_GATE_FAILURES: Query = Query {
+    name: "pump_gate_failures",
+    sql: "SELECT gate_id, name, kind FROM gate_failures \
+          WHERE gate_id >= ?1 AND gate_id <= ?2 LIMIT ?3",
+    samples: &[Sample::Int(190), Sample::Int(200), Sample::Int(500)],
+};
+
+/// The newest exceptions: ids above `?1`, newest first, at most `?2`.
+pub static PUMP_EXCEPTIONS: Query = Query {
+    name: "pump_exceptions",
+    sql: "SELECT event_id, at, kind, unit, text FROM exceptions \
+          WHERE event_id > ?1 ORDER BY event_id DESC LIMIT ?2",
+    samples: &[Sample::Int(0), Sample::Int(20)],
+};
+
+/// The tasks of the newest flow steps: rowids above `?1`, newest first, at
+/// most `?2`. Rung runs have no time index, so the page reads them by task.
+pub static PUMP_RECENT_STEP_TASKS: Query = Query {
+    name: "pump_recent_step_tasks",
+    sql: "SELECT task FROM flow_steps WHERE rowid > ?1 ORDER BY rowid DESC LIMIT ?2",
+    samples: &[Sample::Int(0), Sample::Int(40)],
+};
+
+/// The rung runs of one task (`?1`).
+pub static PUMP_RUNG_RUNS: Query = Query {
+    name: "pump_rung_runs",
+    sql: "SELECT task, rung, started_at, finished_at, rc FROM rung_runs WHERE task = ?1",
+    samples: &[Sample::Text("task")],
+};
+
+/// Every query that runs on `pump.db`. Checked by `pump_plans_never_scan`.
+pub static PUMP_REGISTRY: &[&Query] = &[
+    &PUMP_CONTROL,
+    &PUMP_UNIT_COUNTS,
+    &PUMP_UNIT_EVENTS,
+    &PUMP_GATES,
+    &PUMP_GATE_FAILURES,
+    &PUMP_EXCEPTIONS,
+    &PUMP_RECENT_STEP_TASKS,
+    &PUMP_RUNG_RUNS,
 ];
 
 #[cfg(test)]

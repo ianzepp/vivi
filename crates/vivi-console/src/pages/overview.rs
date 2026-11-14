@@ -56,7 +56,7 @@ fn cards(data: &Overview) -> Html {
     div("cards", &row)
 }
 
-fn card(title: &str, inner: &Html) -> Html {
+pub fn card(title: &str, inner: &Html) -> Html {
     div("card", &join([text_tag("h3", &[], title), inner.clone()]))
 }
 
@@ -68,7 +68,7 @@ fn small(text: &str) -> Html {
     div("small", &Html::text(text))
 }
 
-fn pump_card(pump: &PumpView) -> Html {
+pub fn pump_card(pump: &PumpView) -> Html {
     match pump {
         PumpView::NoPump => join([
             big("no pump"),
