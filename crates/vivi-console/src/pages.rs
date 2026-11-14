@@ -10,6 +10,9 @@ pub mod job;
 pub mod job_sections;
 pub mod jobs;
 pub mod mail;
+pub mod need;
+pub mod need_flow;
+pub mod needs;
 pub mod overview;
 pub mod pools;
 pub mod pump;
@@ -39,6 +42,8 @@ use crate::layout::{self, Chrome, heading, notice};
 /// The page routes, all under `/ui/p/{project}/`.
 pub fn routes() -> Router<ConsoleState> {
     Router::new()
+        .route("/ui/p/{project}/needs", get(needs::handler))
+        .route("/ui/p/{project}/needs/{need}", get(need::handler))
         .route("/ui/p/{project}/overview", get(overview::handler))
         .route("/ui/p/{project}/slots", get(slots::handler))
         .route(

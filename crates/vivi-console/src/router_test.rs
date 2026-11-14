@@ -381,13 +381,16 @@ async fn a_project_with_no_store_yet_gets_a_friendly_page() {
 }
 
 #[tokio::test]
-async fn unbuilt_pages_say_so() {
+async fn every_menu_page_is_built() {
+    assert!(crate::pages::unbuilt::UNBUILT.is_empty());
     let store = seeded(true);
     let (app, cookie) = signed_in_app(&store).await;
-    for segment in ["needs"] {
+    for segment in [
+        "overview", "slots", "jobs", "needs", "failures", "pump", "pools", "mail",
+    ] {
         let page = get(&app, &format!("/ui/p/demo/{segment}"), &cookie).await;
         assert_eq!(page.status, StatusCode::OK, "{segment}");
-        assert!(page.body.contains("not built yet"), "{segment}");
+        assert!(!page.body.contains("not built yet"), "{segment}");
     }
 }
 

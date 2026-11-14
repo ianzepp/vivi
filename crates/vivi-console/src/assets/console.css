@@ -201,6 +201,21 @@ form.card button, .filters button {
 .chart g:hover .bar-hit { fill: var(--surface); opacity: .5; }
 .axis { fill: var(--muted); font-size: 8px; font-family: var(--font); }
 
+/* needs and the need page */
+.tabs { display: flex; gap: .25rem; border-bottom: 1px solid var(--line); margin: .5rem 0 1rem; }
+.tabs a { padding: .4rem .9rem; color: var(--fg); border-radius: 6px 6px 0 0; }
+.tabs a:hover { background: var(--surface); text-decoration: none; }
+.tabs a.active { font-weight: 600; box-shadow: inset 0 -2px 0 var(--accent); }
+.checks { list-style: none; padding: 0; margin: .25rem 0; }
+.checks li { padding: .15rem 0; }
+pre.letter, pre.flowline, pre.flowsrc {
+  white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--mono); font-size: .88rem;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: .6rem .8rem;
+}
+pre.flowsrc { max-height: 30rem; overflow: auto; }
+.reply { margin: .75rem 0; }
+.steps { margin: .25rem 0 1rem; }
+
 @media (max-width: 720px) {
   .shell { flex-direction: column; }
   .menu { flex-direction: row; flex-wrap: wrap; border-right: 0; border-bottom: 1px solid var(--line); padding: .5rem; }

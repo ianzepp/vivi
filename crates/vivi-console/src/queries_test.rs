@@ -1,6 +1,8 @@
 use rusqlite::types::Value;
+use vivi_core::pump::flow::index::StepState;
 
 use super::*;
+use crate::data::needs::seed::{PumpSeed, seed_pump};
 use crate::test_support::{SeedRun, seeded};
 
 /// Plan fragments that mean a full table scan of a big table.
@@ -247,4 +249,142 @@ fn the_failures_queries_walk_the_collected_at_index() {
             );
         }
     }
+}
+/// Plan fragments that mean a full scan of a table the needs pages read.
+const NEEDS_FORBIDDEN: &[&str] = &[
+    "SCAN work_graph_nodes",
+    "SCAN work_graphs",
+    "SCAN mailspace_links",
+    "SCAN message_metadata",
+    "SCAN blobs",
+    // The aliases the needs queries give those tables.
+    "SCAN n",
+    "SCAN md",
+    "SCAN b",
+    "SCAN l",
+];
+
+/// True when the plan line scans exactly the named table or alias (a
+/// `SCAN md USING ...` is one; `SCAN mailspace_links` is not `SCAN md`).
+fn scans(line: &str, bad: &str) -> bool {
+    line == bad || line.starts_with(&format!("{bad} "))
+}
+
+#[test]
+fn the_needs_queries_do_not_scan_their_tables() {
+    for analyze in [false, true] {
+        let store = seeded_store(analyze);
+        let mut failures = Vec::new();
+        for query in REGISTRY {
+            for line in plan(&store.conn, query) {
+                if NEEDS_FORBIDDEN.iter().any(|bad| scans(&line, bad)) {
+                    failures.push(format!("{} (analyze={analyze}): {line}", query.name));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "scans found:\n{}", failures.join("\n"));
+    }
+}
+
+/// Plan fragments that mean a full scan of a pump store table.
+const PUMP_FORBIDDEN: &[&str] = &[
+    "SCAN flow_runs",
+    "SCAN flow_steps",
+    "SCAN step_jobs",
+    "SCAN units",
+    "SCAN unit_events",
+    "SCAN slice_scope",
+    "SCAN slice_links",
+    "SCAN rung_runs",
+    "SCAN plan_revisions",
+    "SCAN need_branches",
+    "SCAN fanout_open",
+    "SCAN fanout_starts",
+    "SCAN restart_entries",
+    // The aliases the slice query gives flow_steps, slice_scope and slice_links.
+    "SCAN s",
+    "SCAN sc",
+    "SCAN l",
+];
+
+/// A pump store with enough flow rows that the planner has a reason to pick
+/// indexes. The writer stays open, as a running pump's does.
+fn seeded_pump(analyze: bool) -> (crate::test_support::Seeded, PumpSeed) {
+    let store = seeded(true);
+    let pump = seed_pump(&store);
+    for n in 0..40_u32 {
+        let need = format!("{n:08x}");
+        pump.run(&need, 1, "build", "plan", "live");
+        pump.step(&need, 1, "sentinel", &format!("s-{n}"), StepState::Running);
+        pump.step(&need, 1, "build1", &format!("b-{n}"), StepState::Running);
+        pump.slice(&need, 1, &format!("x{n}"), &format!("b-{n}"), &["a.rs"]);
+        pump.job(
+            &need,
+            1,
+            "build1",
+            &format!("b-{n}"),
+            &format!("job-{n}"),
+            1,
+        );
+        pump.rung(&format!("b-{n}"), "task", 100, Some(200), Some(0));
+        pump.plan(&need, 1, "planned", "ok", 100);
+        pump.branch(&need, &format!("vivi/need/{need}"));
+        pump.store.set_restart_entry(&need, 1, "plan").unwrap();
+        pump.store
+            .set_open_fanout(&need, 1, &format!("b-{n}"))
+            .unwrap();
+        pump.store
+            .set_fanout_start(&format!("b-{n}"), Some("abc"))
+            .unwrap();
+    }
+    if analyze {
+        pump.writer.execute_batch("ANALYZE").unwrap();
+    }
+    (store, pump)
+}
+
+#[test]
+fn no_pump_query_scans_a_pump_table() {
+    for analyze in [false, true] {
+        let (_store, pump) = seeded_pump(analyze);
+        let mut failures = Vec::new();
+        for query in PUMP_REGISTRY {
+            let lines = plan(&pump.writer, query);
+            assert!(!lines.is_empty(), "{} has no plan", query.name);
+            for line in &lines {
+                if PUMP_FORBIDDEN.iter().any(|bad| scans(line, bad)) {
+                    failures.push(format!("{} (analyze={analyze}): {line}", query.name));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "scans found:\n{}", failures.join("\n"));
+    }
+}
+
+#[test]
+fn the_pump_plan_check_would_catch_a_scan() {
+    let (_store, pump) = seeded_pump(false);
+    let scan = Query {
+        name: "scan",
+        sql: "SELECT COUNT(*) FROM flow_steps WHERE node = ?1",
+        samples: &[Sample::Text("build1")],
+    };
+    let lines = plan(&pump.writer, &scan);
+    assert!(
+        lines.iter().any(|line| line.contains("SCAN flow_steps")),
+        "{lines:?}"
+    );
+}
+
+#[test]
+fn pump_and_mailspace_query_names_do_not_collide() {
+    let mut names: Vec<&str> = PUMP_REGISTRY
+        .iter()
+        .chain(REGISTRY.iter())
+        .map(|query| query.name)
+        .collect();
+    names.sort_unstable();
+    let before = names.len();
+    names.dedup();
+    assert_eq!(before, names.len());
 }
