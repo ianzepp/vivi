@@ -47,6 +47,7 @@ pub(crate) fn run_mailspace_command(command: &Command) -> Result<(), VivariumErr
         Command::Rule { command } => crate::local_rule_command::handle_rule_command(command),
         Command::Goal { command } => crate::local_goal_command::handle_goal_command(command),
         Command::Pool { command } => crate::local_pool_command::handle_pool_command(command),
+        Command::Slot { command } => crate::local_slot_command::handle_slot_command(command),
         Command::Monitor(command) => crate::local_monitor_command::run(command),
         Command::Report(command) => crate::local_report_command::run(command),
         Command::Project { command } => crate::local_project_command::handle(command),

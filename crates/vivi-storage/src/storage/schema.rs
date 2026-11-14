@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 use vivi_error::VivariumError;
 
-pub const STORAGE_SCHEMA_VERSION: &str = "10";
+pub const STORAGE_SCHEMA_VERSION: &str = "11";
 
 pub(super) fn ensure_schema(conn: &Connection) -> Result<(), VivariumError> {
     let existing: Option<String> = match conn.query_row(
@@ -23,6 +23,9 @@ pub(super) fn ensure_schema(conn: &Connection) -> Result<(), VivariumError> {
     // version forces one repair pass over every old database.
     conn.execute_batch(SCHEMA_DDL)
         .map_err(|e| VivariumError::Other(format!("failed to initialize storage schema: {e}")))?;
+    // Added in schema version 11: the index of pool jobs kept beside the events.
+    conn.execute_batch(super::SLOT_RUNS_DDL)
+        .map_err(|e| VivariumError::Other(format!("failed to create slot_runs: {e}")))?;
     ensure_absorb_columns(conn)?;
     ensure_work_graph_columns(conn)?;
     migrate_event_deferrals(conn)?;

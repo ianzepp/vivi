@@ -187,6 +187,16 @@ impl Storage {
             !replies.is_empty(),
         )?;
         append_lifecycle_event(&tx, request.event, &reply.now)?;
+        // The pool index rides the event's transaction, at the event's instant.
+        super::slot_runs::apply_event(
+            &tx,
+            &super::slot_runs::PoolEvent {
+                event_type: &request.event.event_type,
+                note: request.event.note.as_deref(),
+                message_id: &resolved,
+                occurred_at: &reply.now,
+            },
+        )?;
         tx.commit()
             .map_err(|e| VivariumError::Other(format!("failed to commit note transaction: {e}")))?;
         self.invalidate_handle_index();

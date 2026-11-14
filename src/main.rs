@@ -39,6 +39,7 @@ mod local_report_command;
 mod local_role_command;
 mod local_rule_command;
 mod local_skills_command;
+mod local_slot_command;
 mod local_step_command;
 mod local_sync_command;
 mod local_want_show;

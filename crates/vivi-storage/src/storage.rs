@@ -31,6 +31,8 @@ mod mutate;
 mod pending_deps;
 mod query;
 pub mod schema;
+mod slot_runs;
+pub use slot_runs::{SLOT_RUNS_DDL, SlotRun};
 mod sync;
 #[cfg(test)]
 mod tests;

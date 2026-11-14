@@ -19,6 +19,7 @@ mod pump_command;
 mod report_command;
 mod role_command;
 mod skills_command;
+mod slot_command;
 mod sync_command;
 mod update_command;
 
@@ -72,6 +73,9 @@ pub use report_command::{
 };
 pub use role_command::{RoleCharterCommand, RoleCommand};
 pub use skills_command::SkillsCommand;
+pub use slot_command::{
+    SlotHistoryCommand, SlotListCommand, SlotRebuildCommand, SlotShowCommand, SlotSubcommand,
+};
 pub use sync_command::{ApiKeyCommand, QuarantineCommand, SyncCommand, SyncSubcommand};
 pub use update_command::{UninstallCommand, UpdateCommand, VersionsCommand};
 
@@ -183,6 +187,12 @@ pub enum Command {
     Pool {
         #[command(subcommand)]
         command: PoolSubcommand,
+    },
+
+    /// Read the declared slots and the jobs they ran, from the recorded pool events
+    Slot {
+        #[command(subcommand)]
+        command: SlotSubcommand,
     },
 
     /// Create projects on a host: git repository, mailspace and registration

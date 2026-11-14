@@ -58,6 +58,8 @@ mod rules;
 mod serves;
 pub mod shipped;
 mod shipped_roles;
+mod slot_runs;
+mod slot_view;
 mod starter_pump;
 pub use starter_pump::STARTER_PUMP;
 mod step;
@@ -121,6 +123,8 @@ pub use pump_action::{PumpAction, PumpActionKind, PumpActionRequest, UnreadableA
 pub use pump_record::{PumpRecord, PumpState};
 pub use report::MoveOutcome;
 pub use rules::{RuleChange, RuleDetail, RuleRecord, RuleSupersession};
+pub use slot_runs::SlotRunView;
+pub use slot_view::{SlotRow, SlotState};
 pub use step::{StepDispatch, StepException, StepManifest};
 pub use thread::{
     MailspaceThreadMessage, ThreadOutlineRow, print_thread, print_thread_newest,
