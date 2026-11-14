@@ -4,6 +4,7 @@
 
 pub mod config;
 pub mod overview;
+pub mod pump_db;
 pub mod runs;
 pub mod slots;
 pub mod store;
