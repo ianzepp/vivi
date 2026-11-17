@@ -1,7 +1,7 @@
 //! The page frame: header with the project picker, the left menu, and the
 //! small pieces pages share (pills, tables, notices).
 
-use crate::host::{Principal, ProjectRef};
+use crate::host::{Catalog, ProjectRef};
 use crate::html::{Html, div, join, link_text, span, tag, text_tag, url_encode, void};
 
 /// The left menu: URL segment, label.
@@ -18,7 +18,7 @@ pub const MENU: &[(&str, &str)] = &[
 
 /// Who is looking at which project, and which menu entry is lit.
 pub struct Chrome<'a> {
-    pub principal: &'a Principal,
+    pub catalog: &'a Catalog,
     pub project: Option<&'a ProjectRef>,
     pub active: &'a str,
     pub title: &'a str,
@@ -29,8 +29,8 @@ pub struct Chrome<'a> {
 /// `/ui/p/<project>/<rest>`, with the project and every segment encoded
 /// except `rest` itself, which the caller builds from encoded pieces.
 #[must_use]
-pub fn project_path(principal: &Principal, project: &ProjectRef, rest: &str) -> String {
-    format!("/ui/p/{}/{rest}", url_encode(principal.url_key(project)))
+pub fn project_path(catalog: &Catalog, project: &ProjectRef, rest: &str) -> String {
+    format!("/ui/p/{}/{rest}", url_encode(catalog.url_key(project)))
 }
 
 /// A complete document with the frame around `body`.
@@ -45,12 +45,6 @@ pub fn page(chrome: &Chrome<'_>, body: &Html) -> Html {
     shell.push(&tag("main", &[("id", "main")], body));
     frame.push(&div("shell", &shell));
     document(chrome.title, &frame)
-}
-
-/// A complete document with no frame, for sign-in.
-#[must_use]
-pub fn bare(title: &str, body: &Html) -> Html {
-    document(title, &div("bare", body))
 }
 
 fn document(title: &str, body: &Html) -> Html {
@@ -97,8 +91,6 @@ fn header(chrome: &Chrome<'_>) -> Html {
     if chrome.refresh {
         bar.push(&refresh_toggle());
     }
-    bar.push(&span("who", &chrome.principal.name));
-    bar.push(&logout_form());
     tag("header", &[("class", "top")], &bar)
 }
 
@@ -113,18 +105,6 @@ fn refresh_toggle() -> Html {
     )
 }
 
-fn logout_form() -> Html {
-    tag(
-        "form",
-        &[("method", "post"), ("action", "/ui/logout")],
-        &text_tag(
-            "button",
-            &[("type", "submit"), ("class", "link")],
-            "sign out",
-        ),
-    )
-}
-
 /// The project picker: a dropdown of links, so it needs no script. Each
 /// link keeps the section being viewed.
 fn picker(chrome: &Chrome<'_>, current: &ProjectRef) -> Html {
@@ -133,8 +113,8 @@ fn picker(chrome: &Chrome<'_>, current: &ProjectRef) -> Html {
     } else {
         chrome.active
     };
-    let items = chrome.principal.projects.iter().map(|project| {
-        let href = project_path(chrome.principal, project, section);
+    let items = chrome.catalog.projects.iter().map(|project| {
+        let href = project_path(chrome.catalog, project, section);
         tag("li", &[], &link_text(&href, &label(project)))
     });
     let list = tag("ul", &[], &join(items));
@@ -158,7 +138,7 @@ fn menu(chrome: &Chrome<'_>) -> Html {
         return Html::new();
     };
     let items = MENU.iter().map(|(segment, name)| {
-        let href = project_path(chrome.principal, project, segment);
+        let href = project_path(chrome.catalog, project, segment);
         let class = if *segment == chrome.active {
             "active"
         } else {

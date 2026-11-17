@@ -5,7 +5,7 @@ use axum::response::Response;
 
 use super::widgets::{job_link, missing_runs_notice, slot_href, task_cell, time_cell};
 use super::{blocking, chrome_of, html_response, now_epoch, read_failed};
-use crate::auth::ProjectCtx;
+use crate::context::ProjectCtx;
 use crate::data::RunsState;
 use crate::data::overview::{self, DayRuns, HourBar, Overview, PoolSlots, PumpView};
 use crate::data::runs::RunRow;
@@ -276,7 +276,7 @@ fn failures(ctx: &ProjectCtx, now: i64, rows: &[RunRow]) -> Html {
     if rows.is_empty() {
         return layout::notice("No failures in the last 24 hours.");
     }
-    let base = layout::project_path(&ctx.principal, &ctx.project, "")
+    let base = layout::project_path(&ctx.catalog, &ctx.project, "")
         .trim_end_matches('/')
         .to_string();
     let body = rows

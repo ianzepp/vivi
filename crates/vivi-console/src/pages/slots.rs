@@ -10,7 +10,7 @@ use serde::Deserialize;
 
 use super::widgets::{meter, missing_runs_notice, select, slot_href, task_cell, time_cell};
 use super::{blocking, chrome_of, html_response, now_epoch, read_failed};
-use crate::auth::ProjectCtx;
+use crate::context::ProjectCtx;
 use crate::data::RunsState;
 use crate::data::slots::{self, LastRun, SlotState, SlotView, SlotsData};
 use crate::format;
@@ -105,7 +105,7 @@ fn filters(ctx: &ProjectCtx, data: &SlotsData, query: &SlotsQuery) -> Html {
         .collect();
     machines.sort();
     machines.dedup();
-    let action = layout::project_path(&ctx.principal, &ctx.project, "slots");
+    let action = layout::project_path(&ctx.catalog, &ctx.project, "slots");
     let inner = join([
         Html::text("pool "),
         select("pool", "all", &pools, query.pool()),

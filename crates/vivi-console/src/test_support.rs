@@ -7,7 +7,7 @@ use rusqlite::{Connection, params};
 use tempfile::TempDir;
 use vivi_storage::storage::Storage;
 
-use crate::host::{ConsoleHost, Principal, ProjectRef};
+use crate::host::{Catalog, ConsoleHost, ProjectRef};
 
 /// One `slot_runs` row to insert.
 pub struct SeedRun<'a> {
@@ -121,10 +121,9 @@ impl Seeded {
             .unwrap();
     }
 
-    /// A principal that may read this project as `demo`.
-    pub fn principal(&self) -> Principal {
-        Principal {
-            name: "alice".into(),
+    /// A catalog that shows this project as `demo`.
+    pub fn catalog(&self) -> Catalog {
+        Catalog {
             projects: vec![ProjectRef {
                 id: "proj-1".into(),
                 name: "demo".into(),
@@ -134,16 +133,13 @@ impl Seeded {
     }
 }
 
-/// A host with a fixed key table.
+/// A host that shows a fixed catalog.
 pub struct FakeHost {
-    pub keys: Vec<(String, Principal)>,
+    pub catalog: Catalog,
 }
 
 impl ConsoleHost for FakeHost {
-    fn authenticate(&self, key: &str) -> Option<Principal> {
-        self.keys
-            .iter()
-            .find(|(known, _)| known == key)
-            .map(|(_, principal)| principal.clone())
+    fn projects(&self) -> Vec<ProjectRef> {
+        self.catalog.projects.clone()
     }
 }

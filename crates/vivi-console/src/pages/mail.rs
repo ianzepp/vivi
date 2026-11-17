@@ -9,7 +9,7 @@ use serde::Deserialize;
 use super::chips::{self, Chip};
 use super::widgets::time_cell;
 use super::{blocking, chrome_of, html_response, now_epoch, read_failed};
-use crate::auth::ProjectCtx;
+use crate::context::ProjectCtx;
 use crate::data::mail::{
     self, KINDS, MailFilter, MailList, ROLES, Thread, ThreadMessage, ThreadRow, ThreadState,
 };
@@ -74,7 +74,7 @@ fn list_href(ctx: &ProjectCtx, filter: &MailFilter) -> String {
         ("role", &filter.role),
         ("kind", &filter.kind),
     ]);
-    project_path(&ctx.principal, &ctx.project, &format!("mail{query}"))
+    project_path(&ctx.catalog, &ctx.project, &format!("mail{query}"))
 }
 
 fn chip_row(
@@ -161,7 +161,7 @@ fn threads_table(ctx: &ProjectCtx, now: i64, rows: &[ThreadRow]) -> Html {
         .iter()
         .map(|row| {
             let href = project_path(
-                &ctx.principal,
+                &ctx.catalog,
                 &ctx.project,
                 &format!("mail/{}", url_encode(&row.handle)),
             );
@@ -202,7 +202,7 @@ fn subject_or_none(subject: &str) -> &str {
 pub fn render_thread(ctx: &ProjectCtx, handle: &str, state: &ThreadState) -> (StatusCode, Html) {
     let mut body = heading("Mail thread", &ctx.project.name);
     body.push(&link_text(
-        &project_path(&ctx.principal, &ctx.project, "mail"),
+        &project_path(&ctx.catalog, &ctx.project, "mail"),
         "all threads",
     ));
     match state {
@@ -274,7 +274,7 @@ fn letter(ctx: &ProjectCtx, opened: &str, message: &ThreadMessage) -> Html {
     }
     if let Some(parent) = &message.parent_handle {
         let href = project_path(
-            &ctx.principal,
+            &ctx.catalog,
             &ctx.project,
             &format!("mail/{}", url_encode(parent)),
         );

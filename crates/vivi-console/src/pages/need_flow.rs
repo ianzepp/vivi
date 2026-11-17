@@ -6,7 +6,7 @@ use vivi_core::pump::flow::registry;
 
 use super::need::{NeedQuery, need_href};
 use super::widgets::time_cell;
-use crate::auth::ProjectCtx;
+use crate::context::ProjectCtx;
 use crate::data::need_flow::{
     FanoutGroup, FlowView, PathStep, PumpState, RunDetail, RungInfo, SliceInfo,
 };
@@ -225,7 +225,7 @@ fn group_section(ctx: &ProjectCtx, group: &FanoutGroup, now: i64) -> Html {
     if group.open {
         out.push(&pill("busy", "open"));
     }
-    let base = layout::project_path(&ctx.principal, &ctx.project, "")
+    let base = layout::project_path(&ctx.catalog, &ctx.project, "")
         .trim_end_matches('/')
         .to_string();
     let rows = group

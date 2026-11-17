@@ -68,7 +68,7 @@ fn seed(store: &Seeded) {
 async fn the_failures_page_shows_kinds_hot_files_commands_and_repeat_needs() {
     let store = seeded(true);
     seed(&store);
-    let browser = Browser::open(store.principal()).await;
+    let browser = Browser::open(store.catalog()).await;
     let (status, page) = browser.get("/ui/p/demo/failures").await;
     assert_eq!(status, StatusCode::OK);
     for expected in [
@@ -97,7 +97,7 @@ async fn the_failures_page_shows_kinds_hot_files_commands_and_repeat_needs() {
 async fn free_text_from_landings_is_escaped() {
     let store = seeded(true);
     seed(&store);
-    let browser = Browser::open(store.principal()).await;
+    let browser = Browser::open(store.catalog()).await;
     let (_, page) = browser.get("/ui/p/demo/failures").await;
     assert!(!page.contains("<script>alert(1)"), "{page}");
     assert!(page.contains("radix/&lt;script&gt;alert(1)&lt;"), "{page}");
@@ -109,7 +109,7 @@ async fn free_text_from_landings_is_escaped() {
 async fn the_window_and_pool_come_from_the_query_string() {
     let store = seeded(true);
     seed(&store);
-    let browser = Browser::open(store.principal()).await;
+    let browser = Browser::open(store.catalog()).await;
     let (_, hour) = browser.get("/ui/p/demo/failures?window=1h").await;
     assert!(hour.contains("last 1h"), "{hour}");
     assert!(hour.contains("kind=timeout&amp;window=1h"));
@@ -125,7 +125,7 @@ async fn the_window_and_pool_come_from_the_query_string() {
 #[tokio::test]
 async fn a_store_without_the_slot_index_gets_the_plain_notice() {
     let store = seeded(false);
-    let browser = Browser::open(store.principal()).await;
+    let browser = Browser::open(store.catalog()).await;
     let (status, page) = browser.get("/ui/p/demo/failures").await;
     assert_eq!(status, StatusCode::OK);
     assert!(page.contains("no slot index"), "{page}");
@@ -134,7 +134,7 @@ async fn a_store_without_the_slot_index_gets_the_plain_notice() {
 #[tokio::test]
 async fn the_failures_menu_entry_is_a_real_page_now() {
     let store = seeded(true);
-    let browser = Browser::open(store.principal()).await;
+    let browser = Browser::open(store.catalog()).await;
     let (_, page) = browser.get("/ui/p/demo/failures").await;
     assert!(!page.contains("not built yet"));
 }

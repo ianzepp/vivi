@@ -9,7 +9,7 @@ use serde::Deserialize;
 use super::chips::{self, Chip};
 use super::widgets::missing_runs_notice;
 use super::{blocking, chrome_of, html_response, now_epoch, read_failed};
-use crate::auth::ProjectCtx;
+use crate::context::ProjectCtx;
 use crate::data::RunsState;
 use crate::data::failures::{
     self, FailuresData, HotPath, KindCount, RedCommand, RepeatNeed, Trend,
@@ -66,7 +66,7 @@ pub fn render(ctx: &ProjectCtx, window: Window, state: &RunsState<FailuresData>)
 
 fn page_href(ctx: &ProjectCtx, window: Window, pool: &str) -> String {
     let query = chips::query(&[("window", window.word()), ("pool", pool)]);
-    project_path(&ctx.principal, &ctx.project, &format!("failures{query}"))
+    project_path(&ctx.catalog, &ctx.project, &format!("failures{query}"))
 }
 
 fn filter_rows(ctx: &ProjectCtx, window: Window, pool: &str, pools: &[String]) -> Html {
@@ -120,7 +120,7 @@ fn jobs_href(ctx: &ProjectCtx, data: &FailuresData, kind: &str) -> String {
             format!("&pool={}", url_encode(&data.pool))
         }
     );
-    project_path(&ctx.principal, &ctx.project, &query)
+    project_path(&ctx.catalog, &ctx.project, &query)
 }
 
 fn kinds_table(ctx: &ProjectCtx, data: &FailuresData) -> Html {
@@ -228,7 +228,7 @@ fn repeat_table(ctx: &ProjectCtx, needs: &[RepeatNeed]) -> Html {
         .iter()
         .map(|need| {
             let href = project_path(
-                &ctx.principal,
+                &ctx.catalog,
                 &ctx.project,
                 &format!("needs/{}", url_encode(&need.need)),
             );

@@ -3,12 +3,11 @@ use axum::http::StatusCode;
 use super::super::browser_test::Browser;
 use crate::data::pump_db::pump_db_path;
 use crate::data::pump_page::tests::{event, pump_project, unit};
-use crate::host::{Principal, ProjectRef};
+use crate::host::{Catalog, ProjectRef};
 use crate::test_support::seeded;
 
-fn principal_of(root: &std::path::Path) -> Principal {
-    Principal {
-        name: "alice".into(),
+fn catalog_of(root: &std::path::Path) -> Catalog {
+    Catalog {
         projects: vec![ProjectRef {
             id: "proj-1".into(),
             name: "demo".into(),
@@ -20,7 +19,7 @@ fn principal_of(root: &std::path::Path) -> Principal {
 #[tokio::test]
 async fn a_project_with_no_pump_gets_a_plain_message() {
     let store = seeded(true);
-    let browser = Browser::open(store.principal()).await;
+    let browser = Browser::open(store.catalog()).await;
     let (status, page) = browser.get("/ui/p/demo/pump").await;
     assert_eq!(status, StatusCode::OK);
     assert!(page.contains("has no pump"), "{page}");
@@ -36,7 +35,7 @@ async fn a_configured_pump_with_no_store_says_it_cannot_be_shown() {
         "name = \"demo\"\n\n[pump]\n",
     )
     .unwrap();
-    let browser = Browser::open(principal_of(dir.path())).await;
+    let browser = Browser::open(catalog_of(dir.path())).await;
     let (status, page) = browser.get("/ui/p/demo/pump").await;
     assert_eq!(status, StatusCode::OK);
     assert!(page.contains("The pump store cannot be shown"), "{page}");
@@ -62,7 +61,7 @@ async fn the_pump_page_shows_units_events_gates_and_exceptions() {
            ON CONFLICT(singleton) DO UPDATE SET mode = 'running';",
     )
     .unwrap();
-    let browser = Browser::open(principal_of(dir.path())).await;
+    let browser = Browser::open(catalog_of(dir.path())).await;
     let (status, page) = browser.get("/ui/p/demo/pump").await;
     assert_eq!(status, StatusCode::OK);
     for expected in [

@@ -5,7 +5,7 @@ use axum::http::StatusCode;
 use axum::response::Response;
 
 use super::{blocking, chrome_of, html_response, read_failed};
-use crate::auth::ProjectCtx;
+use crate::context::ProjectCtx;
 use crate::data::pools::{self, DispatchView, PoolView, PoolsData, RoleView};
 use crate::html::{Html, div, join, span, text_tag};
 use crate::layout::{self, heading, mono, notice, pill, row_classed, table};

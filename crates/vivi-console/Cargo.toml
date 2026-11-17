@@ -10,7 +10,6 @@ vivi-storage = { path = "../vivi-storage" }
 vivi-core = { path = "../vivi-core" }
 axum = "0.8"
 chrono.workspace = true
-getrandom = "0.4"
 mail-parser.workspace = true
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde.workspace = true

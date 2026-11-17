@@ -1,7 +1,7 @@
 //! Pieces several pages use: times, run results, the runtime meter, and the
 //! notice for a store that has no slot index.
 
-use crate::auth::ProjectCtx;
+use crate::context::ProjectCtx;
 use crate::data::RunsState;
 use crate::data::runs::RunRow;
 use crate::format;
@@ -32,7 +32,7 @@ pub fn select(name: &str, all: &str, values: &[String], current: &str) -> Html {
 #[must_use]
 pub fn slot_href(ctx: &ProjectCtx, pool: &str, slot: &str) -> String {
     layout::project_path(
-        &ctx.principal,
+        &ctx.catalog,
         &ctx.project,
         &format!("slots/{}/{}", url_encode(pool), url_encode(slot)),
     )

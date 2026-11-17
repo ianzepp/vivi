@@ -6,12 +6,11 @@ use axum::Router;
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
 use axum::http::{HeaderName, HeaderValue};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::get;
 
-use crate::auth::{self, ConsoleState};
+use crate::context::{self, ConsoleState};
 use crate::host::ConsoleHost;
 use crate::pages;
-use crate::session::{SESSION_TTL, SessionStore};
 
 const CSS: &str = include_str!("assets/console.css");
 const JS: &str = include_str!("assets/console.js");
@@ -23,15 +22,10 @@ const CSP: &str = "default-src 'none'; style-src 'self'; script-src 'self'; \
 
 /// The console routes over `host`. Merge the result into the server's router.
 pub fn router(host: Arc<dyn ConsoleHost>) -> Router {
-    let state = ConsoleState {
-        host,
-        sessions: Arc::new(SessionStore::new(SESSION_TTL)),
-    };
+    let state = ConsoleState { host };
     Router::new()
-        .route("/ui", get(auth::home))
-        .route("/ui/", get(auth::home))
-        .route("/ui/login", get(auth::login_form).post(auth::login))
-        .route("/ui/logout", post(auth::logout))
+        .route("/ui", get(context::home))
+        .route("/ui/", get(context::home))
         .route("/ui/static/console.css", get(css))
         .route("/ui/static/console.js", get(js))
         .merge(pages::routes())

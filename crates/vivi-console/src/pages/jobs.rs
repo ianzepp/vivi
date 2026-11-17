@@ -10,7 +10,7 @@ use super::chips;
 use super::slot_history::wall;
 use super::widgets::{missing_runs_notice, option, result_pills, slot_href, time_cell};
 use super::{blocking, chrome_of, html_response, now_epoch, read_failed};
-use crate::auth::ProjectCtx;
+use crate::context::ProjectCtx;
 use crate::data::RunsState;
 use crate::data::failures::KINDS;
 use crate::data::jobs::{self, Cursor, JobFilter, JobListRow, JobsPage, OUTCOMES};
@@ -127,7 +127,7 @@ pub fn render(
 }
 
 fn path(ctx: &ProjectCtx, rest: &str) -> String {
-    layout::project_path(&ctx.principal, &ctx.project, rest)
+    layout::project_path(&ctx.catalog, &ctx.project, rest)
 }
 
 fn text_input(name: &str, value: Option<&String>, size: &str) -> Html {

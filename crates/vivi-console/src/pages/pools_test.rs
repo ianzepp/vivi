@@ -2,11 +2,10 @@ use axum::http::StatusCode;
 
 use super::super::browser_test::Browser;
 use crate::data::pools::tests::CONFIG;
-use crate::host::{Principal, ProjectRef};
+use crate::host::{Catalog, ProjectRef};
 
-fn principal_of(root: &std::path::Path) -> Principal {
-    Principal {
-        name: "alice".into(),
+fn catalog_of(root: &std::path::Path) -> Catalog {
+    Catalog {
         projects: vec![ProjectRef {
             id: "proj-1".into(),
             name: "demo".into(),
@@ -20,7 +19,7 @@ async fn the_pools_page_shows_roles_and_pools_and_no_secrets() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join(".vivi")).unwrap();
     std::fs::write(dir.path().join(".vivi/mailspace.toml"), CONFIG).unwrap();
-    let browser = Browser::open(principal_of(dir.path())).await;
+    let browser = Browser::open(catalog_of(dir.path())).await;
     let (status, page) = browser.get("/ui/p/demo/pools").await;
     assert_eq!(status, StatusCode::OK);
     for expected in [
@@ -55,7 +54,7 @@ async fn the_pools_page_shows_roles_and_pools_and_no_secrets() {
 #[tokio::test]
 async fn a_project_whose_config_cannot_be_read_says_so() {
     let dir = tempfile::tempdir().unwrap();
-    let browser = Browser::open(principal_of(dir.path())).await;
+    let browser = Browser::open(catalog_of(dir.path())).await;
     let (status, page) = browser.get("/ui/p/demo/pools").await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
     assert!(page.contains("Could not read this project"));

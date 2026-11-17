@@ -35,14 +35,10 @@ The console only reads. It never pauses, dispatches, retries, closes or edits an
 3. **HTML drawn on the server.** Templates are compiled into the binary (`maud` or
    `askama`). One small CSS file. Optional auto-refresh is a few lines of plain JS
    polling a fragment URL. No npm, no bundler, no client-side app.
-4. **Sign-in.** The existing routes take a bearer token (`authenticate_caller` in
-   `projects_api.rs`). A browser cannot send a bearer token on plain page loads, so:
-   - `/ui/login` takes an API key once;
-   - the server checks it with the same resolver;
-   - it sets an `HttpOnly`, `SameSite=Strict` cookie holding a short-lived session id;
-   - the key itself is never stored in the cookie.
-
-   A session sees only the projects its key is granted on.
+4. **No sign-in** (operator, 2026-11-17: "This is a local project on a local network").
+   The console shows every project the server hosts, to anyone who can reach the
+   server's port; hub's firewall limits that to the LAN. It only reads. The first build
+   had API-key sign-in with a cookie session; it was removed.
 5. **No secrets on screen.** This is the same rule as `vivi-monitor`: no environment
    values, no process arguments, no key material. Config pages show key names and
    non-secret values only.
@@ -524,8 +520,7 @@ key is granted there; until then they live here.
    opens nothing for writing.
 6. **Console speed on a real store.** Done when: the overview, slots and jobs pages are
    timed against a copy of faberlang's store and each answers in under 200 ms.
-7. **Console sign-in hardening.** Done when: sign-in is rate-limited through a host hook,
-   and a revoked key or grant ends its sessions within a minute.
+7. *(Dropped 2026-11-17: the console has no sign-in.)*
 8. **Hub landing writes `pool_landed`.** Done when: hub's `orch/land-unit` records each
    outcome with `vivi pool landed`, after wave 2's S6 ships.
 9. **Flow steps have no times.** `flow_steps` records no start or end, so the needs

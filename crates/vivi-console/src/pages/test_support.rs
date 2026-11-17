@@ -5,16 +5,14 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use axum::body::{Body, to_bytes};
-use axum::http::{Method, Request, StatusCode, header};
+use axum::http::{Request, StatusCode};
 use tempfile::TempDir;
 use tower::ServiceExt;
 use vivi_core::mailspace::{Mailspace, SendRequest};
 use vivi_storage::storage::Storage;
 
-use crate::host::{Principal, ProjectRef};
+use crate::host::{Catalog, ProjectRef};
 use crate::test_support::FakeHost;
-
-const KEY: &str = "vivi_test_key_123";
 
 /// A project on disk with one task, written by vivi-core as a running
 /// vivi writes it. The extra writer keeps the WAL index in place.
@@ -82,10 +80,9 @@ impl Project {
     }
 }
 
-/// The principal for a project at `root`, named `demo`.
-pub fn principal(root: &Path) -> Principal {
-    Principal {
-        name: "alice".into(),
+/// The catalog for a project at `root`, named `demo`.
+pub fn catalog(root: &Path) -> Catalog {
+    Catalog {
         projects: vec![ProjectRef {
             id: "proj-1".into(),
             name: "demo".into(),
@@ -94,30 +91,12 @@ pub fn principal(root: &Path) -> Principal {
     }
 }
 
-/// Sign in and fetch `uri` from the console serving the project at `root`.
+/// Fetch `uri` from the console serving the project at `root`.
 pub async fn get(root: &Path, uri: &str) -> (StatusCode, String) {
     let app = crate::router(Arc::new(FakeHost {
-        keys: vec![(KEY.to_string(), principal(root))],
+        catalog: catalog(root),
     }));
-    let login = Request::builder()
-        .method(Method::POST)
-        .uri("/ui/login")
-        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-        .body(Body::from(format!("key={KEY}")))
-        .unwrap();
-    let response = app.clone().oneshot(login).await.unwrap();
-    let cookie = response
-        .headers()
-        .get(header::SET_COOKIE)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.split(';').next())
-        .unwrap_or_default()
-        .to_string();
-    let request = Request::builder()
-        .uri(uri)
-        .header(header::COOKIE, cookie)
-        .body(Body::empty())
-        .unwrap();
+    let request = Request::builder().uri(uri).body(Body::empty()).unwrap();
     let response = app.oneshot(request).await.unwrap();
     let status = response.status();
     let bytes = to_bytes(response.into_body(), 8 * 1024 * 1024)

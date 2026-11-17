@@ -7,7 +7,7 @@ use axum::response::Response;
 use super::job_sections;
 use super::widgets::{landing_pill, missing_runs_notice, slot_href, time_cell};
 use super::{blocking, chrome_of, html_response, now_epoch, read_failed};
-use crate::auth::ProjectCtx;
+use crate::context::ProjectCtx;
 use crate::data::RunsState;
 use crate::data::job::{self, JobDetail, JobRun};
 use crate::format;
@@ -63,7 +63,7 @@ pub fn render(
 
 fn back_link(ctx: &ProjectCtx) -> Html {
     link_text(
-        &layout::project_path(&ctx.principal, &ctx.project, "jobs"),
+        &layout::project_path(&ctx.catalog, &ctx.project, "jobs"),
         "all jobs",
     )
 }
@@ -76,7 +76,7 @@ fn header(ctx: &ProjectCtx, now: i64, run: &JobRun) -> Html {
     ]);
     if let Some(need) = run.need.as_deref().filter(|need| !need.is_empty()) {
         let href = layout::project_path(
-            &ctx.principal,
+            &ctx.catalog,
             &ctx.project,
             &format!("jobs?need={}", url_encode(&format::short(need))),
         );

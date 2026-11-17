@@ -12,7 +12,7 @@ use serde::Deserialize;
 use super::need_flow;
 use super::widgets::{job_link, result_pills, time_cell};
 use super::{blocking, chrome_of, html_response, not_found, now_epoch, read_failed};
-use crate::auth::ProjectCtx;
+use crate::context::ProjectCtx;
 use crate::data::need_page::{self, NeedLetter, NeedPage, Reply, Tab, Thread};
 use crate::data::needs::AttemptRow;
 use crate::format;
@@ -65,7 +65,7 @@ pub async fn handler(
             let body = render(&ctx, &page, &query, now_epoch());
             html_response(StatusCode::OK, &layout::page(&chrome, &body))
         }
-        Ok(_) => not_found(&ctx.principal),
+        Ok(_) => not_found(&ctx.catalog),
         Err(message) => read_failed(&ctx, "needs", &message),
     }
 }
@@ -73,7 +73,7 @@ pub async fn handler(
 /// `/ui/p/<project>/needs/<need>` with an optional query string.
 pub(super) fn need_href(ctx: &ProjectCtx, handle: &str, query: &str) -> String {
     let base = layout::project_path(
-        &ctx.principal,
+        &ctx.catalog,
         &ctx.project,
         &format!("needs/{}", url_encode(handle)),
     );
@@ -239,7 +239,7 @@ fn timeline(ctx: &ProjectCtx, page: &NeedPage, now: i64) -> Html {
     if attempts.newest.is_empty() {
         return notice("No attempts are recorded for this need.");
     }
-    let base = layout::project_path(&ctx.principal, &ctx.project, "")
+    let base = layout::project_path(&ctx.catalog, &ctx.project, "")
         .trim_end_matches('/')
         .to_string();
     let rows = attempts

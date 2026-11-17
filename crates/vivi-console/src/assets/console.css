@@ -78,7 +78,6 @@ p.sub, .sub { color: var(--muted); margin: 0 0 1rem; font-size: .9rem; }
 }
 .top .grow { flex: 1; }
 .brand { font-weight: 600; color: var(--fg); }
-.who { color: var(--muted); }
 .refresh { color: var(--muted); font-size: .85rem; cursor: pointer; }
 button.link {
   background: none; border: 0; padding: 0; font: inherit;
@@ -111,18 +110,7 @@ button.link:hover { text-decoration: underline; }
 .menu a.active { background: var(--surface); font-weight: 600; box-shadow: inset 2px 0 0 var(--accent); }
 main { flex: 1; min-width: 0; padding: 1.25rem 1.5rem 3rem; }
 
-/* sign-in */
-.bare { display: grid; place-items: center; min-height: 100vh; padding: 1rem; }
-form.card {
-  width: min(22rem, 100%); padding: 1.5rem;
-  border: 1px solid var(--line); border-radius: 10px; background: var(--surface);
-  display: flex; flex-direction: column; gap: .6rem;
-}
-form.card input {
-  padding: .5rem .6rem; font: inherit; color: var(--fg);
-  background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
-}
-form.card button, .filters button {
+.filters button {
   padding: .45rem .9rem; font: inherit; color: #fff; background: var(--accent);
   border: 0; border-radius: 6px; cursor: pointer;
 }

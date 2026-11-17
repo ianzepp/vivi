@@ -6,7 +6,7 @@ use axum::response::Response;
 
 use super::widgets::{job_link, missing_runs_notice, result_pills, task_cell, time_cell};
 use super::{blocking, chrome_of, html_response, now_epoch, read_failed};
-use crate::auth::ProjectCtx;
+use crate::context::ProjectCtx;
 use crate::data::RunsState;
 use crate::data::runs::RunRow;
 use crate::data::slots::{self, HISTORY_ROWS};
@@ -44,7 +44,7 @@ pub fn render(
 ) -> Html {
     let mut body = heading(&format!("{pool} / {slot}"), "Slot history, newest first");
     body.push(&link_text(
-        &layout::project_path(&ctx.principal, &ctx.project, "slots"),
+        &layout::project_path(&ctx.catalog, &ctx.project, "slots"),
         "all slots",
     ));
     let RunsState::Ready(runs) = runs else {
@@ -69,7 +69,7 @@ pub fn render(
 }
 
 fn history_table(ctx: &ProjectCtx, now: i64, runs: &[RunRow]) -> Html {
-    let base = layout::project_path(&ctx.principal, &ctx.project, "")
+    let base = layout::project_path(&ctx.catalog, &ctx.project, "")
         .trim_end_matches('/')
         .to_string();
     let rows = runs

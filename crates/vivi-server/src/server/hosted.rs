@@ -334,7 +334,7 @@ fn write_meta(
 }
 
 /// Ids of every hosted project with a `project.json` under the data root.
-fn hosted_ids_on_disk(projects: &ProjectStore) -> Vec<String> {
+pub(crate) fn hosted_ids_on_disk(projects: &ProjectStore) -> Vec<String> {
     let Ok(entries) = std::fs::read_dir(projects.projects_root()) else {
         return Vec::new();
     };

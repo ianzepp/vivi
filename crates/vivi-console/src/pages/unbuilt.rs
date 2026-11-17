@@ -10,7 +10,7 @@ use axum::response::Response;
 use axum::routing::get;
 
 use super::{chrome_of, html_response};
-use crate::auth::{ConsoleState, ProjectCtx};
+use crate::context::{ConsoleState, ProjectCtx};
 use crate::html::join;
 use crate::layout::{self, heading, notice};
 

@@ -34,8 +34,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use vivi_error::VivariumError;
 
-use crate::auth::{ConsoleState, ProjectCtx};
-use crate::host::Principal;
+use crate::context::{ConsoleState, ProjectCtx};
+use crate::host::Catalog;
 use crate::html::{Html, join, text_tag};
 use crate::layout::{self, Chrome, heading, notice};
 
@@ -71,11 +71,11 @@ pub fn html_response(status: StatusCode, page: &Html) -> Response {
         .into_response()
 }
 
-/// The plain 404 for an unknown route or a project outside the principal.
+/// The plain 404 for an unknown route or a project outside the catalog.
 #[must_use]
-pub fn not_found(principal: &Principal) -> Response {
+pub fn not_found(catalog: &Catalog) -> Response {
     let chrome = Chrome {
-        principal,
+        catalog,
         project: None,
         active: "",
         title: "Not found",
@@ -88,11 +88,11 @@ pub fn not_found(principal: &Principal) -> Response {
     html_response(StatusCode::NOT_FOUND, &layout::page(&chrome, &body))
 }
 
-/// What a principal with no projects sees after signing in.
+/// What a catalog with no projects sees after signing in.
 #[must_use]
-pub fn no_projects(principal: &Principal) -> Response {
+pub fn no_projects(catalog: &Catalog) -> Response {
     let chrome = Chrome {
-        principal,
+        catalog,
         project: None,
         active: "",
         title: "No projects",
@@ -133,7 +133,7 @@ pub fn chrome_of<'a>(
     refresh: bool,
 ) -> Chrome<'a> {
     Chrome {
-        principal: &ctx.principal,
+        catalog: &ctx.catalog,
         project: Some(&ctx.project),
         active,
         title,

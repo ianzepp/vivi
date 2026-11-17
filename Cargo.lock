@@ -2604,7 +2604,6 @@ version = "24.0.0"
 dependencies = [
  "axum",
  "chrono",
- "getrandom 0.4.1",
  "mail-parser",
  "rusqlite",
  "serde",

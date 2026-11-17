@@ -6,7 +6,7 @@ use crate::data::mail::tests::seed_mail;
 #[tokio::test]
 async fn the_mail_list_shows_threads_and_filter_chips() {
     let (store, _storage) = seed_mail();
-    let browser = Browser::open(store.principal()).await;
+    let browser = Browser::open(store.catalog()).await;
     let (status, page) = browser.get("/ui/p/demo/mail").await;
     assert_eq!(status, StatusCode::OK);
     for expected in [
@@ -26,7 +26,7 @@ async fn the_mail_list_shows_threads_and_filter_chips() {
 #[tokio::test]
 async fn the_list_filters_from_the_query_string() {
     let (store, _storage) = seed_mail();
-    let browser = Browser::open(store.principal()).await;
+    let browser = Browser::open(store.catalog()).await;
     let (_, needs) = browser.get("/ui/p/demo/mail?kind=need").await;
     assert!(
         needs.contains("Root") && !needs.contains(">Other<"),
@@ -39,7 +39,7 @@ async fn the_list_filters_from_the_query_string() {
 #[tokio::test]
 async fn a_thread_shows_every_letter_in_order_with_escaped_bodies() {
     let (store, _storage) = seed_mail();
-    let browser = Browser::open(store.principal()).await;
+    let browser = Browser::open(store.catalog()).await;
     let (status, page) = browser.get("/ui/p/demo/mail/aaaa1111").await;
     assert_eq!(status, StatusCode::OK);
     let root = page.find("Please fix").expect("root body");
@@ -57,7 +57,7 @@ async fn a_thread_shows_every_letter_in_order_with_escaped_bodies() {
 #[tokio::test]
 async fn an_unknown_handle_is_a_404_and_odd_text_stays_text() {
     let (store, _storage) = seed_mail();
-    let browser = Browser::open(store.principal()).await;
+    let browser = Browser::open(store.catalog()).await;
     let (status, page) = browser.get("/ui/p/demo/mail/zzzz9999").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert!(page.contains("No letter matches"));
@@ -69,15 +69,14 @@ async fn an_unknown_handle_is_a_404_and_odd_text_stays_text() {
 #[tokio::test]
 async fn a_project_with_no_store_says_so() {
     let (dir, root) = crate::test_support::project_without_store();
-    let principal = crate::host::Principal {
-        name: "alice".into(),
+    let catalog = crate::host::Catalog {
         projects: vec![crate::host::ProjectRef {
             id: "proj-1".into(),
             name: "demo".into(),
             mailspace_root: root,
         }],
     };
-    let browser = Browser::open(principal).await;
+    let browser = Browser::open(catalog).await;
     let (status, page) = browser.get("/ui/p/demo/mail").await;
     assert_eq!(status, StatusCode::OK);
     assert!(page.contains("no mailspace store yet"));

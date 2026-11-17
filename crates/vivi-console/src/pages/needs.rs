@@ -11,7 +11,7 @@ use serde::Deserialize;
 
 use super::widgets::{option, result_pills, select, time_cell};
 use super::{blocking, chrome_of, html_response, now_epoch, read_failed};
-use crate::auth::ProjectCtx;
+use crate::context::ProjectCtx;
 use crate::data::need_flow::PumpState;
 use crate::data::needs::{self, LIST_LIMIT, NeedRow, NeedsData, StateFilter};
 use crate::format;
@@ -155,7 +155,7 @@ fn filters(ctx: &ProjectCtx, data: &NeedsData, query: &NeedsQuery) -> Html {
         .collect();
     steps.sort();
     steps.dedup();
-    let action = layout::project_path(&ctx.principal, &ctx.project, "needs");
+    let action = layout::project_path(&ctx.catalog, &ctx.project, "needs");
     let states: Vec<String> = ["open", "done", "any"].map(String::from).to_vec();
     let state = join(
         states
@@ -205,7 +205,7 @@ fn list_href(ctx: &ProjectCtx, query: &NeedsQuery, step: &str) -> String {
     if !query.stuck_text().is_empty() {
         parts.push(format!("stuck={}", url_encode(query.stuck_text())));
     }
-    let base = layout::project_path(&ctx.principal, &ctx.project, "needs");
+    let base = layout::project_path(&ctx.catalog, &ctx.project, "needs");
     if parts.is_empty() {
         base
     } else {
@@ -239,7 +239,7 @@ fn step_counts(ctx: &ProjectCtx, rows: &[&NeedRow], query: &NeedsQuery) -> Html 
 }
 
 fn need_table(ctx: &ProjectCtx, now: i64, rows: &[&NeedRow]) -> Html {
-    let base = layout::project_path(&ctx.principal, &ctx.project, "needs");
+    let base = layout::project_path(&ctx.catalog, &ctx.project, "needs");
     let rows = rows.iter().map(|row| need_row(&base, now, row)).collect();
     table(
         "table needs",
