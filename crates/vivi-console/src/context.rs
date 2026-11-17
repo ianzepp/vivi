@@ -84,3 +84,15 @@ pub async fn home(shown: Shown) -> Response {
         None => crate::pages::no_projects(&shown.catalog),
     }
 }
+
+/// `GET /ui/login`: there is no sign-in any more; an old bookmark or open tab
+/// lands on the dashboard.
+pub async fn old_login() -> Response {
+    (StatusCode::SEE_OTHER, [(LOCATION, "/ui/")]).into_response()
+}
+
+/// Any other address under `/ui`: an HTML not-found page. An empty 404 with
+/// no content type makes some browsers download it as a file.
+pub async fn unknown(shown: Shown) -> Response {
+    not_found(&shown.catalog)
+}

@@ -79,5 +79,5 @@ async fn the_server_router_serves_the_console_under_ui_without_sign_in() {
         .body(Body::empty())
         .unwrap();
     let response = app.oneshot(request).await.unwrap();
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
 }

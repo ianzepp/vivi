@@ -114,10 +114,14 @@ async fn pages_open_without_sign_in() {
         assert!(reply.headers.get(header::SET_COOKIE).is_none(), "{uri}");
     }
     let login = send(&app, Method::GET, "/ui/login", None).await;
+    assert_eq!(login.status, StatusCode::SEE_OTHER, "an old sign-in link");
+    assert_eq!(login.header(header::LOCATION), "/ui/");
+    let nowhere = send(&app, Method::GET, "/ui/no/such/page", None).await;
+    assert_eq!(nowhere.status, StatusCode::NOT_FOUND);
     assert_eq!(
-        login.status,
-        StatusCode::NOT_FOUND,
-        "there is no sign-in page"
+        nowhere.header(header::CONTENT_TYPE),
+        "text/html; charset=utf-8",
+        "a typeless empty 404 is downloaded as a file by some browsers"
     );
 }
 

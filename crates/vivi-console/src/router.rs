@@ -26,6 +26,8 @@ pub fn router(host: Arc<dyn ConsoleHost>) -> Router {
     Router::new()
         .route("/ui", get(context::home))
         .route("/ui/", get(context::home))
+        .route("/ui/login", get(context::old_login))
+        .route("/ui/{*rest}", get(context::unknown))
         .route("/ui/static/console.css", get(css))
         .route("/ui/static/console.js", get(js))
         .merge(pages::routes())

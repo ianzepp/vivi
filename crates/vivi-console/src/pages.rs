@@ -100,7 +100,7 @@ pub fn no_projects(catalog: &Catalog) -> Response {
     };
     let body = join([
         heading("No projects", ""),
-        notice("This key is not granted on any hosted project, so there is nothing to show."),
+        notice("This server hosts no projects yet, so there is nothing to show."),
     ]);
     html_response(StatusCode::OK, &layout::page(&chrome, &body))
 }
