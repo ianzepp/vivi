@@ -32,7 +32,12 @@ On hub as an ordinary user, the same server config was run with in-memory SQLite
 - the UI answered 200 on loopback and on the LAN address;
 - only the frontend (7233, 6933, 7243) bound beyond loopback.
 
-The Postgres path (`setup.sh` steps 1–5) has not run yet, because it needs root.
+**Installed 2026-11-18 11:34 EST** (operator ran `setup.sh`). Checked from the laptop:
+- `cluster health` answers `SERVING` at `192.168.1.237:7233`;
+- the `default` namespace has 720 h retention;
+- the UI answers 200;
+- Postgres listens on loopback only;
+- no errors in the server journal.
 
 ## Upgrade
 
