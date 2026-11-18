@@ -1,0 +1,11 @@
+# Temporal UI server config, installed as /etc/temporal/ui/config/{base,production}.yaml.
+temporalGrpcAddress: 127.0.0.1:7233
+port: 8233
+publicPath:
+enableUi: true
+defaultNamespace: default
+showTemporalSystemNamespace: false
+disableNewsFetch: true
+notifyOnNewVersion: false
+auth:
+  enabled: false

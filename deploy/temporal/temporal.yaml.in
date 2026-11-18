@@ -1,0 +1,98 @@
+# Temporal server config for hub: one process, Postgres on 127.0.0.1.
+# setup.sh renders @@DB_PASSWORD@@ and installs this as /etc/temporal/temporal.yaml
+# (mode 0640, root:temporal). Based on config/development-postgres12.yaml from
+# the v1.32.2 release, with archival off, pprof off, metrics on loopback, and
+# only the frontend reachable from the LAN (ufw admits 7233 from 192.168.1.0/24).
+log:
+  stdout: true
+  level: info
+
+persistence:
+  defaultStore: postgres-default
+  visibilityStore: postgres-visibility
+  # Fixed for the life of the cluster; 8 is ample for one hub.
+  numHistoryShards: 8
+  datastores:
+    postgres-default:
+      sql:
+        pluginName: "postgres12"
+        databaseName: "temporal"
+        connectAddr: "127.0.0.1:5432"
+        connectProtocol: "tcp"
+        user: "temporal"
+        password: "@@DB_PASSWORD@@"
+        maxConns: 20
+        maxIdleConns: 20
+        maxConnLifetime: "1h"
+    postgres-visibility:
+      sql:
+        pluginName: "postgres12"
+        databaseName: "temporal_visibility"
+        connectAddr: "127.0.0.1:5432"
+        connectProtocol: "tcp"
+        user: "temporal"
+        password: "@@DB_PASSWORD@@"
+        maxConns: 4
+        maxIdleConns: 4
+        maxConnLifetime: "1h"
+
+global:
+  membership:
+    maxJoinDuration: 30s
+    broadcastAddress: "127.0.0.1"
+  metrics:
+    prometheus:
+      framework: "tally"
+      timerType: "histogram"
+      listenAddress: "127.0.0.1:8000"
+
+services:
+  frontend:
+    rpc:
+      grpcPort: 7233
+      membershipPort: 6933
+      bindOnIP: "0.0.0.0"
+      httpPort: 7243
+  matching:
+    rpc:
+      grpcPort: 7235
+      membershipPort: 6935
+      bindOnLocalHost: true
+  history:
+    rpc:
+      grpcPort: 7234
+      membershipPort: 6934
+      bindOnLocalHost: true
+  worker:
+    rpc:
+      grpcPort: 7239
+      membershipPort: 6939
+      bindOnLocalHost: true
+
+clusterMetadata:
+  enableGlobalNamespace: false
+  failoverVersionIncrement: 10
+  masterClusterName: "active"
+  currentClusterName: "active"
+  clusterInformation:
+    active:
+      enabled: true
+      initialFailoverVersion: 1
+      rpcName: "frontend"
+      rpcAddress: "127.0.0.1:7233"
+
+dcRedirectionPolicy:
+  policy: "noop"
+
+archival:
+  history:
+    state: "disabled"
+  visibility:
+    state: "disabled"
+
+namespaceDefaults:
+  archival:
+    history:
+      state: "disabled"
+    visibility:
+      state: "disabled"

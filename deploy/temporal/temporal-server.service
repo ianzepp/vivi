@@ -1,0 +1,23 @@
+[Unit]
+Description=Temporal server (single process; Postgres on 127.0.0.1)
+Requires=postgresql.service
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+User=temporal
+Group=temporal
+WorkingDirectory=/var/lib/temporal
+# The LAN is the access boundary (ufw admits 7233 from 192.168.1.0/24 only);
+# there is no authorizer, so the server must be told that is intended.
+ExecStart=/usr/local/bin/temporal-server --config-file /etc/temporal/temporal.yaml --allow-no-auth start
+Restart=always
+RestartSec=5
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/lib/temporal
+
+[Install]
+WantedBy=multi-user.target
