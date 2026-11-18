@@ -145,12 +145,14 @@ pub async fn review(
     let repo = expand(&agent.repo);
     let (_, main) = sync_repo(&repo, target, &input.branch).await?;
     let base = git_ok(&repo, &["merge-base", &main, &input.head]).await?;
+    let range = format!("{base}..{}", input.head);
+    let diff = git_ok(&repo, &["diff", "--stat", "--patch", &range]).await?;
     let job = Job {
         subject: format!(
             "review {} {} round {}",
             input.need, input.slice, input.round
         ),
-        brief: review_brief(input, &base),
+        brief: review_brief(input, &base, &diff),
         flags: vec![
             "--read-only".into(),
             "--from".into(),
@@ -174,16 +176,42 @@ pub async fn review(
     })
 }
 
-pub fn review_brief(input: &StepInput, base: &str) -> String {
+/// Most of a diff a review brief carries; the rest is cut with a note.
+const REVIEW_DIFF_MAX: usize = 60_000;
+
+/// The review brief carries the diff itself, so a reviewer with no shell
+/// (the read-only review hosts) can judge it from the brief and the files.
+pub fn review_brief(input: &StepInput, base: &str, diff: &str) -> String {
     format!(
-        "Review the change for slice `{}` of need `{}`: `git diff {base}..{}`.\n\n\
+        "Review the change for slice `{}` of need `{}`: `git diff {base}..{}`, below.\n\n\
          What the slice was asked to do:\n\n{}\n\n\
          The machine check already passed. Judge only whether the change does what was \
-         asked, correctly and without unrelated edits. Do not change any file.\n\n\
+         asked, correctly and without unrelated edits. The worktree is at the change's \
+         head; read files there for context. Do not change any file, and do not build \
+         or run tests.\n\n\
+         ```diff\n{}\n```\n\n\
          End your reply with exactly one line:\n\
          `VERDICT: APPROVE` or `VERDICT: CHANGES: <what to change, one line>`\n",
-        input.slice, input.need, input.head, input.brief
+        input.slice,
+        input.need,
+        input.head,
+        input.brief,
+        head(diff, REVIEW_DIFF_MAX)
     )
+}
+
+/// The first `max` bytes of `text`, with a note when it was cut.
+fn head(text: &str, max: usize) -> String {
+    let text = text.trim();
+    if text.len() <= max {
+        return text.to_string();
+    }
+    let mut end = max;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    let cut = text.len() - end;
+    format!("{}\n… ({cut} more bytes cut; read the files)", &text[..end])
 }
 
 /// The last `VERDICT:` line of a review reply.

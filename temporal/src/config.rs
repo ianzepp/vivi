@@ -52,7 +52,15 @@ pub struct RoutingConfig {
     pub review: String,
     #[serde(default = "q_gate")]
     pub gate: String,
+    #[serde(default = "q_agent")]
+    pub plan: String,
     pub agent_hosts: Vec<String>,
+    /// Review on its own hosts (an LLM-only box). Unset: the agent hosts.
+    #[serde(default)]
+    pub review_hosts: Vec<String>,
+    /// Plan on its own hosts. Unset: plan runs on the control queue.
+    #[serde(default)]
+    pub plan_hosts: Vec<String>,
     pub gate_hosts: Vec<String>,
     #[serde(default = "default_affinity")]
     pub affinity_wait_s: u64,
@@ -245,6 +253,8 @@ impl Config {
             .routing
             .agent_hosts
             .iter()
+            .chain(&self.routing.review_hosts)
+            .chain(&self.routing.plan_hosts)
             .chain(&self.routing.gate_hosts);
         for host in hosts {
             if !self.hosts.contains_key(host) {
@@ -303,7 +313,10 @@ impl Config {
             check: r.check.clone(),
             review: r.review.clone(),
             gate: r.gate.clone(),
+            plan: r.plan.clone(),
             agent_hosts: r.agent_hosts.clone(),
+            review_hosts: r.review_hosts.clone(),
+            plan_hosts: r.plan_hosts.clone(),
             gate_hosts: r.gate_hosts.clone(),
             affinity_wait_ms: r.affinity_wait_s.saturating_mul(1_000),
             fallback_wait_ms: r.fallback_wait_s.saturating_mul(1_000),

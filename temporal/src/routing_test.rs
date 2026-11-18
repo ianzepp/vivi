@@ -59,6 +59,62 @@ fn placements_use_affinity_then_fallback_waits() {
 }
 
 #[test]
+fn a_lone_host_gets_the_fallback_wait() {
+    let mut routing = Routing::single("q");
+    routing.affinity_wait_ms = 1_000;
+    routing.fallback_wait_ms = 9_000;
+    let got = placements(&routing, "agent-{host}", &hosts(&["mini-m1"]), None, "k");
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].queue, "agent-mini-m1");
+    assert_eq!(got[0].wait, Duration::from_millis(9_000));
+}
+
+#[test]
+fn review_hosts_default_to_agent_hosts() {
+    let mut routing = Routing::single("q");
+    routing.agent_hosts = hosts(&["studio", "studio-02"]);
+    assert_eq!(routing.review_hosts(), &hosts(&["studio", "studio-02"])[..]);
+    routing.review_hosts = hosts(&["mini-m1"]);
+    assert_eq!(routing.review_hosts(), &hosts(&["mini-m1"])[..]);
+}
+
+#[test]
+fn review_on_its_own_hosts_ignores_the_implement_host() {
+    let mut routing = Routing::single("q");
+    routing.affinity_wait_ms = 1_000;
+    routing.fallback_wait_ms = 9_000;
+    routing.agent_hosts = hosts(&["studio", "studio-02"]);
+    routing.review_hosts = hosts(&["mini-m1", "mini-m2"]);
+    // The slice implemented on studio-02; review never goes there, and
+    // each slice keeps one stable order over the review hosts.
+    for key in ["slice-n1-s1", "slice-n1-s2", "slice-n2-s1"] {
+        let got = placements(
+            &routing,
+            "agent-{host}",
+            routing.review_hosts(),
+            Some("studio-02"),
+            key,
+        );
+        let queues: Vec<&str> = got.iter().map(|p| p.queue.as_str()).collect();
+        assert_eq!(queues.len(), 2);
+        assert!(queues.contains(&"agent-mini-m1") && queues.contains(&"agent-mini-m2"));
+        assert_eq!(got[0].wait, Duration::from_millis(1_000));
+        assert_eq!(got[1].wait, Duration::from_millis(9_000));
+        let again = placements(&routing, "agent-{host}", routing.review_hosts(), None, key);
+        assert_eq!(got, again);
+    }
+    // A review host that last held the slice goes first.
+    let got = placements(
+        &routing,
+        "agent-{host}",
+        routing.review_hosts(),
+        Some("mini-m2"),
+        "slice-n1-s1",
+    );
+    assert_eq!(got[0].host, "mini-m2");
+}
+
+#[test]
 fn no_hosts_no_placements() {
     let routing = Routing::single("q");
     assert!(placements(&routing, "agent-{host}", &[], None, "k").is_empty());

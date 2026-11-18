@@ -48,13 +48,14 @@ Lander (`lander-<target>`) unless it already runs. `need` starts
 
 ### Queue map
 
-| Queue | Runs | Host (e2e) | Intended host |
+| Queue | Runs | Host (e2e) | Host (`deploy/cluster.toml`) |
 |---|---|---|---|
-| `control` | the workflows, `plan`, `record` | pepper | mini-m1 |
+| `control` | the workflows, `plan`, `record` | pepper | hub |
 | `lane` | `compose`, `publish` (the lane's bare git cache) | pepper | hub |
-| `agent-<host>` | `implement`, `review` (the host's pool and warm repo) | studio | studios |
-| `check-<host>` | `check` (the host's check tree) | studio | studios |
-| `gate-<host>` | `gate` (the host's warm gate tree) | studio | gate hosts without a full set of agent slots |
+| `agent-<host>` | `implement` (the host's pool and warm repo) | studio | studio, studio-02 |
+| `agent-<host>` for `review_hosts` | `review` (and `plan`, once `plan_hosts` is set) | studio | mini-m1 |
+| `check-<host>` | `check` (the host's check tree) | studio | studio, studio-02 |
+| `gate-<host>` | `gate` (the host's warm gate tree) | studio | studio, studio-02 |
 
 Queue names are templates in `[routing]` (`agent-{host}`); a template
 without `{host}` names one shared queue, which is how the tests run every
@@ -62,9 +63,16 @@ step on one queue. Steps with affinity get an ordered list of placements
 (`src/routing.rs`): the host that holds the slice's work first (from the
 `Checkpoint`), then the other hosts in a per-slice stable order. The first
 placement has a short schedule-to-start (`affinity_wait_s`), the rest a
-longer one (`fallback_wait_s`). A host that does not take the task in time,
-or that spends every infra attempt, hands the step to the next host
-(`steps::run_placed`). Implement then resumes from the lane's branch head.
+longer one (`fallback_wait_s`); a lone host gets the longer one, since a
+short wait there would only park the step while that host is busy. A host
+that does not take the task in time, or that spends every infra attempt,
+hands the step to the next host (`steps::run_placed`). Implement then
+resumes from the lane's branch head.
+
+`review_hosts` puts review on its own hosts (an LLM-only box); unset, review
+runs on `agent_hosts`. The implement host is preferred only when it is one
+of them. `plan_hosts` does the same for `plan` with the `plan` template;
+unset, plan runs on the control queue.
 
 ### Activities
 
@@ -73,7 +81,7 @@ or that spends every infra attempt, hands the step to the next host
 | `plan` | nothing yet: returns the need's given slices, or one slice for the whole brief | none |
 | `implement` | `git ls-remote` (the branch head on the lane is the resume point), `git fetch`, `vivi task send`, `vivi pool dispatch --branch --from --model --budget`, `vivi pool wait` (heartbeating), `vivi task show --latest` (collected record and receipt), then `git push --force-with-lease=<branch>:<expected>` | 429/quota/rate-limit/5xx text in the receipt → provider (with Retry-After when named); a refused reply or no change at all → format; a fenced push, ssh/slot/pool/git failure, or an agent failure with no signature → infra |
 | `check` | `git fetch`, `checkout --detach <head>`, `merge --no-ff <main>` in the check tree, then `sh -c <check_command>` with `VIVI_BASE`/`VIVI_HEAD` | a conflict with main or a non-zero exit → red (a value); killed at the limit, exit 126/127, or transport text → infra |
-| `review` | the same pool path, `--read-only --from <head>`; the receipt must end in `VERDICT: APPROVE` or `VERDICT: CHANGES: …` | as implement; no verdict line → format |
+| `review` | `git diff --stat --patch <base>..<head>` into the brief (the review hosts' harness has no shell), then the same pool path, `--read-only --from <head>`; the receipt must end in `VERDICT: APPROVE` or `VERDICT: CHANGES: …` | as implement; no verdict line → format |
 | `compose` | refreshes the bare cache from the target's remote, then `compose --no-fetch --no-push --base <main>` with `LANDER_CACHE`; pushes the candidate to `refs/vivi/candidates/<id>` | exit 2 or bad JSON → infra; per unit: conflict or missing → ejected, already-merged or no-op → merged |
 | `gate` | `gate --sha <candidate> --base <main> --tree <tree> --timeout` | `pass` → pass or fail (bisected); exit 3, exit 4, `baseline_*` (main itself broken) → infra, never a red that ejects good units |
 | `publish` | `merge-base --is-ancestor`, then `git push --force-with-lease=<main>:<base> <candidate>:<main>` (a fast-forward) | a refused lease → `Stale` (re-composed, at most 3 times); other git failures → infra |
@@ -133,11 +141,11 @@ implement. Unit tests sit beside their modules (`*_test.rs`):
 | File | Covers |
 |---|---|
 | `classify_test.rs` | 429, quota, rate-limit and 5xx text → provider, with Retry-After in s, ms and min, capped; `429` inside a sha is not provider; refused replies → format; check exit codes (red vs infra) |
-| `routing_test.rs` | queue templates; preferred host first; every host once; stable per-slice order that spreads slices; affinity then fallback waits |
+| `routing_test.rs` | queue templates; preferred host first; every host once; stable per-slice order that spreads slices; affinity then fallback waits; a lone host waits the fallback; review hosts default to the agent hosts and ignore the implement host |
 | `admission_test.rs` | backpressure threshold and off switch; path overlap by components; the mutex holds and frees; a granted slice re-asking is granted; duplicate requests queue once |
-| `config_test.rs` | `deploy/sandbox.toml` parses; seconds convert; unknown hosts, 0 slots, a missing control queue, unknown keys and an incomplete MCP record are refused |
+| `config_test.rs` | `deploy/sandbox.toml` and `deploy/cluster.toml` parse (the mini serves review only); review and plan hosts default to unset; seconds convert; unknown hosts, 0 slots, a missing control queue, unknown keys and an incomplete MCP record are refused |
 | `real/pool_test.rs` | the `pool_collected` record and receipt from real `vivi task show` output; a throttled agent fails as provider |
-| `real/agent_test.rs` | review verdict parsing; the implement brief carries feedback and the proof command |
+| `real/agent_test.rs` | review verdict parsing; the implement brief carries feedback and the proof command; the review brief carries the diff, cut when huge |
 | `real/land_test.rs` | compose JSON → candidate, ejections, already-merged; gate JSON → pass, red, and broken base as an error |
 | `real/git_test.rs` | `ls-remote` parsing; the push fence end to end against a bare repository |
 | `record_test.rs` | the MCP calls for status, park and close |
@@ -152,6 +160,41 @@ implement. Unit tests sit beside their modules (`*_test.rs`):
 | `lander_bisection_ejects_exactly_bad_units` | A Lander bisection ejects exactly the bad units | Six slices land together and two are `bad`. At least one batch is bisected. The only units ejected are the two bad ones, and `main` holds exactly the four good ones, each once. The bad slices loop with the gate's text, run out of rounds, and park the need with `WorkExhausted`. |
 | `hot_file_mutex_serializes_overlapping_slices` | Hot-file mutex | Two slices under the hot path `crates/hot`: the second starts implementing only after the first has merged. A third slice elsewhere starts at once. |
 | `exhausted_attempts_park_with_cause` | Out of attempts → park, never restart | Two red checks park `n1` with `WorkExhausted { rounds: 2, .. }`. Three lost hosts park `n2` with `InfraExhausted { step: "implement" }`. The record's last call for each is a `Park`. The plan ran once per need. |
+
+## Cluster deployment (`deploy/cluster.toml`)
+
+Every host has `~/vivi-temporal/{bin,config,logs}`: `bin/vivi-temporal`,
+`config/cluster.toml`, `logs/worker.log`. The lane host also has
+`bin/compose` (`lab/lander/compose`) and `cache/`; the gate hosts
+`bin/gate` (`lab/lander/gate`). Each agent or review host has the target's
+local mailspace (`space/<target>`) with a pool `agent` worktreeing
+`trees/<target>/repo`; build hosts also have `trees/<target>/{check,land}`.
+The mini's pool harness is `pi … --no-mcp --tools read,grep,find,ls`: no
+shell, so it cannot build, test or edit. `radix` is configured but not
+provisioned on any host.
+
+Hub uses `protoc`-free builds (`temporalio-common/vendored-protox`) with
+`~/.rustup/toolchains/1.93-x86_64-unknown-linux-gnu/bin/cargo`.
+
+| Host | Service | Start / stop / log |
+|---|---|---|
+| hub | `~/.config/systemd/user/vivi-temporal-worker.service` (lingering on) | `systemctl --user start\|stop\|status vivi-temporal-worker`; `~/vivi-temporal/logs/worker.log` |
+| studio, studio-02, mini-m1 | LaunchDaemon `vivi.temporal.worker`, run as the user (plist in `~/vivi-temporal/launchd/`) | `sudo launchctl bootstrap\|bootout system …`; `~/vivi-temporal/logs/worker.log` |
+
+**Why a LaunchDaemon on the Macs.** A per-user LaunchAgent cannot reach the
+LAN: macOS Local Network privacy denies the unbundled `vivi-temporal`
+binary (`nehelper`: "Could not find bundle ID or display name"), so the
+connect to `192.168.1.237:7233` fails with `EHOSTUNREACH`, and the ad-hoc
+signing identity changes with every build. Processes started over ssh are
+exempt, which is why foreground workers work. The studios also have no GUI
+session for a prompt. System-domain daemons are expected to be exempt;
+this is not yet proven here. Installing the daemon needs sudo:
+
+```sh
+sudo cp ~/vivi-temporal/launchd/vivi.temporal.worker.plist /Library/LaunchDaemons/
+sudo chown root:wheel /Library/LaunchDaemons/vivi.temporal.worker.plist
+sudo launchctl bootstrap system /Library/LaunchDaemons/vivi.temporal.worker.plist
+```
 
 ## Measured times
 

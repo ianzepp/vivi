@@ -40,8 +40,16 @@ pub struct Routing {
     pub check: String,
     pub review: String,
     pub gate: String,
-    /// Hosts that serve the agent, check and review templates.
+    /// Template for `plan` when `plan_hosts` is set.
+    pub plan: String,
+    /// Hosts that serve the agent and check templates, and review and plan
+    /// unless those have their own hosts.
     pub agent_hosts: Vec<String>,
+    /// Hosts that serve the review template. Empty: the agent hosts.
+    pub review_hosts: Vec<String>,
+    /// Hosts that serve the plan template. Empty: plan runs on the control
+    /// queue.
+    pub plan_hosts: Vec<String>,
     /// Hosts that serve the gate template.
     pub gate_hosts: Vec<String>,
     /// Schedule-to-start on the preferred host (the warm tree). When it
@@ -61,10 +69,22 @@ impl Routing {
             check: queue.to_string(),
             review: queue.to_string(),
             gate: queue.to_string(),
+            plan: queue.to_string(),
             agent_hosts: vec!["local".to_string()],
+            review_hosts: Vec::new(),
+            plan_hosts: Vec::new(),
             gate_hosts: vec!["local".to_string()],
             affinity_wait_ms: 60_000,
             fallback_wait_ms: 600_000,
+        }
+    }
+
+    /// The hosts review runs on: its own set, or the agent hosts.
+    pub fn review_hosts(&self) -> &[String] {
+        if self.review_hosts.is_empty() {
+            &self.agent_hosts
+        } else {
+            &self.review_hosts
         }
     }
 }

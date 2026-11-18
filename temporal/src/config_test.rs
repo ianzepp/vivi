@@ -1,6 +1,7 @@
 use super::*;
 
 const SANDBOX: &str = include_str!("../deploy/sandbox.toml");
+const CLUSTER: &str = include_str!("../deploy/cluster.toml");
 
 #[test]
 fn sandbox_config_parses() {
@@ -36,6 +37,53 @@ fn routing_and_lander_input_convert_seconds() {
     assert_eq!(l.gate_cap_ms, 1_200_000);
     assert!(c.lander_input("radix").is_err());
     assert_eq!(lander_id("pump-sandbox"), "lander-pump-sandbox");
+}
+
+#[test]
+fn sandbox_leaves_review_and_plan_on_their_defaults() {
+    let r = Config::parse(SANDBOX).unwrap().routing();
+    assert!(r.review_hosts.is_empty());
+    assert!(r.plan_hosts.is_empty());
+    assert_eq!(r.review_hosts(), &["studio".to_string()][..]);
+}
+
+#[test]
+fn cluster_config_places_each_step() {
+    let c = Config::parse(CLUSTER).unwrap();
+    let q = |host: &str| -> Vec<String> {
+        c.queues_for(host)
+            .unwrap()
+            .into_iter()
+            .map(|(q, _)| q)
+            .collect()
+    };
+    assert_eq!(q("hub"), ["control", "lane"]);
+    assert_eq!(q("studio"), ["agent-studio", "check-studio", "gate-studio"]);
+    assert_eq!(
+        q("studio-02"),
+        ["agent-studio-02", "check-studio-02", "gate-studio-02"]
+    );
+    // The mini serves review only: no check or gate queue, and it is not
+    // an agent host, so implement never lands there.
+    assert_eq!(q("mini-m1"), ["agent-mini-m1"]);
+    let r = c.routing();
+    assert!(!r.agent_hosts.contains(&"mini-m1".to_string()));
+    assert!(!r.gate_hosts.contains(&"mini-m1".to_string()));
+    assert_eq!(r.review_hosts(), &["mini-m1".to_string()][..]);
+    assert_eq!(c.server.address, "http://192.168.1.237:7233");
+    assert_eq!(c.record.kind, RecordKind::Log);
+    assert_eq!(c.target("radix").unwrap().main, "vivi/main");
+    assert_eq!(c.target("pump-sandbox").unwrap().main, "temporal/main");
+}
+
+#[test]
+fn review_host_without_hosts_entry_is_refused() {
+    let text = SANDBOX.replace(
+        "gate_hosts = [\"studio\"]",
+        "gate_hosts = [\"studio\"]\nreview_hosts = [\"mini-m1\"]",
+    );
+    let err = Config::parse(&text).unwrap_err().to_string();
+    assert!(err.contains("mini-m1"), "{err}");
 }
 
 fn with(replace: &str, by: &str) -> String {

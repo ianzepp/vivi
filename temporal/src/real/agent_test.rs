@@ -45,3 +45,38 @@ fn implement_brief_carries_feedback_and_rules() {
     assert!(brief.contains("cargo test --quiet"));
     assert!(brief.contains("abc123"));
 }
+
+fn step() -> StepInput {
+    StepInput {
+        need: "t1".into(),
+        slice: "s1".into(),
+        round: 1,
+        head: "head123".into(),
+        target: "pump-sandbox".into(),
+        branch: "temporal/t1/s1".into(),
+        brief: "Add a `sub` function.".into(),
+    }
+}
+
+#[test]
+fn review_brief_carries_the_diff() {
+    let diff = "+pub fn sub(a: i32, b: i32) -> i32 { a - b }";
+    let brief = review_brief(&step(), "base456", diff);
+    assert!(brief.contains("git diff base456..head123"));
+    assert!(brief.contains(diff));
+    assert!(brief.contains("Add a `sub` function."));
+    assert!(brief.contains("do not build"));
+    assert!(
+        brief
+            .trim_end()
+            .ends_with("`VERDICT: APPROVE` or `VERDICT: CHANGES: <what to change, one line>`")
+    );
+}
+
+#[test]
+fn review_brief_cuts_a_huge_diff() {
+    let diff = "é".repeat(REVIEW_DIFF_MAX);
+    let brief = review_brief(&step(), "b", &diff);
+    assert!(brief.len() < REVIEW_DIFF_MAX + 2_000);
+    assert!(brief.contains("more bytes cut"));
+}

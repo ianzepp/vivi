@@ -20,7 +20,9 @@ path = "src/main.rs"
 futures = "0.3"
 serde = { version = "1", features = ["derive"] }
 temporalio-client = "1.2.0"
-temporalio-common = "1.2.0"
+# vendored-protox: compile the protos in Rust, so a host without protoc (hub)
+# can build the worker.
+temporalio-common = { version = "1.2.0", features = ["vendored-protox"] }
 temporalio-macros = "1.2.0"
 temporalio-sdk = "1.2.0"
 temporalio-workflow = "1.2.0"

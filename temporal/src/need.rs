@@ -15,12 +15,13 @@ use temporalio_sdk::{
 };
 
 use crate::defs::Act;
+use crate::routing::placements;
 use crate::slice::SliceWorkflow;
-use crate::slice_workflow_id;
-use crate::steps::{run_step, step_options};
+use crate::steps::{run_placed, run_step, step_options};
 use crate::types::{
     NeedInput, NeedOutcome, ParkCause, PlanInput, RecordCall, SliceInput, SliceOutcome, SliceSpec,
 };
+use crate::{need_workflow_id, slice_workflow_id};
 
 #[workflow]
 #[derive(Default)]
@@ -49,8 +50,7 @@ impl NeedWorkflow {
             brief: input.brief.clone(),
             slices: input.slices.clone(),
         };
-        let opts = step_options(&input.tuning);
-        let slices = match run_step(ctx, "plan", || Act::plan, plan, opts, &input.tuning).await {
+        let slices = match run_plan(ctx, &input, plan).await {
             Ok(slices) => slices,
             Err(cause) => return park(ctx, &input, "plan".into(), cause).await,
         };
@@ -80,6 +80,24 @@ impl NeedWorkflow {
         record(ctx, &input, RecordCall::Close { need, summary }).await?;
         Ok(NeedOutcome::Closed { landed })
     }
+}
+
+/// Plan on the control queue, or on `plan_hosts` when they are set.
+async fn run_plan(
+    ctx: &WorkflowContext<NeedWorkflow>,
+    input: &NeedInput,
+    plan: PlanInput,
+) -> Result<Vec<SliceSpec>, ParkCause> {
+    let tuning = &input.tuning;
+    let routing = &input.routing;
+    let opts = step_options(tuning);
+    if routing.plan_hosts.is_empty() {
+        return run_step(ctx, "plan", || Act::plan, plan, opts, tuning).await;
+    }
+    let key = need_workflow_id(&input.handle);
+    let places = placements(routing, &routing.plan, &routing.plan_hosts, None, &key);
+    let placed = run_placed(ctx, "plan", || Act::plan, plan, opts, tuning, &places).await;
+    placed.map(|(slices, _)| slices)
 }
 
 async fn run_slice(

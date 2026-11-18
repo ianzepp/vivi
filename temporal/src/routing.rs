@@ -43,7 +43,9 @@ pub struct Placement {
 }
 
 /// Placements for one step: the first host gets the short affinity wait,
-/// the others the longer fallback wait.
+/// the others the longer fallback wait. A lone host gets the fallback wait:
+/// with nowhere to move the step, a short wait would only park it while
+/// that host is busy.
 pub fn placements(
     routing: &Routing,
     template: &str,
@@ -51,12 +53,14 @@ pub fn placements(
     preferred: Option<&str>,
     key: &str,
 ) -> Vec<Placement> {
-    hosts_in_order(hosts, preferred, key)
+    let order = hosts_in_order(hosts, preferred, key);
+    let alone = order.len() == 1;
+    order
         .into_iter()
         .enumerate()
         .map(|(i, host)| Placement {
             queue: queue_for(template, &host),
-            wait: Duration::from_millis(if i == 0 {
+            wait: Duration::from_millis(if i == 0 && !alone {
                 routing.affinity_wait_ms
             } else {
                 routing.fallback_wait_ms

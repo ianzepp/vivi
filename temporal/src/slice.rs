@@ -217,7 +217,8 @@ async fn run_round(
 }
 
 /// `Some` when the round ends before landing. Check and review prefer the
-/// host that holds the work in its warm tree.
+/// host that holds the work in its warm tree; review on its own hosts
+/// (`review_hosts`) prefers it only when it is one of them.
 async fn check_and_review(
     ctx: &WorkflowContext<SliceWorkflow>,
     input: &SliceInput,
@@ -227,21 +228,15 @@ async fn check_and_review(
     let tuning = &input.tuning;
     let routing = &input.routing;
     let key = slice_workflow_id(&input.need, &input.slice.id);
-    let place = |template: &str| {
-        placements(
-            routing,
-            template,
-            &routing.agent_hosts,
-            Some(&checkpoint.host),
-            &key,
-        )
+    let place = |template: &str, hosts: &[String]| {
+        placements(routing, template, hosts, Some(&checkpoint.host), &key)
     };
     let again = |text: String| Round::Again {
         text,
         checkpoint: checkpoint.clone(),
     };
     let opts = step_options(tuning);
-    let check_places = place(&routing.check);
+    let check_places = place(&routing.check, &routing.agent_hosts);
     let checked = run_placed(
         ctx,
         "check",
@@ -256,7 +251,7 @@ async fn check_and_review(
         Ok((CheckResult::Red { text }, _)) => return Some(again(text)),
         Ok((CheckResult::Green, _)) => {}
     }
-    let review_places = place(&routing.review);
+    let review_places = place(&routing.review, routing.review_hosts());
     let reviewed = run_placed(
         ctx,
         "review",

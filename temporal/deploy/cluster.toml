@@ -1,0 +1,114 @@
+# The production cluster (operator placement, 2026-11-18): control and
+# lane on hub; implement, check and gate on the two studios; review on the
+# mini, which is LLM-only (it never builds: its SSD is soldered). One file
+# for every host; each worker reads its own [hosts.<name>].
+
+[server]
+# hub.local resolves slowly over mDNS; the LAN IP is the same server.
+address = "http://192.168.1.237:7233"
+namespace = "default"
+
+[routing]
+control = "control"
+lane = "lane"
+agent = "agent-{host}"
+check = "check-{host}"
+review = "agent-{host}"
+gate = "gate-{host}"
+agent_hosts = ["studio", "studio-02"]
+# Review runs only on the mini (queue agent-mini-m1). Plan stays on the
+# control queue until an LLM planner exists; then add plan_hosts = ["mini-m1"].
+review_hosts = ["mini-m1"]
+gate_hosts = ["studio", "studio-02"]
+affinity_wait_s = 60
+fallback_wait_s = 600
+
+[hosts.hub]
+queues = { control = 50, lane = 2 }
+
+# Conservative while the pump still runs its own pools on the studios.
+[hosts.studio]
+queues = { agent-studio = 2, check-studio = 1, gate-studio = 1 }
+
+[hosts.studio-02]
+queues = { agent-studio-02 = 2, check-studio-02 = 1, gate-studio-02 = 1 }
+
+# 8 GB: two pi processes at most. Its pool's harness has no shell tool.
+[hosts.mini-m1]
+queues = { agent-mini-m1 = 2 }
+
+# The sandbox lane: a tiny Rust crate. main/vivi/main are never touched.
+[targets.pump-sandbox]
+remote = "git@hub.local:faberlang/pump-sandbox.git"
+main = "temporal/main"
+branch_prefix = "temporal/"
+check_command = "cargo test --quiet"
+check_timeout_s = 600
+
+[targets.pump-sandbox.agent]
+space = "~/vivi-temporal/space/pump-sandbox"
+pool = "agent"
+repo = "~/vivi-temporal/trees/pump-sandbox/repo"
+check_tree = "~/vivi-temporal/trees/pump-sandbox/check"
+model = "opencode-go/deepseek-v4.1-flash"
+budget_s = 900
+vivi = "~/.local/bin/vivi"
+
+[targets.pump-sandbox.lander]
+compose = "~/vivi-temporal/bin/compose"
+gate = "~/vivi-temporal/bin/gate"
+cache = "~/vivi-temporal/cache/pump-sandbox.git"
+gate_tree = "~/vivi-temporal/trees/pump-sandbox/land"
+gate_timeout_s = 900
+
+# radix: configured, not provisioned. Its space, repo and check trees do not
+# exist on any host yet; nothing may start a radix need until they do.
+# The check builds every test target without running tests (main carries
+# about 73 known failures; the gate judges tests against main's baseline).
+[targets.radix]
+remote = "git@hub.local:faberlang/radix.git"
+main = "vivi/main"
+branch_prefix = "temporal/"
+check_command = "CARGO_BUILD_JOBS=8 CARGO_TERM_COLOR=never cargo test --workspace --lib --bins --tests --no-run --quiet"
+check_timeout_s = 1800
+
+[targets.radix.agent]
+space = "~/vivi-temporal/space/radix"
+pool = "agent"
+repo = "~/vivi-temporal/trees/radix/repo"
+check_tree = "~/vivi-temporal/trees/radix/check"
+model = "opencode-go/deepseek-v4.1-flash"
+budget_s = 1800
+vivi = "~/.local/bin/vivi"
+
+[targets.radix.lander]
+compose = "~/vivi-temporal/bin/compose"
+gate = "~/vivi-temporal/bin/gate"
+cache = "~/vivi-temporal/cache/radix.git"
+# The studios' warm gate trees (lab/lander/gate's default, docs/orchestration-reset/phase-1.md).
+gate_tree = "/Volumes/Lanes/vivi/trees/faberlang/radix/land"
+gate_timeout_s = 2400
+
+[tuning]
+max_work_rounds = 3
+max_infra_attempts = 3
+max_provider_waits = 6
+provider_default_wait_ms = 60000
+implement_cap_ms = 2400000
+heartbeat_ms = 120000
+step_cap_ms = 2100000
+infra_retry_ms = 10000
+
+[lander]
+batch_window_s = 30
+max_batch = 8
+step_cap_s = 300
+gate_cap_s = 2700
+hot_paths = []
+max_backlog_s = 3600
+land_s_per_unit = 180
+
+# The record writes to the control worker's log until the operator picks
+# the vivi project for status replies.
+[record]
+kind = "log"
