@@ -1,6 +1,6 @@
 # Phase 0: stop the bleeding
 
-**Status**: started 2026-11-18. Done items are done. The items under "Waiting on the operator" have not been applied.
+**Status**: 2026-11-18. The operator approved the branch archive, the need holds, the GitHub prune and the move off the tailnet, and all are applied. Two items are open: the closure-review reader and the Phase 0 gate measurement.
 
 The plan is in [README.md](README.md). The operator chose direction B (Temporal) on 2026-11-18.
 
@@ -37,27 +37,39 @@ That is 82 + 133 = 215 refs to move. The 41 that could still land stay where the
 - **Hold candidates (79):** 47 filed by the mind, and 32 cadence "`<leg>` red on faberlang-radix at `<sha>`" reports. Vivi has no need-to-want demotion, so the proposal is a `hold-triage` mark (`vivi need mark`). It is reversible with `unmark`, and Temporal intake will skip marked needs.
 - **Closure review (54):** open needs whose unit work is already on `vivi/main`. Each needs a read: is it finished, or does it have scope left? This is not mechanical, so it is a list for review, not a change.
 
-## Network: the tailnet is gone
+## Applied 2026-11-18
 
-The plan said "fix `hub.tailc3379f.ts.net` not resolving on hub". The cause is different.
+**Radix lane.** The 215 refs (82 landed, 133 code conflicts) were moved to `refs/archive/vivi/unit/*` in one atomic push, each leased on the sha the triage saw.
+- `/vivi/orch/backlog` now reports 41 unit branches: 9 clean-merge and 32 conflict-pin-only.
+- The script that did it is `/vivi/orch/triage/archive_units.sh`.
 
-- Tailscale no longer runs on hub: there is no binary and no `tailscaled`. It is stopped on the laptop.
-- Hosts are reached by `.local` names: `hub.local`, `studio-01.local`, `studio-02.local`, `mini-m1.local`.
+**Other lanes.** The same rule was applied, and the matching GitHub branches deleted (`/vivi/orch/triage/archive_lane.sh`; a GitHub delete happens only when GitHub's sha is on the lane's branch):
 
-Stale tailnet references that remain:
+| Repo | Lane archived | GitHub deleted | Kept, merges clean |
+|---|---|---|---|
+| faberlang/inferentia | 11 (2 need, 9 unit) | 11 | `vivi/unit/67a41e9c-11-a1` |
+| faberlang/gradus | 2 | 0 | `vivi/unit/cdbff248-a2` |
+| vivi/vivi (GitHub ianzepp/vivi) | 2 | 0 | `vivi/unit/7f7d3c37-a1`, `vivi/unit/96d2c79b-a2` |
 
-| Where | Effect | Proposed |
-|---|---|---|
-| The stopped faberlang pump's gradus integration clone | `ls-remote` exit 128 every 10 minutes while the pump runs | None. It retires with the pump |
-| The model proxy, `vivi-proxy.service` on `0.0.0.0:18180` | Unreachable from the laptop over the LAN. The documented rule is "tailnet only; LAN is refused" | Operator decision, because it is a security boundary: re-enable Tailscale, or allow the LAN |
-| `~/CLAUDE.md` (skills repo), Local context | It sends every agent to `hub.tailc3379f.ts.net` and its proxy | Update after the proxy decision |
+GitHub radix already had only 5 branches: `main`, `vivi/main`, `peer/kir`, `release/1.19`, `release/on-version-bump`. The research's figure of about 6,170 was out of date, so nothing needed pruning there.
 
-## Waiting on the operator
+`git-sync` never pulls a pruned `vivi/*` branch back from GitHub, and it does not sync `refs/archive/*`. An archive ref is undone with a push that renames it back.
 
-1. Archive the 215 landed or conflicting radix unit branch refs, as described above.
-2. Mark the 79 hold candidates `hold-triage`.
-3. The proxy and tailnet decision.
-4. Who reads the 54 closure-review needs: the operator, or a review job once the runtime is up.
+**Need holds.** 75 of the 79 candidates are marked `hold-triage` through the vivi server.
+- The 4 others are absorbed, so Vivi refuses any change: 422796df, 747421b3, 630615db, a7fbdec5.
+- 30 of the marks first failed, because the need was "held" by `mind`, `planner`, `head-cso` or `hand`, and each had to be retried naming that role. See the roles note in [README.md](README.md).
+
+**Network: the tailnet is gone (operator, 2026-11-13; instruction 2026-11-18 to allow the LAN).**
+- Tailscale is not on hub, and it is stopped on the laptop. Hosts are reached as `hub.local`, `studio-01.local`, `studio-02.local` and `mini-m1.local`.
+- **The model proxy already allowed the LAN.** A ufw rule admits `192.168.1.0/24` on port 18180, and a request by IP answers 401, which is correct without a token. The earlier "refused" reading was wrong: curl timed out *resolving* `hub.local` (mDNS, 5 s). `.local` lookups being slow is the real network issue. Use the IP where latency matters.
+- **Instructions updated in the skills repo:** `AGENTS.md`, which is the shared `CLAUDE.md` (Hosts, a new Network line, the proxy URL), `sysadmin/SKILL.md`, `hub/SKILL.md` and `hub/references/local-pump.md`.
+- **Left, needs sudo:** `vivi-proxy.service` still says "tailnet front door" with `Wants=`/`After=tailscaled.service`. This is harmless, because that unit no longer exists.
+- **Left, retires with the pump:** the stopped faberlang pump's gradus integration clone still names `hub.tailc3379f.ts.net`.
+
+## Still open
+
+1. Who reads the 54 closure-review needs (`2026-11-18-open-needs-work-on-main.tsv`): the operator, or a review job once the runtime is up.
+2. The Phase 0 gate: the hub drive under 50 GB/day idle, measured over a full day by `disk-writes` (it watches sdd now).
 
 ## Next: Phase 1
 

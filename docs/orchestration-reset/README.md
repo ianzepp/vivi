@@ -289,6 +289,12 @@ These roles are dropped as automatic steps:
 
 Parked needs go to the operator or the mind, which decide with full information.
 
+### Roles: worth reconsidering (operator, 2026-11-18; not in scope here)
+
+Vivi's roles (planner, hand, mind, head-cso, …) date from when a role was a mailbox that an agent polled for work assigned to it. The recent pattern assigns work straight to an LLM job, and under Temporal the workflow step decides what runs: a charter or prompt, a model, and a queue. A role adds little to that. It also creates friction: Phase 0 hold marks failed on 30 of 79 needs until the right "holder" role was named.
+
+A direction to consider later: needs, wants and charters stay in Vivi, and step types plus charters replace roles as the unit of assignment. It is out of scope for the runtime work.
+
 ### Where things run
 
 - **Temporal server + Postgres:** on hub. It is Linux, systemd, and the always-on box.
