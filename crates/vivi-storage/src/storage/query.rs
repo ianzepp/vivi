@@ -21,6 +21,7 @@ impl Storage {
                 |row| row.get(0),
             )
             .map_err(|e| VivariumError::Other(format!("failed to read blob row: {e}")))?;
+        self.scans.blob();
         fs::read(self.mail_root.join(relpath)).map_err(Into::into)
     }
 
@@ -32,6 +33,7 @@ impl Storage {
     /// # Errors
     /// Returns a [`VivariumError`] if the blob cannot be read.
     pub fn read_listed_blob(&self, blob_relpath: &str) -> Result<Vec<u8>, VivariumError> {
+        self.scans.blob();
         fs::read(self.mail_root.join(blob_relpath)).map_err(Into::into)
     }
 
@@ -63,6 +65,7 @@ impl Storage {
                 "message not found: {message_id}"
             )));
         };
+        self.scans.blob();
         fs::read(self.mail_root.join(view.blob_relpath)).map_err(Into::into)
     }
 
@@ -244,10 +247,13 @@ impl Storage {
             .map_err(|e| {
                 VivariumError::Other(format!("failed to list account+role messages: {e}"))
             })?;
-        rows.map(|row| {
-            row.map_err(|e| VivariumError::Other(format!("failed to read message row: {e}")))
-        })
-        .collect()
+        let listed: Vec<StoredMessageView> = rows
+            .map(|row| {
+                row.map_err(|e| VivariumError::Other(format!("failed to read message row: {e}")))
+            })
+            .collect::<Result<_, _>>()?;
+        self.scans.messages(listed.len());
+        Ok(listed)
     }
 
     pub(super) fn list_messages_by_query(
@@ -266,14 +272,15 @@ impl Storage {
         let rows = stmt
             .query_map(params, raw_stored_message_from_row)
             .map_err(|e| VivariumError::Other(format!("failed to list stored messages: {e}")))?;
-        let messages: Result<Vec<_>, _> = rows
+        let messages: Vec<StoredMessageView> = rows
             .map(|row| {
                 row.map_err(|e| {
                     VivariumError::Other(format!("failed to read stored message row: {e}"))
                 })
             })
-            .collect();
-        Ok(Self::decorate_handles(messages?))
+            .collect::<Result<_, _>>()?;
+        self.scans.messages(messages.len());
+        Ok(Self::decorate_handles(messages))
     }
 
     /// List all non-deleted messages across all accounts.

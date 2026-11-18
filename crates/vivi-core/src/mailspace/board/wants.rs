@@ -4,6 +4,7 @@
 use std::collections::{BTreeSet, HashMap};
 
 use super::BoardServing;
+use crate::mailspace::backlog_index::BacklogIndex;
 use crate::mailspace::want_state::{WantState, serving_needs, want_states};
 use vivi_error::VivariumError;
 use vivi_storage::storage::{Storage, StoredMessageView};
@@ -21,8 +22,12 @@ pub(super) fn reopened_rows(
         .map(|(_, want_id)| want_id)
         .collect();
     let mut rows = Vec::new();
+    if served.is_empty() {
+        return Ok(rows);
+    }
+    let index = BacklogIndex::load(storage)?;
     for want_id in served {
-        if serving_needs(storage, &want_id)?
+        if serving_needs(storage, &index, &want_id)?
             .iter()
             .all(|need| need.done)
         {

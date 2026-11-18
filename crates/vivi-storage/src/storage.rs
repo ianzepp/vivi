@@ -30,6 +30,9 @@ mod metadata;
 mod mutate;
 mod pending_deps;
 mod query;
+mod scan_counters;
+#[cfg(any(test, feature = "test-support"))]
+pub use scan_counters::ScanSnapshot;
 pub mod schema;
 mod slot_runs;
 pub use slot_runs::{SLOT_RUNS_DDL, SlotRun};
@@ -160,6 +163,8 @@ pub struct Storage {
     /// `PRAGMA data_version` freshness check in `handle_index` detects a
     /// commit from another connection.
     handle_index: RefCell<Option<handles::HandleIndex>>,
+    /// Rows returned by the bulk loaders, for the scaling tests.
+    scans: scan_counters::ScanCounters,
 }
 
 impl Storage {
@@ -194,6 +199,7 @@ impl Storage {
             mail_root: mailspace_dir.to_path_buf(),
             conn: RefCell::new(conn),
             handle_index: RefCell::new(None),
+            scans: scan_counters::ScanCounters::default(),
         })
     }
 
@@ -261,7 +267,16 @@ impl Storage {
             mail_root: mail_root.to_path_buf(),
             conn: RefCell::new(conn),
             handle_index: RefCell::new(None),
+            scans: scan_counters::ScanCounters::default(),
         })
+    }
+
+    /// The rows the bulk loaders have returned and the blobs read since this
+    /// connection opened, for the scaling tests.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn scan_snapshot(&self) -> ScanSnapshot {
+        self.scans.snapshot()
     }
 
     /// Clear the cached handle index after any write that affects messages.

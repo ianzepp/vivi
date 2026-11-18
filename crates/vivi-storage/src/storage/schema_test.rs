@@ -131,3 +131,36 @@ fn a_schema_9_store_gains_the_message_id_index() {
         "{plan:?}"
     );
 }
+
+/// A schema-11 store gains the `(graph_handle, subgraph)` index, and the
+/// lookup of a need's bound units searches it instead of scanning the graph.
+#[test]
+fn a_schema_11_store_gains_the_subgraph_index() {
+    let tmp = tempfile::tempdir().unwrap();
+    let conn = Connection::open(tmp.path().join("mail.sqlite")).unwrap();
+    ensure_schema(&conn).unwrap();
+    conn.execute_batch(
+        "DROP INDEX work_graph_nodes_subgraph_idx;
+         UPDATE storage_metadata SET value = '11' WHERE key = 'schema_version';",
+    )
+    .unwrap();
+
+    ensure_schema(&conn).unwrap();
+
+    assert_eq!(marker(&conn), STORAGE_SCHEMA_VERSION);
+    let plan: Vec<String> = conn
+        .prepare(
+            "EXPLAIN QUERY PLAN SELECT handle FROM work_graph_nodes
+             WHERE graph_handle = 'g' AND subgraph = 'p' ORDER BY source_id",
+        )
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(3))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert!(
+        plan.iter()
+            .any(|step| step.contains("work_graph_nodes_subgraph_idx")),
+        "{plan:?}"
+    );
+}

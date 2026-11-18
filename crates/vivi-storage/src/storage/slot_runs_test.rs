@@ -486,7 +486,7 @@ fn a_store_stamped_at_schema_10_gains_the_table_on_open() {
         )
         .unwrap();
     assert_eq!(version, STORAGE_SCHEMA_VERSION);
-    assert_eq!(STORAGE_SCHEMA_VERSION, "11");
+    assert_eq!(STORAGE_SCHEMA_VERSION, "12");
 }
 
 #[test]

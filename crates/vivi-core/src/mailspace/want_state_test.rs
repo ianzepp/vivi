@@ -289,3 +289,36 @@ fn an_unaccepted_assignee_report_does_not_close_the_serving_need() {
     assert_eq!(report.state, WantState::Done, "{report:?}");
     assert!(report.serving[0].done);
 }
+
+/// Asking for the state of many wants reads the backlog graph once, not once
+/// per want: the rows the node loader returns do not grow with the wants.
+#[test]
+fn want_states_of_loads_the_backlog_graph_once_for_the_batch() {
+    let (_tmp, mailspace) = space();
+    let wants: Vec<String> = (0..6).map(|_| want(&mailspace)).collect();
+    for handle in &wants {
+        need(&mailspace, Some(handle), None);
+    }
+    let storage = mailspace.storage().unwrap();
+    let views: Vec<_> = wants
+        .iter()
+        .map(|handle| {
+            let row = storage.resolve_message_token(handle).unwrap();
+            storage.message_by_id(&row).unwrap().unwrap()
+        })
+        .collect();
+    let graph = storage.work_graph_by_code("backlog").unwrap().unwrap();
+    let node_count = storage.work_graph_nodes(&graph.handle).unwrap().len() as u64;
+    assert!(node_count >= 12, "six wants and six needs have nodes");
+
+    let before = storage.scan_snapshot();
+    let states = super::want_states(&storage, &views).unwrap();
+    let read = storage.scan_snapshot().since(&before);
+
+    assert_eq!(states.len(), 6);
+    assert!(states.values().all(|report| report.serving.len() == 1));
+    assert_eq!(
+        read.node_rows, node_count,
+        "one load of the graph, not one per want"
+    );
+}

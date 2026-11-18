@@ -240,10 +240,16 @@ fn board_graphs(mailspace: &Mailspace) -> Result<Vec<BoardGraph>, VivariumError>
     Ok(shows
         .into_iter()
         .map(|show| {
+            // Source id to handle, built once for the graph, not per node.
+            let by_source: HashMap<&str, &str> = show
+                .nodes
+                .iter()
+                .map(|n| (n.source_id.as_str(), n.handle.as_str()))
+                .collect();
             let nodes: Vec<BoardGraphNode> = show
                 .nodes
                 .iter()
-                .map(|n| board_graph_node(n, &show))
+                .map(|n| board_graph_node(n, &by_source))
                 .collect();
             let ready = nodes
                 .iter()
@@ -276,14 +282,9 @@ fn board_graphs(mailspace: &Mailspace) -> Result<Vec<BoardGraph>, VivariumError>
 
 fn board_graph_node(
     node: &crate::mailspace::GraphNodeView,
-    show: &crate::mailspace::GraphShow,
+    by_source: &HashMap<&str, &str>,
 ) -> BoardGraphNode {
     // Map source-id blocked_by/successors to handles for agent contracts.
-    let by_source: HashMap<&str, &str> = show
-        .nodes
-        .iter()
-        .map(|n| (n.source_id.as_str(), n.handle.as_str()))
-        .collect();
     let blocked_by = node
         .blocked_by
         .iter()

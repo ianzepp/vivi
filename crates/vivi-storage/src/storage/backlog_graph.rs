@@ -1,14 +1,12 @@
 //! Backlog citizenship: transactional minting of needs/wants into the
 //! `backlog` work graph without Mermaid re-export round-trips.
 
-use std::collections::HashSet;
-
 use chrono::Utc;
 use rusqlite::{OptionalExtension, Transaction, params};
 
 use super::Storage;
 use super::graph::{
-    WorkGraphNodeRow, insert_edges, insert_work_graph, map_node_row, node_handle_for,
+    WorkGraphNodeRow, edge_handle_for, insert_work_graph, map_node_row, node_handle_for,
 };
 use super::{VivariumError, WorkGraphEdgeInput, WorkGraphImportInput, sha256_hex};
 
@@ -250,28 +248,21 @@ fn mint_backlog_tx(
 ) -> Result<BacklogMintCommit, VivariumError> {
     let now = Utc::now().to_rfc3339();
     let (graph_handle, created_graph) = ensure_backlog_graph(tx, input)?;
-    let existing_nodes = existing_node_ids(tx, &graph_handle)?;
+    // The unique constraints on (graph, source id) and (graph, from, to)
+    // decide what already exists, so a mint reads no node or edge it does not
+    // write: its cost does not grow with the graph.
     let mut minted_nodes = Vec::new();
     for node in &input.nodes {
-        if existing_nodes.contains(&node.source_id) {
-            continue;
+        if insert_backlog_node(tx, &graph_handle, node, &now)? {
+            minted_nodes.push(node_handle_for(&graph_handle, &node.source_id));
         }
-        insert_backlog_node(tx, &graph_handle, node, &now)?;
-        minted_nodes.push(node_handle_for(&graph_handle, &node.source_id));
     }
-    let existing_edges = existing_edge_pairs(tx, &graph_handle)?;
-    let new_edges: Vec<WorkGraphEdgeInput> = input
-        .edges
-        .iter()
-        .filter(|edge| {
-            let from = node_handle_for(&graph_handle, &edge.from_source_id);
-            let to = node_handle_for(&graph_handle, &edge.to_source_id);
-            !existing_edges.contains(&(from, to))
-        })
-        .cloned()
-        .collect();
-    let minted_edges = new_edges.len();
-    insert_edges(tx, &graph_handle, &new_edges, &now)?;
+    let mut minted_edges = 0;
+    for edge in &input.edges {
+        if insert_backlog_edge(tx, &graph_handle, edge, &now)? {
+            minted_edges += 1;
+        }
+    }
     if created_graph || !minted_nodes.is_empty() || minted_edges > 0 {
         tx.execute(
             "UPDATE work_graphs SET updated_at = ?1 WHERE handle = ?2",
@@ -318,75 +309,70 @@ fn existing_backlog_handle(tx: &Transaction<'_>) -> Result<Option<String>, Vivar
     .map_err(|e| VivariumError::Other(format!("failed to load backlog graph: {e}")))
 }
 
-fn existing_node_ids(
-    tx: &Transaction<'_>,
-    graph_handle: &str,
-) -> Result<HashSet<String>, VivariumError> {
-    let mut stmt = tx
-        .prepare("SELECT source_id FROM work_graph_nodes WHERE graph_handle = ?1")
-        .map_err(|e| VivariumError::Other(format!("failed to prepare backlog nodes: {e}")))?;
-    let rows = stmt
-        .query_map(params![graph_handle], |row| row.get::<_, String>(0))
-        .map_err(|e| VivariumError::Other(format!("failed to query backlog nodes: {e}")))?;
-    let mut out = HashSet::new();
-    for row in rows {
-        out.insert(
-            row.map_err(|e| VivariumError::Other(format!("failed to read backlog node: {e}")))?,
-        );
-    }
-    Ok(out)
-}
-
-fn existing_edge_pairs(
-    tx: &Transaction<'_>,
-    graph_handle: &str,
-) -> Result<HashSet<(String, String)>, VivariumError> {
-    let mut stmt = tx
-        .prepare("SELECT from_node, to_node FROM work_graph_edges WHERE graph_handle = ?1")
-        .map_err(|e| VivariumError::Other(format!("failed to prepare backlog edges: {e}")))?;
-    let rows = stmt
-        .query_map(params![graph_handle], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })
-        .map_err(|e| VivariumError::Other(format!("failed to query backlog edges: {e}")))?;
-    let mut out = HashSet::new();
-    for row in rows {
-        let pair =
-            row.map_err(|e| VivariumError::Other(format!("failed to read backlog edge: {e}")))?;
-        out.insert(pair);
-    }
-    Ok(out)
-}
-
+/// Insert one node unless its source id is already in the graph. Returns
+/// whether it was new; only a new node records its `backlog_attached` event.
 fn insert_backlog_node(
     tx: &Transaction<'_>,
     graph_handle: &str,
     node: &BacklogNodeInput,
     now: &str,
-) -> Result<(), VivariumError> {
+) -> Result<bool, VivariumError> {
     let handle = node_handle_for(graph_handle, &node.source_id);
-    tx.execute(
-        "INSERT INTO work_graph_nodes
-           (handle, graph_handle, source_id, label, state, subgraph, kind, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?7, ?7)",
-        params![
-            handle,
-            graph_handle,
-            node.source_id,
-            node.label,
-            node.state,
-            node.kind,
-            now
-        ],
-    )
-    .map_err(|e| VivariumError::Other(format!("failed to insert backlog node: {e}")))?;
+    let inserted = tx
+        .execute(
+            "INSERT OR IGNORE INTO work_graph_nodes
+               (handle, graph_handle, source_id, label, state, subgraph, kind, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?7, ?7)",
+            params![
+                handle,
+                graph_handle,
+                node.source_id,
+                node.label,
+                node.state,
+                node.kind,
+                now
+            ],
+        )
+        .map_err(|e| VivariumError::Other(format!("failed to insert backlog node: {e}")))?;
+    if inserted == 0 {
+        return Ok(false);
+    }
     tx.execute(
         "INSERT INTO work_graph_events (graph_handle, occurred_at, event_type, node_handle, note)
          VALUES (?1, ?2, 'backlog_attached', ?3, ?4)",
         params![graph_handle, now, handle, format!("kind={}", node.kind)],
     )
     .map_err(|e| VivariumError::Other(format!("failed to insert backlog event: {e}")))?;
-    Ok(())
+    Ok(true)
+}
+
+/// Insert one prerequisite edge unless the graph already has it. Returns
+/// whether it was new.
+fn insert_backlog_edge(
+    tx: &Transaction<'_>,
+    graph_handle: &str,
+    edge: &WorkGraphEdgeInput,
+    now: &str,
+) -> Result<bool, VivariumError> {
+    let from_node = node_handle_for(graph_handle, &edge.from_source_id);
+    let to_node = node_handle_for(graph_handle, &edge.to_source_id);
+    let handle = edge_handle_for(graph_handle, &from_node, &to_node);
+    tx.execute(
+        "INSERT OR IGNORE INTO work_graph_edges
+           (handle, graph_handle, from_node, to_node, label, style, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            handle,
+            graph_handle,
+            from_node,
+            to_node,
+            edge.label,
+            edge.style,
+            now
+        ],
+    )
+    .map(|inserted| inserted > 0)
+    .map_err(|e| VivariumError::Other(format!("failed to insert backlog edge: {e}")))
 }
 
 fn synthesize_backlog_mermaid(nodes: &[BacklogNodeInput], edges: &[WorkGraphEdgeInput]) -> String {
@@ -403,3 +389,7 @@ fn synthesize_backlog_mermaid(nodes: &[BacklogNodeInput], edges: &[WorkGraphEdge
     }
     out
 }
+
+#[cfg(test)]
+#[path = "backlog_graph_test.rs"]
+mod tests;

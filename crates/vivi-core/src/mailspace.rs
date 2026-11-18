@@ -19,6 +19,7 @@ mod address;
 mod adoption;
 mod archive;
 mod backlog;
+mod backlog_index;
 mod backlog_audit;
 pub mod board;
 mod body;

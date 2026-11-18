@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 use vivi_error::VivariumError;
 
-pub const STORAGE_SCHEMA_VERSION: &str = "11";
+pub const STORAGE_SCHEMA_VERSION: &str = "12";
 
 pub(super) fn ensure_schema(conn: &Connection) -> Result<(), VivariumError> {
     let existing: Option<String> = match conn.query_row(
@@ -199,6 +199,14 @@ const SCHEMA_DDL: &str = "BEGIN;
          );
          CREATE INDEX IF NOT EXISTS work_graph_nodes_graph_idx
            ON work_graph_nodes(graph_handle, state);
+         -- Added in schema version 12: `work_graph_nodes_by_subgraph` (the units
+         -- bound to a need) filtered on `subgraph` with no index, so each call
+         -- scanned every node of the graph. `source_id` last lets the index also
+         -- serve the query's `ORDER BY source_id`; without it the planner
+         -- prefers the unique index on (graph_handle, source_id) for the order
+         -- and filters every node.
+         CREATE INDEX IF NOT EXISTS work_graph_nodes_subgraph_idx
+           ON work_graph_nodes(graph_handle, subgraph, source_id);
          CREATE TABLE IF NOT EXISTS work_graph_edges (
            handle TEXT PRIMARY KEY,
            graph_handle TEXT NOT NULL REFERENCES work_graphs(handle) ON DELETE CASCADE,

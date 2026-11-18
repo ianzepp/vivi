@@ -76,6 +76,42 @@ fn board_filters_identity_and_adds_graph() {
 }
 
 #[test]
+fn board_graph_names_blockers_and_successors_by_node_handle() {
+    let (mailspace, _tmp) = roster();
+    let prereq = send(&mailspace, "needs", "first");
+    let dependent = mailspace
+        .send(SendRequest {
+            from: "ceo".into(),
+            to: vec!["cto".into()],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: "second".into(),
+            body: vivi_mail::letter::fixture::body_with_deps("need", "body", &[prereq.clone()]),
+            role: "needs".into(),
+            kind: Some("need".into()),
+            reply_to: None,
+        })
+        .unwrap()
+        .delivered
+        .remove(0)
+        .handle;
+    let board = mailspace
+        .board(&BoardOptions {
+            with_graph: true,
+            ..options()
+        })
+        .unwrap();
+    let graph = &board.graphs.unwrap()[0];
+    let find = |source: &str| graph.nodes.iter().find(|n| n.source_id == source).unwrap();
+    let first = find(&prereq);
+    let second = find(&dependent);
+
+    assert_eq!(second.blocked_by, vec![first.handle.clone()]);
+    assert_eq!(first.successors, vec![second.handle.clone()]);
+    assert!(first.blocked_by.is_empty() && second.successors.is_empty());
+}
+
+#[test]
 fn board_serializes_to_json_shape() {
     let (mailspace, _tmp) = roster();
     send(&mailspace, "wants", "nice to have");

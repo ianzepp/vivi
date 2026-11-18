@@ -160,7 +160,9 @@ impl Storage {
         let rows = stmt
             .query_map(params![graph_handle], map_node_row)
             .map_err(|e| VivariumError::Other(format!("failed to query graph nodes: {e}")))?;
-        collect_rows(rows, "graph nodes")
+        let nodes = collect_rows(rows, "graph nodes")?;
+        self.scans.nodes(nodes.len());
+        Ok(nodes)
     }
 
     /// Load all edges for a graph.
@@ -182,7 +184,9 @@ impl Storage {
         let rows = stmt
             .query_map(params![graph_handle], map_edge_row)
             .map_err(|e| VivariumError::Other(format!("failed to query graph edges: {e}")))?;
-        collect_rows(rows, "graph edges")
+        let edges = collect_rows(rows, "graph edges")?;
+        self.scans.edges(edges.len());
+        Ok(edges)
     }
 
     /// Atomically insert a new work graph at revision 1.

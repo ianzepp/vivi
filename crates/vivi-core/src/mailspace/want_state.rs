@@ -12,11 +12,12 @@ use std::collections::{HashMap, HashSet};
 use serde::Serialize;
 
 use super::Mailspace;
-use super::backlog::{backlog_node_by_token, canonical_content_handle};
+use super::backlog::canonical_content_handle;
+use super::backlog_index::BacklogIndex;
 use super::item_facts::{HeldItem, held_item, is_done};
 use super::kind::effective_kind;
 use vivi_error::VivariumError;
-use vivi_storage::storage::{BACKLOG_GRAPH_CODE, Storage, StoredMessageView, WorkGraphNodeRow};
+use vivi_storage::storage::{Storage, StoredMessageView};
 
 /// Whether a want still has work to do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -104,16 +105,15 @@ pub fn fold(closed_by_hand: bool, serving_done: impl IntoIterator<Item = bool>) 
 /// The needs serving the want whose normalized Message-ID is `want_rfc_id`,
 /// one per content id, oldest first. A sealed (absorbed) copy still counts:
 /// whether a need is open or done does not depend on who sealed a copy.
-pub(crate) fn serving_needs(
+/// `index` is the backlog graph loaded once by the caller, so asking about
+/// many wants does not reload it for each.
+pub(super) fn serving_needs(
     storage: &Storage,
+    index: &BacklogIndex,
     want_rfc_id: &str,
 ) -> Result<Vec<ServingNeed>, VivariumError> {
     let mut seen = HashSet::new();
     let mut found = Vec::new();
-    let nodes = match storage.work_graph_by_code(BACKLOG_GRAPH_CODE)? {
-        Some(graph) => storage.work_graph_nodes(&graph.handle)?,
-        None => Vec::new(),
-    };
     for message_id in storage.rows_with_item_metadata("serves", want_rfc_id)? {
         let Some(row) = storage.message_by_id(&message_id)? else {
             continue;
@@ -131,7 +131,7 @@ pub(crate) fn serving_needs(
             }
         }
         let handle = canonical_content_handle(storage, &row.message_id)?;
-        let done = is_closed(storage, &nodes, &item, &handle)?;
+        let done = is_closed(storage, index, &item, &handle)?;
         let need = ServingNeed {
             handle,
             subject: row.subject.clone(),
@@ -152,7 +152,7 @@ pub(crate) fn serving_needs(
 /// backlog) falls back to the folder rule.
 fn is_closed(
     storage: &Storage,
-    nodes: &[WorkGraphNodeRow],
+    index: &BacklogIndex,
     item: &HeldItem,
     handle: &str,
 ) -> Result<bool, VivariumError> {
@@ -163,7 +163,7 @@ fn is_closed(
     tokens.extend(item.rows.iter().map(|row| row.message_id.clone()));
     let mut tracked = false;
     for token in &tokens {
-        if let Some(node) = backlog_node_by_token(storage, nodes, token)? {
+        if let Some(node) = index.node_by_token(storage, token)? {
             if node.state == "done" {
                 return Ok(true);
             }
@@ -180,12 +180,9 @@ pub(crate) fn need_closed(storage: &Storage, handle: &str) -> Result<bool, Vivar
     let Some(first) = item.rows.first() else {
         return Ok(false);
     };
-    let nodes = match storage.work_graph_by_code(BACKLOG_GRAPH_CODE)? {
-        Some(graph) => storage.work_graph_nodes(&graph.handle)?,
-        None => Vec::new(),
-    };
+    let index = BacklogIndex::load(storage)?;
     let canonical = canonical_content_handle(storage, &first.message_id)?;
-    is_closed(storage, &nodes, &item, &canonical)
+    is_closed(storage, &index, &item, &canonical)
 }
 
 /// The computed state of every want in `wants`, keyed by content id.
@@ -194,21 +191,26 @@ pub(crate) fn want_states(
     wants: &[StoredMessageView],
 ) -> Result<HashMap<String, WantStateReport>, VivariumError> {
     let mut reports = HashMap::new();
+    if wants.is_empty() {
+        return Ok(reports);
+    }
+    let index = BacklogIndex::load(storage)?;
     for want in wants {
         if reports.contains_key(&want.content_id) {
             continue;
         }
-        reports.insert(want.content_id.clone(), report_for(storage, want)?);
+        reports.insert(want.content_id.clone(), report_for(storage, &index, want)?);
     }
     Ok(reports)
 }
 
 fn report_for(
     storage: &Storage,
+    index: &BacklogIndex,
     want: &StoredMessageView,
 ) -> Result<WantStateReport, VivariumError> {
     let serving = match &want.normalized_message_id {
-        Some(id) => serving_needs(storage, id)?,
+        Some(id) => serving_needs(storage, index, id)?,
         None => Vec::new(),
     };
     let closed_by_hand = is_done(&held_item(storage, &want.message_id)?);
@@ -232,7 +234,8 @@ pub(super) fn state_of_handle(
     let Some(view) = storage.message_by_id(&row)? else {
         return Ok(None);
     };
-    Ok(Some(report_for(storage, &view)?.state))
+    let index = BacklogIndex::load(storage)?;
+    Ok(Some(report_for(storage, &index, &view)?.state))
 }
 
 /// Refuse a hand close of a want that serving needs decide.
@@ -243,7 +246,8 @@ pub(crate) fn refuse_hand_close(
     let Some(id) = &want.normalized_message_id else {
         return Ok(());
     };
-    let serving = serving_needs(storage, id)?;
+    let index = BacklogIndex::load(storage)?;
+    let serving = serving_needs(storage, &index, id)?;
     if serving.is_empty() {
         return Ok(());
     }
@@ -281,7 +285,8 @@ impl Mailspace {
                 "{handle} is a {kind}, not a want"
             )));
         }
-        report_for(&storage, &view)
+        let index = BacklogIndex::load(&storage)?;
+        report_for(&storage, &index, &view)
     }
 
     /// The computed state of each want in `wants`, keyed by content id.
