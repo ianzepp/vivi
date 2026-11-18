@@ -95,7 +95,13 @@ fn default_fallback() -> u64 {
 pub struct HostConfig {
     /// Queue name → most activities this host runs from it at once.
     pub queues: BTreeMap<String, usize>,
+    /// What `{root}` means in this host's target paths. Unset: `~/vivi-temporal`.
+    #[serde(default)]
+    pub root: Option<String>,
 }
+
+/// `{root}` in a target path when the host sets no `root`.
+pub const DEFAULT_ROOT: &str = "~/vivi-temporal";
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -122,7 +128,8 @@ fn default_check_timeout() -> u64 {
     900
 }
 
-/// Where the agent hosts keep this target. `~` is the worker's home.
+/// Where the agent hosts keep this target. `~` is the worker's home;
+/// `{root}` is the host's `root` (see `Config::for_host`).
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct AgentConfig {
@@ -287,6 +294,33 @@ impl Config {
             return bad("[record] kind = \"mcp\" needs server and project".to_string());
         }
         Ok(())
+    }
+
+    /// This config as `host` sees it: a leading `{root}` in every target
+    /// path becomes the host's `root`.
+    pub fn for_host(mut self, host: &str) -> Result<Config, ConfigError> {
+        let root = self
+            .hosts
+            .get(host)
+            .ok_or_else(|| ConfigError::Invalid(format!("no [hosts.{host}] entry")))?
+            .root
+            .clone()
+            .unwrap_or_else(|| DEFAULT_ROOT.to_string());
+        let put = |path: &mut String| {
+            if let Some(rest) = path.strip_prefix("{root}") {
+                *path = format!("{}{rest}", root.trim_end_matches('/'));
+            }
+        };
+        for target in self.targets.values_mut() {
+            let (a, l) = (&mut target.agent, &mut target.lander);
+            for path in [&mut a.space, &mut a.repo, &mut a.check_tree, &mut a.vivi] {
+                put(path);
+            }
+            for path in [&mut l.compose, &mut l.gate, &mut l.cache, &mut l.gate_tree] {
+                put(path);
+            }
+        }
+        Ok(self)
     }
 
     /// The queues a host polls and the activity slots for each.

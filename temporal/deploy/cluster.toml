@@ -26,11 +26,15 @@ fallback_wait_s = 600
 [hosts.hub]
 queues = { control = 50, lane = 2 }
 
-# Conservative while the pump still runs its own pools on the studios.
+# The studios keep build-heavy target trees on the Lanes drive, not the
+# system SSD: `{root}` in a target path is the host's root. The mini keeps
+# the default, ~/vivi-temporal (it only reads trees, never builds).
 [hosts.studio]
+root = "/Volumes/Lanes/vivi/temporal"
 queues = { agent-studio = 2, check-studio = 1, gate-studio = 1 }
 
 [hosts.studio-02]
+root = "/Volumes/Lanes/vivi/temporal"
 queues = { agent-studio-02 = 2, check-studio-02 = 1, gate-studio-02 = 1 }
 
 # 8 GB: two pi processes at most. Its pool's harness has no shell tool.
@@ -61,8 +65,8 @@ cache = "~/vivi-temporal/cache/pump-sandbox.git"
 gate_tree = "~/vivi-temporal/trees/pump-sandbox/land"
 gate_timeout_s = 900
 
-# radix: configured, not provisioned. Its space, repo and check trees do not
-# exist on any host yet; nothing may start a radix need until they do.
+# radix: provisioned 2026-11-18 under each host's {root} (studios: the
+# Lanes drive; mini-m1: ~/vivi-temporal, a repository and space only).
 # The check builds every test target without running tests (main carries
 # about 73 known failures; the gate judges tests against main's baseline).
 [targets.radix]
@@ -73,10 +77,10 @@ check_command = "CARGO_BUILD_JOBS=8 CARGO_TERM_COLOR=never cargo test --workspac
 check_timeout_s = 1800
 
 [targets.radix.agent]
-space = "~/vivi-temporal/space/radix"
+space = "{root}/space/radix"
 pool = "agent"
-repo = "~/vivi-temporal/trees/radix/repo"
-check_tree = "~/vivi-temporal/trees/radix/check"
+repo = "{root}/trees/radix/repo"
+check_tree = "{root}/trees/radix/check"
 model = "opencode-go/deepseek-v4.1-flash"
 budget_s = 1800
 vivi = "~/.local/bin/vivi"
@@ -85,8 +89,7 @@ vivi = "~/.local/bin/vivi"
 compose = "~/vivi-temporal/bin/compose"
 gate = "~/vivi-temporal/bin/gate"
 cache = "~/vivi-temporal/cache/radix.git"
-# The studios' warm gate trees (lab/lander/gate's default, docs/orchestration-reset/phase-1.md).
-gate_tree = "/Volumes/Lanes/vivi/trees/faberlang/radix/land"
+gate_tree = "{root}/trees/radix/land"
 gate_timeout_s = 2400
 
 [tuning]

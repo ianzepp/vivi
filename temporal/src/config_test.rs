@@ -145,3 +145,28 @@ fn tilde_expands_to_home() {
     assert_eq!(expand("~/x/y"), PathBuf::from(home).join("x/y"));
     assert_eq!(expand("/abs"), PathBuf::from("/abs"));
 }
+
+#[test]
+fn for_host_puts_the_host_root_into_target_paths() {
+    let studio = Config::parse(CLUSTER).unwrap().for_host("studio").unwrap();
+    let radix = studio.target("radix").unwrap();
+    assert_eq!(
+        radix.agent.repo,
+        "/Volumes/Lanes/vivi/temporal/trees/radix/repo"
+    );
+    assert_eq!(
+        radix.agent.space,
+        "/Volumes/Lanes/vivi/temporal/space/radix"
+    );
+    assert_eq!(
+        radix.lander.gate_tree,
+        "/Volumes/Lanes/vivi/temporal/trees/radix/land"
+    );
+    assert_eq!(radix.lander.cache, "~/vivi-temporal/cache/radix.git");
+    let mini = Config::parse(CLUSTER).unwrap().for_host("mini-m1").unwrap();
+    assert_eq!(
+        mini.target("radix").unwrap().agent.repo,
+        "~/vivi-temporal/trees/radix/repo"
+    );
+    assert!(Config::parse(CLUSTER).unwrap().for_host("nowhere").is_err());
+}

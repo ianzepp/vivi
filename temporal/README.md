@@ -166,12 +166,31 @@ implement. Unit tests sit beside their modules (`*_test.rs`):
 Every host has `~/vivi-temporal/{bin,config,logs}`: `bin/vivi-temporal`,
 `config/cluster.toml`, `logs/worker.log`. The lane host also has
 `bin/compose` (`lab/lander/compose`) and `cache/`; the gate hosts
-`bin/gate` (`lab/lander/gate`). Each agent or review host has the target's
+`bin/gate` (`lab/lander/gate`).
+
+Target trees live under the host's root: `{root}` in a target path is
+`[hosts.<name>] root`, or `~/vivi-temporal` when unset. The studios set
+`/Volumes/Lanes/vivi/temporal`, so builds write to the Lanes drive and not
+the system SSD. Under the root, each agent or review host has the target's
 local mailspace (`space/<target>`) with a pool `agent` worktreeing
-`trees/<target>/repo`; build hosts also have `trees/<target>/{check,land}`.
-The mini's pool harness is `pi … --no-mcp --tools read,grep,find,ls`: no
-shell, so it cannot build, test or edit. `radix` is configured but not
-provisioned on any host.
+`trees/<target>/repo` into `slots/`; build hosts also have
+`trees/<target>/{check,land}`. `deploy/provision-target.sh` lays this out
+and is safe to run again. The mini's pool harness is
+`pi … --no-mcp --tools read,grep,find,ls`: no shell, so it cannot build,
+test or edit.
+
+`radix` was provisioned on 2026-11-18. On each studio the pump's warm gate
+tree (`/Volumes/Lanes/vivi/trees/faberlang/radix/land`) was moved to
+`trees/radix/land`, still a worktree of the studio's radix mirror. The
+check tree's `target/` was seeded from it with an APFS clone. Measured on
+studio:
+- gate tree, first no-op build after the move: 78 s; the next one: 0 s;
+- check tree, first build on vivi/main: 149 s, rebuilding only radix's own
+  71 crates (a cold build is about 9 min).
+
+The pump's other trees (`main`, the faber build tree that
+`hub-studio-faber.timer` uses; `bisect`; `slot-1..8`) stay where they were.
+The agent slots start cold: each slot's first radix build is a full one.
 
 Hub uses `protoc`-free builds (`temporalio-common/vendored-protox`) with
 `~/.rustup/toolchains/1.93-x86_64-unknown-linux-gnu/bin/cargo`.

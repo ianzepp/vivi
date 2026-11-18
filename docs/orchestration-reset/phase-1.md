@@ -4,7 +4,7 @@
 
 ## Gate, measured
 
-- **Command:** the full workspace build and test of radix (`cargo test --workspace --lib --bins --tests`, doctests excluded) in the dedicated warm `land` tree on each studio.
+- **Command:** the full workspace build and test of radix (`cargo test --workspace --lib --bins --tests`, doctests excluded) in the dedicated warm `land` tree on each studio. Since 2026-11-18 that tree is `/Volumes/Lanes/vivi/temporal/trees/radix/land`, moved there for the Temporal workers ([`temporal/README.md`](../../temporal/README.md)).
 - **Pass rule:** no test fails that passes on the main sha's baseline.
 
 | | studio | studio-02 |

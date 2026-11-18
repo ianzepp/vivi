@@ -94,9 +94,13 @@ fn options_for(
         .build())
 }
 
-/// Poll every queue `host` serves until one worker stops or Ctrl-C.
+/// Poll every queue `host` serves until one worker stops, or until SIGINT
+/// or SIGTERM (launchd and systemd stop with SIGTERM). A stop ends polling
+/// and exits at once; activities still running are not drained (an
+/// implement can run 40 minutes). Their attempts time out on the heartbeat
+/// and are retried, resuming from the last pushed commit.
 pub async fn run_host(config: Config, host: &str) -> Result<(), WorkerError> {
-    let config = Arc::new(config);
+    let config = Arc::new(config.for_host(host)?);
     let queues = config.queues_for(host)?;
     let client = connect(&config, host).await?;
     let runtime = Runtime::from_current_tokio(Default::default()).map_err(temporal)?;
@@ -115,11 +119,22 @@ pub async fn run_host(config: Config, host: &str) -> Result<(), WorkerError> {
             for stop in &stops { stop(); }
             ended.map_err(|e| temporal(format!("worker {} stopped: {e}", queues[i].0)))
         }
-        _ = tokio::signal::ctrl_c() => {
-            println!("{host}: stopping");
+        signal = stop_signal() => {
+            println!("{host}: stopping on {}", signal?);
             for stop in &stops { stop(); }
             Ok(())
         }
+    }
+}
+
+/// The first of SIGINT and SIGTERM.
+async fn stop_signal() -> Result<&'static str, WorkerError> {
+    use tokio::signal::unix::{SignalKind, signal};
+    let mut term =
+        signal(SignalKind::terminate()).map_err(|e| temporal(format!("SIGTERM: {e}")))?;
+    tokio::select! {
+        r = tokio::signal::ctrl_c() => r.map(|()| "SIGINT").map_err(|e| temporal(format!("SIGINT: {e}"))),
+        _ = term.recv() => Ok("SIGTERM"),
     }
 }
 
