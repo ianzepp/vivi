@@ -10,12 +10,14 @@ use common::{Harness, QUEUE, need_input, tuning};
 use temporalio_client::WorkflowGetResultOptions;
 use temporalio_client::WorkflowStartOptions;
 use temporalio_client::errors::WorkflowStartError;
-use vivi_temporal_spike::fault::{FaultKind, NeedScript, SliceScript};
-use vivi_temporal_spike::need::NeedWorkflow;
-use vivi_temporal_spike::slice::{SliceWorkflow, slice_branch};
-use vivi_temporal_spike::types::{NeedOutcome, ParkCause, RecordCall, SliceInput, SliceSpec};
-use vivi_temporal_spike::world::{Event, ImplementStart};
-use vivi_temporal_spike::{need_start_options, slice_workflow_id};
+use vivi_temporal::fault::{FaultKind, NeedScript, SliceScript};
+use vivi_temporal::need::NeedWorkflow;
+use vivi_temporal::slice::{SliceWorkflow, slice_branch};
+use vivi_temporal::types::{
+    AdmissionPolicy, NeedOutcome, ParkCause, RecordCall, Routing, SliceInput, SliceSpec,
+};
+use vivi_temporal::world::{Event, ImplementStart};
+use vivi_temporal::{need_start_options, slice_workflow_id};
 
 fn slice(id: &str) -> SliceScript {
     SliceScript::new(id)
@@ -243,10 +245,13 @@ async fn no_slice_runs_twice_at_once() {
                 need: "n1".into(),
                 slice: SliceSpec {
                     id: "u1".into(),
-                    write_scope: vec![],
+                    ..SliceSpec::default()
                 },
                 lander_id: common::LANDER.into(),
                 tuning: tuning(),
+                routing: Routing::single(QUEUE),
+                target: common::TARGET.into(),
+                branch_prefix: "vivi/".into(),
             };
             let opts = WorkflowStartOptions::new(QUEUE, slice_workflow_id("n1", "u1")).build();
             let second = h.client.start_workflow(SliceWorkflow::run, dup, opts).await;
@@ -358,6 +363,8 @@ async fn exhausted_attempts_park_with_cause() {
     t.max_work_rounds = 2;
     let (n1, n2) = h
         .with_worker(async {
+            // Slices ask the Lander for admission before they start.
+            h.start_lander(100).await;
             tokio::join!(h.run_need("n1", t.clone()), h.run_need("n2", t.clone()))
         })
         .await;
@@ -416,4 +423,52 @@ async fn wait_until(cond: impl Fn() -> bool) {
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     }
     panic!("condition not met within 5s");
+}
+
+/// Scheduling rule: the hot-file mutex. `u1` and `u2` both write under the
+/// hot path `crates/hot`, so `u2` does not start implementing until `u1`
+/// has landed and released its lease. `u3` writes elsewhere and is not
+/// held back.
+#[tokio::test(flavor = "multi_thread")]
+async fn hot_file_mutex_serializes_overlapping_slices() {
+    let script = NeedScript::new(vec![
+        slice("u1").scope(&["crates/hot/src/a.rs"]),
+        slice("u2").scope(&["crates/hot/src/b.rs"]),
+        slice("u3").scope(&["crates/cold/src/c.rs"]),
+    ]);
+    let h = Harness::start(vec![("n1", script)]).await;
+    let policy = AdmissionPolicy {
+        hot_paths: vec!["crates/hot".into()],
+        max_backlog_ms: 0,
+        land_ms_per_unit: 0,
+    };
+    let outcome = h
+        .with_worker(async {
+            h.start_lander_with(100, policy).await;
+            h.run_need("n1", tuning()).await
+        })
+        .await;
+    assert_eq!(outcome, landed(&["u1", "u2", "u3"]));
+
+    let events = h.events();
+    let first_start = |id: &str| {
+        events
+            .iter()
+            .position(|e| matches!(e, Event::ImplementStarted(s) if s.slice == id))
+            .unwrap()
+    };
+    let merged = |id: &str| {
+        events
+            .iter()
+            .position(|e| matches!(e, Event::Merged { batch } if batch.iter().any(|s| s == id)))
+            .unwrap()
+    };
+    let (a, b) = (first_start("u1"), first_start("u2"));
+    let (first, second) = if a < b { ("u1", "u2") } else { ("u2", "u1") };
+    assert!(
+        first_start(second) > merged(first),
+        "{second} started before {first} landed: {events:?}"
+    );
+    assert!(first_start("u3") < merged(first), "u3 was held back");
+    h.shutdown().await;
 }

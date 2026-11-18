@@ -9,18 +9,15 @@ use temporalio_macros::activities;
 use temporalio_sdk::ApplicationFailure;
 use temporalio_sdk::activities::{ActivityContext, ActivityError};
 
+use crate::defs::{self, PROVIDER_FAILURE};
 use crate::error::SpikeError;
 use crate::fault::{FaultKind, fault_at};
 use crate::record::NeedRecord;
 use crate::types::{
-    CheckResult, Checkpoint, GateResult, ImplementInput, LandRequest, PlanInput, RecordCall,
-    ReviewResult, SliceSpec, StepInput,
+    Candidate, CheckResult, Checkpoint, ComposeInput, ComposeResult, GateResult, ImplementInput,
+    PlanInput, PublishResult, RecordCall, ReviewResult, SliceSpec, StepInput,
 };
 use crate::world::{Event, ImplementStart, World};
-
-/// Failure type name for provider throttling (429, quota). Workflows wait
-/// these out themselves, so they never spend an attempt.
-pub const PROVIDER_FAILURE: &str = "provider";
 
 pub struct Stand {
     pub world: Arc<World>,
@@ -29,7 +26,7 @@ pub struct Stand {
 
 #[activities]
 impl Stand {
-    #[activity]
+    #[activity(definition = defs::Plan)]
     pub async fn plan(
         self: Arc<Self>,
         _ctx: ActivityContext,
@@ -47,11 +44,12 @@ impl Stand {
         let slices = script.slices.iter().map(|s| SliceSpec {
             id: s.id.clone(),
             write_scope: s.write_scope.clone(),
+            brief: format!("stand-in slice {}", s.id),
         });
         Ok(slices.collect())
     }
 
-    #[activity]
+    #[activity(definition = defs::Implement)]
     pub async fn implement(
         self: Arc<Self>,
         ctx: ActivityContext,
@@ -76,7 +74,7 @@ impl Stand {
         run_steps(world, &ctx, &input, resume, fault).await
     }
 
-    #[activity]
+    #[activity(definition = defs::Check)]
     pub async fn check(
         self: Arc<Self>,
         _ctx: ActivityContext,
@@ -105,7 +103,7 @@ impl Stand {
         Ok(CheckResult::Green)
     }
 
-    #[activity]
+    #[activity(definition = defs::Review)]
     pub async fn review(
         self: Arc<Self>,
         _ctx: ActivityContext,
@@ -137,22 +135,44 @@ impl Stand {
         Ok(ReviewResult::Approve)
     }
 
+    /// Every unit merges cleanly in the stand-in world.
+    #[activity(definition = defs::Compose)]
+    pub async fn compose(
+        self: Arc<Self>,
+        _ctx: ActivityContext,
+        input: ComposeInput,
+    ) -> Result<ComposeResult, ActivityError> {
+        let slices: Vec<&str> = input.units.iter().map(|r| r.slice.as_str()).collect();
+        let candidate = Candidate {
+            id: format!("cand-{}", slices.join("-")),
+            target: input.target,
+            base: "main".to_string(),
+            sha: format!("cand-{}", slices.join("-")),
+            units: input.units,
+        };
+        Ok(ComposeResult {
+            candidate: Some(candidate),
+            excluded: Vec::new(),
+            already: Vec::new(),
+        })
+    }
+
     /// The fast gate on a candidate: main plus the batch.
-    #[activity]
+    #[activity(definition = defs::Gate)]
     pub async fn gate(
         self: Arc<Self>,
         _ctx: ActivityContext,
-        batch: Vec<LandRequest>,
+        candidate: Candidate,
     ) -> Result<GateResult, ActivityError> {
         let world = &self.world;
         tokio::time::sleep(world.timing.step).await;
         let mut broken = Vec::new();
-        for req in &batch {
+        for req in &candidate.units {
             if world.slice(&req.need, &req.slice)?.bad {
                 broken.push(req.slice.clone());
             }
         }
-        let slices: Vec<String> = batch.iter().map(|r| r.slice.clone()).collect();
+        let slices: Vec<String> = candidate.units.iter().map(|r| r.slice.clone()).collect();
         world.log(Event::Gate {
             batch: slices,
             pass: broken.is_empty(),
@@ -168,17 +188,18 @@ impl Stand {
         })
     }
 
-    #[activity]
-    pub async fn merge(
+    #[activity(definition = defs::Publish)]
+    pub async fn publish(
         self: Arc<Self>,
         _ctx: ActivityContext,
-        batch: Vec<LandRequest>,
-    ) -> Result<(), ActivityError> {
-        let slices: Vec<String> = batch.into_iter().map(|r| r.slice).collect();
-        Ok(self.world.merge(&slices)?)
+        candidate: Candidate,
+    ) -> Result<PublishResult, ActivityError> {
+        let slices: Vec<String> = candidate.units.into_iter().map(|r| r.slice).collect();
+        self.world.merge(&slices)?;
+        Ok(PublishResult::Published { sha: candidate.sha })
     }
 
-    #[activity]
+    #[activity(definition = defs::Record)]
     pub async fn record(
         self: Arc<Self>,
         _ctx: ActivityContext,
@@ -249,6 +270,7 @@ async fn run_steps(
             branch: input.branch.clone(),
             head: commit,
             steps_done: done,
+            host: String::new(),
         };
         ctx.record_heartbeat(checkpoint.clone()).await?;
         pushed_this_attempt += 1;
@@ -262,6 +284,7 @@ async fn run_steps(
         branch: input.branch.clone(),
         head: head.unwrap_or_default(),
         steps_done: done,
+        host: String::new(),
     })
 }
 

@@ -98,6 +98,11 @@ impl SliceScript {
         Ok(self)
     }
 
+    pub fn scope(mut self, paths: &[&str]) -> SliceScript {
+        self.write_scope = paths.iter().map(|p| p.to_string()).collect();
+        self
+    }
+
     pub fn bad(mut self) -> SliceScript {
         self.bad = true;
         self

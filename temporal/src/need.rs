@@ -14,7 +14,7 @@ use temporalio_sdk::{
     WorkflowTermination,
 };
 
-use crate::activities::Stand;
+use crate::defs::Act;
 use crate::slice::SliceWorkflow;
 use crate::slice_workflow_id;
 use crate::steps::{run_step, step_options};
@@ -43,9 +43,14 @@ impl NeedWorkflow {
             },
         )
         .await?;
-        let plan = PlanInput { need: need.clone() };
+        let plan = PlanInput {
+            need: need.clone(),
+            target: input.target.clone(),
+            brief: input.brief.clone(),
+            slices: input.slices.clone(),
+        };
         let opts = step_options(&input.tuning);
-        let slices = match run_step(ctx, "plan", || Stand::plan, plan, opts, &input.tuning).await {
+        let slices = match run_step(ctx, "plan", || Act::plan, plan, opts, &input.tuning).await {
             Ok(slices) => slices,
             Err(cause) => return park(ctx, &input, "plan".into(), cause).await,
         };
@@ -92,6 +97,9 @@ async fn run_slice(
         slice: spec,
         lander_id: input.lander_id,
         tuning: input.tuning,
+        routing: input.routing,
+        target: input.target,
+        branch_prefix: input.branch_prefix,
     };
     let failed = |detail: String| SliceOutcome::Parked {
         slice: slice.clone(),
@@ -144,6 +152,6 @@ async fn record(
             .build(),
     )
     .build();
-    ctx.execute_activity(Stand::record, call, opts).await?;
+    ctx.execute_activity(Act::record, call, opts).await?;
     Ok(())
 }

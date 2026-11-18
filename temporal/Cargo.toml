@@ -1,15 +1,19 @@
-# Temporal runtime spike (orchestration reset, Phase 2). It is its own
+# Vivi's need pipeline on Temporal (orchestration reset). It is its own
 # workspace, so `cargo build` and `cargo test` at the vivi root never compile
 # it. Run it from here: `cargo test`. See README.md.
 [package]
-name = "vivi-temporal-spike"
-version = "0.1.0"
+name = "vivi-temporal"
+version = "0.2.0"
 edition = "2024"
 publish = false
-description = "NeedWorkflow, SliceWorkflow and LanderWorkflow on Temporal with stand-in activities"
+description = "NeedWorkflow, SliceWorkflow and LanderWorkflow on Temporal, with real and stand-in activities"
 license = "MIT"
 
 [workspace]
+
+[[bin]]
+name = "vivi-temporal"
+path = "src/main.rs"
 
 [dependencies]
 # The #[activities] and #[workflow_methods] macros expand to paths in these two.
@@ -20,8 +24,10 @@ temporalio-common = "1.2.0"
 temporalio-macros = "1.2.0"
 temporalio-sdk = "1.2.0"
 temporalio-workflow = "1.2.0"
+serde_json = "1"
 thiserror = "2"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1", features = ["io-util", "macros", "process", "rt-multi-thread", "signal", "sync", "time"] }
+toml = "0.9"
 
 [dev-dependencies]
 temporalio-sdk = { version = "1.2.0", features = ["testing"] }

@@ -9,6 +9,10 @@
 //! - Work (red check, change request, ejection): not an error at all; the
 //!   activity returns it as a value and the slice loops.
 //! - Exhausted: returned as a `ParkCause`, never as a workflow failure.
+//! - Placement: a step with host affinity is tried on each host's queue in
+//!   turn (`run_placed`). A host that does not pick the task up within its
+//!   schedule-to-start wait, or that runs out of infra attempts, hands the
+//!   step to the next host; the step resumes from what was pushed.
 
 use std::time::Duration;
 
@@ -17,7 +21,8 @@ use temporalio_common::data_converters::TemporalDeserializable;
 use temporalio_common::error::IncomingError;
 use temporalio_sdk::{ActivityExecutionError, ActivityOptions, WorkflowContext};
 
-use crate::activities::PROVIDER_FAILURE;
+use crate::defs::PROVIDER_FAILURE;
+use crate::routing::Placement;
 use crate::types::{ParkCause, Tuning};
 
 /// Options for a long agent step: a cap, a heartbeat, infra retries.
@@ -84,6 +89,40 @@ where
         let wait = retry_after.unwrap_or(Duration::from_millis(tuning.provider_default_wait_ms));
         ctx.timer(wait).await;
     }
+}
+
+/// Run a step on each placement in turn until one host completes it.
+/// Returns the output and the host that ran it. A provider failure, or
+/// infra failures on every host, end it with the cause.
+pub async fn run_placed<W, AD>(
+    ctx: &WorkflowContext<W>,
+    step: &str,
+    activity: impl Fn() -> AD,
+    input: AD::Input,
+    opts: ActivityOptions,
+    tuning: &Tuning,
+    placements: &[Placement],
+) -> Result<(AD::Output, String), ParkCause>
+where
+    AD: ActivityDefinition + 'static,
+    AD::Input: Clone,
+    AD::Output: TemporalDeserializable,
+{
+    let mut last = ParkCause::InfraExhausted {
+        step: step.to_string(),
+        detail: "no host serves this step".to_string(),
+    };
+    for place in placements {
+        let mut placed = opts.clone();
+        placed.task_queue = Some(place.queue.clone());
+        placed.schedule_to_start_timeout = Some(place.wait);
+        match run_step(ctx, step, &activity, input.clone(), placed, tuning).await {
+            Ok(output) => return Ok((output, place.host.clone())),
+            Err(cause @ ParkCause::InfraExhausted { .. }) => last = cause,
+            Err(cause) => return Err(cause),
+        }
+    }
+    Err(last)
 }
 
 /// `Some(retry_after)` when the activity failed with a provider failure.

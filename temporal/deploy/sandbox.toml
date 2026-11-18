@@ -1,0 +1,72 @@
+# The end-to-end config: the live Temporal server on hub, the control and
+# lane queues on the laptop (pepper), and agent, check and gate on studio,
+# against the sandbox lane faberlang/pump-sandbox, branch temporal/main.
+# One file for every host; each worker reads its own [hosts.<name>].
+
+[server]
+# hub.local resolves slowly over mDNS; the LAN IP is the same server.
+address = "http://192.168.1.237:7233"
+namespace = "default"
+
+[routing]
+control = "control"
+lane = "lane"
+agent = "agent-{host}"
+check = "check-{host}"
+review = "agent-{host}"
+gate = "gate-{host}"
+agent_hosts = ["studio"]
+gate_hosts = ["studio"]
+affinity_wait_s = 60
+fallback_wait_s = 600
+
+[hosts.pepper]
+queues = { control = 50, lane = 2 }
+
+[hosts.studio]
+queues = { agent-studio = 2, check-studio = 2, gate-studio = 1 }
+
+[targets.pump-sandbox]
+remote = "git@hub.local:faberlang/pump-sandbox.git"
+main = "temporal/main"
+branch_prefix = "temporal/"
+check_command = "cargo test --quiet"
+check_timeout_s = 600
+
+[targets.pump-sandbox.agent]
+space = "~/vivi-temporal/space/pump-sandbox"
+pool = "agent"
+repo = "~/vivi-temporal/trees/pump-sandbox/repo"
+check_tree = "~/vivi-temporal/trees/pump-sandbox/check"
+model = "opencode-go/deepseek-v4.1-flash"
+budget_s = 900
+vivi = "~/.local/bin/vivi"
+
+[targets.pump-sandbox.lander]
+compose = "/private/tmp/claude-501/vt/lander/compose"
+gate = "~/vivi-temporal/bin/gate"
+cache = "/private/tmp/claude-501/vt/cache/pump-sandbox.git"
+gate_tree = "~/vivi-temporal/trees/pump-sandbox/land"
+gate_timeout_s = 900
+
+[tuning]
+max_work_rounds = 3
+max_infra_attempts = 3
+max_provider_waits = 6
+provider_default_wait_ms = 60000
+implement_cap_ms = 1200000
+heartbeat_ms = 120000
+step_cap_ms = 900000
+infra_retry_ms = 10000
+
+[lander]
+batch_window_s = 5
+max_batch = 8
+step_cap_s = 300
+gate_cap_s = 1200
+hot_paths = []
+max_backlog_s = 3600
+land_s_per_unit = 180
+
+[record]
+kind = "log"

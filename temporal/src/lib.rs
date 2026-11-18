@@ -1,15 +1,23 @@
-//! Phase 2 runtime spike: Vivi's need pipeline on Temporal, with stand-in
-//! activities that replay a scripted fault model. See README.md.
+//! Vivi's need pipeline on Temporal: the workflows, the activity interface,
+//! the real activities that wrap Vivi's commands, and the stand-ins that
+//! replay a scripted fault model for the tests. See README.md.
 
 pub mod activities;
+pub mod admission;
+pub mod classify;
+pub mod config;
+pub mod defs;
 pub mod error;
 pub mod fault;
 pub mod lander;
 pub mod need;
+pub mod real;
 pub mod record;
+pub mod routing;
 pub mod slice;
 pub mod steps;
 pub mod types;
+pub mod worker;
 pub mod world;
 
 use temporalio_client::{WorkflowIdReusePolicy, WorkflowStartOptions};
@@ -37,8 +45,8 @@ pub fn need_start_options(task_queue: &str, handle: &str) -> WorkflowStartOption
         .build()
 }
 
-/// One worker that runs all three workflows and the stand-in activities.
-/// A deployment splits these across queues (control, agent-<host>, gate).
+/// One worker that runs all three workflows and the stand-in activities on
+/// one queue (the tests). A deployment uses `worker::build`.
 pub fn worker_options(
     task_queue: &str,
     stand: Stand,

@@ -12,17 +12,18 @@ use temporalio_sdk::testing::{
     WorkflowEnvironment,
 };
 use temporalio_sdk::{Runtime, Worker};
-use vivi_temporal_spike::activities::Stand;
-use vivi_temporal_spike::fault::NeedScript;
-use vivi_temporal_spike::lander::LanderWorkflow;
-use vivi_temporal_spike::need::NeedWorkflow;
-use vivi_temporal_spike::record::MemoryRecord;
-use vivi_temporal_spike::types::{LanderInput, NeedInput, NeedOutcome, Tuning};
-use vivi_temporal_spike::world::{Event, World, WorldTiming};
-use vivi_temporal_spike::{need_start_options, worker_options};
+use vivi_temporal::activities::Stand;
+use vivi_temporal::fault::NeedScript;
+use vivi_temporal::lander::LanderWorkflow;
+use vivi_temporal::need::NeedWorkflow;
+use vivi_temporal::record::MemoryRecord;
+use vivi_temporal::types::{AdmissionPolicy, LanderInput, NeedInput, NeedOutcome, Routing, Tuning};
+use vivi_temporal::world::{Event, World, WorldTiming};
+use vivi_temporal::{need_start_options, worker_options};
 
 pub const QUEUE: &str = "spike";
 pub const LANDER: &str = "lander";
+pub const TARGET: &str = "stand";
 
 pub fn tuning() -> Tuning {
     Tuning {
@@ -88,10 +89,19 @@ impl Harness {
     }
 
     pub async fn start_lander(&self, batch_window_ms: u64) {
+        self.start_lander_with(batch_window_ms, AdmissionPolicy::default())
+            .await;
+    }
+
+    pub async fn start_lander_with(&self, batch_window_ms: u64, admission: AdmissionPolicy) {
         let input = LanderInput {
             batch_window_ms,
             max_batch: 8,
             step_cap_ms: 5_000,
+            gate_cap_ms: 5_000,
+            target: TARGET.to_string(),
+            routing: Routing::single(QUEUE),
+            admission,
         };
         let opts = WorkflowStartOptions::new(QUEUE, LANDER).build();
         self.client
@@ -128,6 +138,11 @@ pub fn need_input(handle: &str, tuning: Tuning) -> NeedInput {
         handle: handle.to_string(),
         lander_id: LANDER.to_string(),
         tuning,
+        routing: Routing::single(QUEUE),
+        target: TARGET.to_string(),
+        brief: format!("stand-in need {handle}"),
+        slices: Vec::new(),
+        branch_prefix: "vivi/".to_string(),
     }
 }
 
