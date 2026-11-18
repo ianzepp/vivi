@@ -1,0 +1,52 @@
+//! Phase 2 runtime spike: Vivi's need pipeline on Temporal, with stand-in
+//! activities that replay a scripted fault model. See README.md.
+
+pub mod activities;
+pub mod error;
+pub mod fault;
+pub mod lander;
+pub mod need;
+pub mod record;
+pub mod slice;
+pub mod steps;
+pub mod types;
+pub mod world;
+
+use temporalio_client::{WorkflowIdReusePolicy, WorkflowStartOptions};
+use temporalio_sdk::WorkerOptions;
+use temporalio_sdk::workflows::WorkflowRegistrationError;
+
+use crate::activities::Stand;
+use crate::lander::LanderWorkflow;
+use crate::need::NeedWorkflow;
+use crate::slice::SliceWorkflow;
+
+pub fn need_workflow_id(handle: &str) -> String {
+    format!("need-{handle}")
+}
+
+pub fn slice_workflow_id(need: &str, slice: &str) -> String {
+    format!("slice-{need}-{slice}")
+}
+
+/// Start options for a need. The id is `need-<handle>` and the server
+/// refuses a second start, whether the first run is still going or done.
+pub fn need_start_options(task_queue: &str, handle: &str) -> WorkflowStartOptions {
+    WorkflowStartOptions::new(task_queue, need_workflow_id(handle))
+        .id_reuse_policy(WorkflowIdReusePolicy::RejectDuplicate)
+        .build()
+}
+
+/// One worker that runs all three workflows and the stand-in activities.
+/// A deployment splits these across queues (control, agent-<host>, gate).
+pub fn worker_options(
+    task_queue: &str,
+    stand: Stand,
+) -> Result<WorkerOptions, WorkflowRegistrationError> {
+    Ok(WorkerOptions::new(task_queue)
+        .register_workflow::<NeedWorkflow>()?
+        .register_workflow::<SliceWorkflow>()?
+        .register_workflow::<LanderWorkflow>()?
+        .register_activities(stand)
+        .build())
+}

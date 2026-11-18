@@ -328,7 +328,7 @@ A direction to consider later: needs, wants and charters stay in Vivi, and step 
 
 **Phase 2: runtime spike (about 2–3 days).**
 - Temporal on hub, running `NeedWorkflow` and the Lander with **stand-in activities** that replay the measured failure mix.
-- The lab's d1–d9 and fail1 scenarios become workflow tests (Temporal's test server skips time).
+- The lab's d1–d9 and fail1 scenarios become workflow tests. The Rust SDK has no time-skipping test server (Go, TS, Python and Java do), so the tests use short real timeouts against a local dev server; the spike's 7 workflow tests run in about 9 s.
 - Pass criteria:
   - a 429 never spends an attempt
   - a timeout resumes from the pushed commit
