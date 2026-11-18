@@ -1,0 +1,368 @@
+#!/usr/bin/env python3
+"""lander: batch, gate and bisect a queue of unit branches against vivi/main. DRY RUN ONLY.
+
+Runs on hub. Uses `compose` (same directory) to build candidate commits and `gate` (on the studios, over
+ssh) to build and test them. It never writes vivi/main or any branch: the only remote write is the
+refs/vivi/candidates/* push that `compose` does. "Landing" here means the lander moves its own virtual
+main to the passing candidate, so the next batch is composed on top of it, as a real lander would.
+
+  lander --queue FILE [--batch 8] [--hosts studio-01,studio-02] [--out DIR] [--gate-timeout 2400]
+         [--base refs/heads/vivi/main]
+
+FILE: one branch per line (vivi/unit/...), in the order to land them.
+
+Per batch: compose the next N branches on the virtual main (branches that conflict are ejected as
+`conflict`), gate the candidate on a studio, and judge it against the failing-test set of the virtual
+main. Pass = status ok and no failing test that the virtual main does not also fail. A passing candidate
+"would land": the virtual main moves to it, and its failing set (a subset of the old one) is the new
+baseline. A failing candidate is bisected: the halves are composed on the same base and gated in
+parallel (one per studio) until single failing branches are found and ejected; the good ones are then
+recomposed and gated once more (a combination of good branches can still fail), and if that fails too
+they are landed in sequence. Gate results are cached by sha on each studio, so a re-run of the same
+queue against the same vivi/main costs no gates.
+
+The baseline gate (the start vivi/main) runs in parallel with the first batch's gate.
+
+A gate that times out, or fails to run at all, stops the whole run (not re-run): the log says which.
+
+Output, in DIR (default /vivi/orch/lander/runs/<timestamp>): events.jsonl (every compose, gate, land and
+eject), gates/<sha>.json (the gate results), summary.json, summary.txt.
+"""
+import argparse
+import concurrent.futures as cf
+import json
+import os
+import subprocess
+import sys
+import threading
+import time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+COMPOSE = os.path.join(HERE, "compose")
+REMOTE_GATE = "python3 ~/lander/gate"
+CACHE = "/vivi/orch/cache/radix.git"
+REMOTE = "git@hub.local:faberlang/radix.git"
+
+
+class GateInfra(Exception):
+    pass
+
+
+def short(sha):
+    return sha[:10] if sha else "-"
+
+
+class Lander:
+    def __init__(self, a):
+        self.a = a
+        self.out = a.out
+        os.makedirs(os.path.join(self.out, "gates"), exist_ok=True)
+        self.t0 = time.time()
+        self.ev = open(os.path.join(self.out, "events.jsonl"), "a")
+        self.evlock = threading.Lock()
+        self.compose_lock = threading.Lock()
+        self.host_list = a.hosts.split(",")
+        self.locks = {h: threading.Lock() for h in self.host_list}
+        self.gates = {}          # sha -> Future of the gate result
+        self.gates_lock = threading.Lock()
+        self.pool = cf.ThreadPoolExecutor(max_workers=8)
+        self.base = None         # virtual main
+        self.base_fail = None    # failing set of the virtual main
+        self.tolerated = set()   # tests that differ between the studios on the start main
+        self.start_main = None
+        self.landed = []         # one entry per landed candidate
+        self.ejected = {}        # branch -> {reason, ...}
+        self.skipped = {}        # branch -> reason (no-op, already-merged, missing)
+        self.runs = []           # one entry per gate run that actually executed
+
+    # ---- plumbing -------------------------------------------------------------------------------
+    def event(self, kind, **kw):
+        rec = dict(t=round(time.time() - self.t0, 1), event=kind, **kw)
+        with self.evlock:
+            self.ev.write(json.dumps(rec) + "\n")
+            self.ev.flush()
+        print("[%6.0fs] %s %s" % (rec["t"], kind, " ".join("%s=%s" % (k, v) for k, v in kw.items()
+                                                           if k not in ("branches", "failures", "detail"))),
+              flush=True)
+
+    def compose(self, base, branches, record):
+        with self.compose_lock:
+            cmd = [sys.executable, COMPOSE, "--base", base, "--no-fetch"] + list(branches)
+            r = subprocess.run(cmd, capture_output=True, text=True)
+        if r.returncode != 0:
+            raise RuntimeError("compose failed: " + r.stderr.strip())
+        c = json.loads(r.stdout)
+        if record:
+            for x in c["excluded"]:
+                if x["reason"] == "conflict":
+                    self.ejected.setdefault(x["branch"], {"reason": "conflict", "files": x["files"]})
+                    self.event("eject", branch=x["branch"], reason="conflict", files=",".join(x["files"]))
+                else:
+                    self.skipped.setdefault(x["branch"], x["reason"])
+                    self.event("skip", branch=x["branch"], reason=x["reason"])
+        return c
+
+    def gate(self, sha, host=None):
+        """Gate `sha` on `host`, or on whichever studio is free. One run per (sha, host) at a time."""
+        key = (sha, host)
+        with self.gates_lock:
+            fut = self.gates.get(key)
+            mine = fut is None
+            if mine:
+                fut = self.gates[key] = cf.Future()
+        if not mine:
+            return fut.result()
+        try:
+            res = self._gate(sha, host)
+            fut.set_result(res)
+            return res
+        except BaseException as e:
+            fut.set_exception(e)
+            raise
+
+    def _acquire(self, host):
+        while True:
+            for h in ([host] if host else self.host_list):
+                if self.locks[h].acquire(blocking=False):
+                    return h
+            time.sleep(1)
+
+    def _gate(self, sha, want_host=None):
+        host = self._acquire(want_host)
+        try:
+            self.event("gate-start", sha=short(sha), host=host)
+            cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ServerAliveInterval=30", "-n", host,
+                   "%s --sha %s --timeout %d" % (REMOTE_GATE, sha, self.a.gate_timeout)]
+            r = subprocess.run(cmd, capture_output=True, text=True)
+            with open(os.path.join(self.out, "gates", sha + ".stderr"), "w") as f:
+                f.write(r.stderr)
+            try:
+                res = json.loads(r.stdout.strip().splitlines()[-1])
+            except Exception:
+                raise GateInfra("gate %s on %s: no JSON (ssh rc=%s): %s" % (short(sha), host, r.returncode,
+                                                                           r.stderr.strip()[-300:]))
+            res["ssh_host"] = host
+            with open(os.path.join(self.out, "gates", sha + ".json"), "w") as f:
+                json.dump(res, f, indent=1)
+            if res.get("status") not in ("ok", "build_failed"):
+                raise GateInfra("gate %s on %s: status=%s %s" % (short(sha), host, res.get("status"),
+                                                                res.get("error", "")))
+            if not res.get("cached"):
+                self.runs.append(res)
+            self.event("gate-done", sha=short(sha), host=host, status=res["status"], cached=res.get("cached"),
+                       secs=res.get("duration_secs"), build=res.get("build_secs"), test=res.get("test_secs"),
+                       gb=None if res.get("bytes_written") is None else round(res["bytes_written"] / 1e9, 1),
+                       failed=len(res["failures"]))
+            return res
+        finally:
+            self.locks[host].release()
+
+    # ---- judging --------------------------------------------------------------------------------
+    def judge(self, res):
+        """(ok, new failing tests, build errors)"""
+        if res["status"] == "build_failed":
+            return False, [], res.get("build_errors", [])
+        new = sorted(set(res["failures"]) - self.base_fail)
+        return not new, new, []
+
+    def attempt(self, branches, record):
+        """Compose `branches` on the virtual main and gate the candidate."""
+        base = self.base
+        c = self.compose(base, branches, record)
+        att = {"comp": c, "base": base, "res": None, "included": [x["branch"] for x in c["included"]]}
+        if c["candidate"]:
+            att["res"] = self.gate(c["candidate"])
+        return att
+
+    def attempt_parallel(self, groups):
+        futs = [self.pool.submit(self.attempt, g, False) for g in groups]
+        return [f.result() for f in futs]
+
+    def ok(self, att):
+        return att["res"] is None or self.judge(att["res"])[0]
+
+    # ---- landing and ejecting -------------------------------------------------------------------
+    def land(self, att):
+        c, res = att["comp"], att["res"]
+        fixed = sorted(self.base_fail - set(res["failures"]))
+        self.base, self.base_fail = c["candidate"], set(res["failures"]) | self.tolerated
+        self.landed.append({"candidate": c["candidate"], "ref": c["ref"], "branches": att["included"],
+                            "fixed_baseline_failures": fixed})
+        self.event("would-land", candidate=short(c["candidate"]), n=len(att["included"]),
+                   branches=att["included"])
+
+    def eject(self, branch, att):
+        ok, new, errs = self.judge(att["res"])
+        rec = {"reason": "build_failed" if att["res"]["status"] == "build_failed" else "new_failures",
+               "candidate": att["comp"]["candidate"], "new_failures": new, "build_errors": errs}
+        self.ejected[branch] = rec
+        self.event("eject", branch=branch, reason=rec["reason"], n_new=len(new), detail=new[:5] or errs[:3])
+
+    # ---- the bisecting --------------------------------------------------------------------------
+    def resolve(self, branches, first=None, record=True):
+        att = first or self.attempt(branches, record)
+        if not att["included"]:
+            return
+        if self.ok(att):
+            self.land(att)
+            return
+        inc = att["included"]
+        if len(inc) == 1:
+            self.eject(inc[0], att)
+            return
+        h = (len(inc) + 1) // 2
+        left, right = inc[:h], inc[h:]
+        self.event("bisect", n=len(inc), left=len(left), right=len(right))
+        al, ar = self.attempt_parallel([left, right])
+        if self.ok(al) and self.ok(ar):
+            # Each half is fine alone; together they fail. Land the left, then the right on top of it.
+            self.event("interaction", n=len(inc))
+            self.land(al)
+            self.resolve(right)
+            return
+        before = len(self.ejected)
+        good = []
+        for half, a in ((left, al), (right, ar)):
+            good += half if self.ok(a) else self.locate(half, a)
+        if len(self.ejected) > before:
+            if good:
+                self.resolve(good)
+        else:
+            # Nothing was singled out: the failure needs two or more branches together. Go in sequence.
+            self.resolve(left)
+            self.resolve(right)
+
+    def locate(self, branches, att):
+        """`att` (this group on the virtual main) failed. Return the branches of it that are good,
+        ejecting single failing branches on the way."""
+        inc = att["included"]
+        if len(inc) == 1:
+            self.eject(inc[0], att)
+            return []
+        h = (len(inc) + 1) // 2
+        left, right = inc[:h], inc[h:]
+        self.event("bisect", n=len(inc), left=len(left), right=len(right))
+        al, ar = self.attempt_parallel([left, right])
+        good = []
+        for half, a in ((left, al), (right, ar)):
+            good += half if self.ok(a) else self.locate(half, a)
+        return good
+
+    # ---- the run --------------------------------------------------------------------------------
+    def run(self, queue_):
+        a = self.a
+        subprocess.run(["git", "-C", CACHE, "fetch", "-q", "--prune", REMOTE, "+refs/heads/vivi/*:refs/heads/vivi/*"],
+                       check=True)
+        self.start_main = subprocess.run(["git", "-C", CACHE, "rev-parse", a.base],
+                                         capture_output=True, text=True).stdout.strip()
+        self.base = self.start_main
+        self.event("start", main=short(self.start_main), queue=len(queue_), batch=a.batch, hosts=a.hosts)
+        # The baseline runs on every studio: a test that fails on one and not the other is host-dependent
+        # (or flaky) and is tolerated from then on. Cached results make this free on a re-run.
+        base_futs = [self.pool.submit(self.gate, self.start_main, h) for h in self.host_list]
+        batches = [queue_[i:i + a.batch] for i in range(0, len(queue_), a.batch)]
+        first = self.pool.submit(self.attempt, batches[0], True)
+        bases = [f.result() for f in base_futs]
+        for b in bases:
+            if b["status"] != "ok":
+                raise GateInfra("baseline gate of vivi/main on %s did not complete: %s" % (b["host"], b["status"]))
+        sets = [set(b["failures"]) for b in bases]
+        self.tolerated = set.union(*sets) - set.intersection(*sets)
+        self.base_fail = set.union(*sets)
+        self.baseline = bases[0]
+        self.baselines = bases
+        self.event("baseline", failing=len(self.base_fail), host_dependent=len(self.tolerated),
+                   secs=",".join(str(b.get("duration_secs")) for b in bases))
+        for i, b in enumerate(batches):
+            self.event("batch", n=i + 1, of=len(batches), size=len(b))
+            if i == 0:
+                self.resolve(b, first=first.result())
+            else:
+                self.resolve(b)
+
+    # ---- reporting ------------------------------------------------------------------------------
+    def report(self, queue_, error=None):
+        runs = self.runs
+        gate_secs = sum(r.get("duration_secs") or 0 for r in runs)
+        written = [r["bytes_written"] for r in runs if r.get("bytes_written") is not None]
+        landed = [b for l in self.landed for b in l["branches"]]
+        summary = {
+            "dry_run": True, "start_main": self.start_main, "end_virtual_main": self.base,
+            "queue": len(queue_), "batch_size": self.a.batch, "hosts": self.a.hosts,
+            "elapsed_secs": round(time.time() - self.t0), "error": error,
+            "would_land": landed, "ejected": self.ejected, "skipped": self.skipped,
+            "unresolved": [b for b in queue_ if b not in set(landed) | set(self.ejected) | set(self.skipped)],
+            "landed_candidates": self.landed,
+            "baseline_failures": sorted(getattr(self, "baseline", {}).get("failures", [])),
+            "baseline_host_dependent": sorted(self.tolerated),
+            "baseline_runs": [{k: b.get(k) for k in ("host", "duration_secs", "build_secs", "test_secs",
+                                                      "bytes_written", "counts")}
+                              for b in getattr(self, "baselines", [])],
+            "gate_runs": len(runs), "gate_wall_secs_total": round(gate_secs),
+            "bytes_written_per_run": written,
+            "runs": [{k: r.get(k) for k in ("sha", "host", "status", "duration_secs", "build_secs", "test_secs",
+                                            "bytes_written", "counts")} for r in runs],
+        }
+        with open(os.path.join(self.out, "summary.json"), "w") as f:
+            json.dump(summary, f, indent=1)
+        L = ["lander dry run: %d branches, batch %d, hosts %s" % (len(queue_), self.a.batch, self.a.hosts),
+             "vivi/main %s; virtual main at end %s; elapsed %ds" % (short(self.start_main), short(self.base),
+                                                                  summary["elapsed_secs"])]
+        if error:
+            L.append("STOPPED: " + error)
+        L.append("baseline: %d failing tests on vivi/main" % len(summary["baseline_failures"]))
+        L += ["  " + t for t in summary["baseline_failures"]]
+        L.append("host-dependent on the start main (tolerated): %d" % len(self.tolerated))
+        L += ["  " + t for t in sorted(self.tolerated)]
+        L.append("would land: %d branches in %d candidates" % (len(landed), len(self.landed)))
+        for l in self.landed:
+            L.append("  %s: %s" % (short(l["candidate"]), ", ".join(b.replace("vivi/unit/", "") for b in l["branches"])))
+        L.append("ejected: %d" % len(self.ejected))
+        for b, r in sorted(self.ejected.items()):
+            detail = ", ".join(r.get("files", []) or r.get("new_failures", [])[:6] or r.get("build_errors", [])[:2])
+            L.append("  %s  %s  %s" % (b, r["reason"], detail))
+            for t in r.get("new_failures", [])[6:]:
+                L.append("      %s" % t)
+        L.append("skipped (nothing to land): %d" % len(self.skipped))
+        for b, r in sorted(self.skipped.items()):
+            L.append("  %s  %s" % (b, r))
+        if summary["unresolved"]:
+            L.append("unresolved: %s" % ", ".join(summary["unresolved"]))
+        L.append("gate runs: %d, gate wall time summed %ds (%.1f min)" % (len(runs), gate_secs, gate_secs / 60))
+        if written:
+            L.append("SSD bytes written per run: min %.1f GB, max %.1f GB, total %.1f GB" % (
+                min(written) / 1e9, max(written) / 1e9, sum(written) / 1e9))
+        for r in summary["runs"]:
+            L.append("  %s %-10s %-12s %6ss (build %ss, test %ss) %s GB" % (
+                short(r["sha"]), r["host"], r["status"], r["duration_secs"], r["build_secs"], r["test_secs"],
+                None if r["bytes_written"] is None else round(r["bytes_written"] / 1e9, 1)))
+        text = "\n".join(L) + "\n"
+        with open(os.path.join(self.out, "summary.txt"), "w") as f:
+            f.write(text)
+        print(text)
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--queue", required=True)
+    ap.add_argument("--batch", type=int, default=8)
+    ap.add_argument("--hosts", default="studio-01,studio-02")
+    ap.add_argument("--base", default="refs/heads/vivi/main")
+    ap.add_argument("--gate-timeout", type=int, default=2400)
+    ap.add_argument("--out")
+    a = ap.parse_args()
+    a.out = a.out or "/vivi/orch/lander/runs/" + time.strftime("%Y%m%d-%H%M%S")
+    queue_ = [l.strip() for l in open(a.queue) if l.strip() and not l.startswith("#")]
+    L = Lander(a)
+    err = None
+    try:
+        L.run(queue_)
+    except Exception as e:
+        err = "%s: %s" % (type(e).__name__, e)
+        L.event("stopped", error=err)
+    L.report(queue_, err)
+    sys.exit(1 if err else 0)
+
+
+if __name__ == "__main__":
+    main()

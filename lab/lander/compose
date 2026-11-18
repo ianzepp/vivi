@@ -1,0 +1,144 @@
+#!/usr/bin/env python3
+"""compose: build one candidate merge commit from a base and an ordered list of unit branches.
+
+Runs on hub, in the bare cache of the radix lane (/vivi/orch/cache/radix.git). No worktree: merges are
+done with `git merge-tree --write-tree`, so nothing is checked out and the lane's refs/heads are never
+written. The only remote write is `refs/vivi/candidates/<id>` (the candidate commit), and only when a
+candidate exists.
+
+  compose [--base REF|SHA] [--id ID] [--no-fetch] [--no-push] BRANCH...
+
+Merge rule, per branch, in the order given:
+  - already contained in the candidate                       -> excluded "already-merged"
+  - merges cleanly                                           -> included
+  - conflict only on corpus/known-results.json (retired pin) -> included; the candidate keeps its own
+                                                                side of that path (the base's, unless an
+                                                                earlier branch changed it cleanly)
+  - any other conflict                                       -> excluded "conflict" (files listed)
+The candidate has one merge commit per included branch, so the history says what went in. Author,
+committer and dates are fixed (dates = the base commit's) so the same inputs give the same sha.
+
+Output: one JSON object on stdout; progress on stderr. Exit 0 even when every branch is excluded
+(candidate is then null); exit 2 on a usage or git error.
+"""
+import argparse
+import json
+import os
+import subprocess
+import sys
+import tempfile
+
+REMOTE = "git@hub.local:faberlang/radix.git"
+CACHE = os.environ.get("LANDER_CACHE", "/vivi/orch/cache/radix.git")
+MAIN = "refs/heads/vivi/main"
+PIN = "corpus/known-results.json"
+IDENT = {
+    "GIT_AUTHOR_NAME": "Ian Zepp", "GIT_AUTHOR_EMAIL": "ian.zepp@protonmail.com",
+    "GIT_COMMITTER_NAME": "Ian Zepp", "GIT_COMMITTER_EMAIL": "ian.zepp@protonmail.com",
+}
+
+
+def die(msg):
+    print(f"compose: {msg}", file=sys.stderr)
+    sys.exit(2)
+
+
+def git(*args, env=None, check=True, inp=None):
+    e = dict(os.environ)
+    if env:
+        e.update(env)
+    r = subprocess.run(["git", "-C", CACHE, *args], capture_output=True, text=True, env=e, input=inp)
+    if check and r.returncode != 0:
+        die(f"git {' '.join(args)}: {r.stderr.strip()}")
+    return r
+
+
+def resolve_branch(name):
+    ref = name if name.startswith("refs/") else f"refs/heads/{name}"
+    r = git("rev-parse", "-q", "--verify", f"{ref}^{{commit}}", check=False)
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
+def resolve_base(base):
+    r = git("rev-parse", "-q", "--verify", f"{base}^{{commit}}", check=False)
+    if r.returncode != 0:
+        die(f"base {base!r} not found in {CACHE}")
+    return r.stdout.strip()
+
+
+def keep_our_pin(tree, cur):
+    """Return `tree` with PIN set to what `cur` has (or removed, if `cur` has none)."""
+    with tempfile.TemporaryDirectory(prefix="compose-idx-") as d:
+        env = {"GIT_INDEX_FILE": os.path.join(d, "index"), "GIT_WORK_TREE": d}
+        git("read-tree", tree, env=env)
+        ours = git("rev-parse", "-q", "--verify", f"{cur}:{PIN}", check=False)
+        if ours.returncode == 0:
+            mode = git("ls-tree", cur, PIN).stdout.split()[0]
+            git("update-index", "--add", "--cacheinfo", f"{mode},{ours.stdout.strip()},{PIN}", env=env)
+        else:
+            git("update-index", "--force-remove", PIN, env=env)
+        return git("write-tree", env=env).stdout.strip()
+
+
+def compose(base_sha, branches):
+    cur, base_date = base_sha, git("log", "-1", "--format=%cI", base_sha).stdout.strip()
+    env = dict(IDENT, GIT_AUTHOR_DATE=base_date, GIT_COMMITTER_DATE=base_date)
+    included, excluded = [], []
+    for b in branches:
+        tip = resolve_branch(b)
+        if tip is None:
+            excluded.append({"branch": b, "reason": "missing"})
+            continue
+        if git("merge-base", "--is-ancestor", tip, cur, check=False).returncode == 0:
+            excluded.append({"branch": b, "reason": "already-merged"})
+            continue
+        mt = git("merge-tree", "--write-tree", "--name-only", cur, tip, check=False)
+        lines = mt.stdout.splitlines()
+        if mt.returncode == 0:
+            tree, pin_resolved = lines[0], False
+        elif mt.returncode == 1 and lines:
+            files = []
+            for line in lines[1:]:
+                if not line:
+                    break
+                files.append(line)
+            if set(files) != {PIN}:
+                excluded.append({"branch": b, "reason": "conflict", "files": files})
+                continue
+            tree, pin_resolved = keep_our_pin(lines[0], cur), True
+        else:
+            die(f"merge-tree {b}: {mt.stderr.strip()}")
+        if tree == git("rev-parse", f"{cur}^{{tree}}").stdout.strip():
+            excluded.append({"branch": b, "reason": "no-op"})
+            continue
+        cur = git("commit-tree", tree, "-p", cur, "-p", tip, "-m", f"Merge {b}", env=env).stdout.strip()
+        included.append({"branch": b, "tip": tip, "pin_resolved": pin_resolved})
+        print(f"compose: + {b}{' (pin side kept)' if pin_resolved else ''}", file=sys.stderr)
+    return (cur if included else None), included, excluded
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--base", default=MAIN)
+    ap.add_argument("--id", help="candidate id (default: first 12 of the candidate sha)")
+    ap.add_argument("--no-fetch", action="store_true", help="do not refresh vivi/* from the lane first")
+    ap.add_argument("--no-push", action="store_true", help="build the candidate but do not push the ref")
+    ap.add_argument("branches", nargs="+")
+    a = ap.parse_args()
+    if not a.no_fetch:
+        git("fetch", "-q", "--prune", REMOTE, "+refs/heads/vivi/*:refs/heads/vivi/*")
+    base_sha = resolve_base(a.base)
+    cand, included, excluded = compose(base_sha, a.branches)
+    ref = None
+    if cand and not a.no_push:
+        ref = f"refs/vivi/candidates/{a.id or cand[:12]}"
+        r = git("push", "-q", REMOTE, f"{cand}:{ref}", check=False)
+        if r.returncode != 0:
+            die(f"push {ref}: {r.stderr.strip()}")
+    json.dump({"base": base_sha, "candidate": cand, "ref": ref, "included": included,
+               "excluded": excluded}, sys.stdout, indent=1)
+    print()
+
+
+if __name__ == "__main__":
+    main()

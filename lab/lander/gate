@@ -1,0 +1,231 @@
+#!/usr/bin/env python3
+"""gate: run the full workspace build and tests of one commit in a warm tree, report JSON.
+
+Runs on a studio (python3 3.9 compatible, standard library only). One gate at a time per tree.
+
+  gate --sha SHA [--base SHA] [--tree DIR] [--timeout SECS] [--jobs N] [--no-cache]
+
+What it does:
+  1. fetch refs/vivi/candidates/* and vivi/main from the `lane` remote into the tree's repo;
+  2. `git checkout --detach SHA` in the tree (default: .../faberlang/radix/land);
+  3. `cargo test --workspace --lib --bins --tests --no-run`, then the same without --no-run and with
+     --no-fail-fast. Doctests are left out: the repo's own 4b lane skips them (68 doctest targets hold
+     one test between them, and the rustdoc pass is a full extra compile);
+  4. reads the failing test set from the output (key: executable[source]::test), the pass/fail/ignored
+     totals, the build and test times, and the bytes the Lanes SSD wrote during the run (smartctl).
+  The result for a sha is cached in ~/lander/results/<sha>.json once the run completed (status ok or
+  build_failed); a timeout or an infrastructure error is never cached.
+
+With --base SHA it also gates the base first (cached, so once per sha per host) and judges:
+  pass = status ok and no failing test that is not also failing on the base.
+Without --base, `failures` is the whole failing set and `pass` is null; the caller compares.
+
+Output: one JSON object on stdout. Everything else goes to stderr. Exit 0 when the gate ran (pass or
+not), 3 on timeout, 4 on an infrastructure error (fetch, checkout, lock).
+"""
+import argparse
+import fcntl
+import json
+import os
+import re
+import signal
+import subprocess
+import sys
+import time
+
+HOME = os.path.expanduser("~")
+STATE = os.path.join(HOME, "lander")
+DEFAULT_TREE = "/Volumes/Lanes/vivi/trees/faberlang/radix/land"
+TMP_ROOT = "/Volumes/Lanes/vivi/tmp/lander"
+CARGO_TEST = ["cargo", "test", "--workspace", "--lib", "--bins", "--tests"]
+
+
+def log(msg):
+    print("gate: " + msg, file=sys.stderr, flush=True)
+
+
+class Infra(Exception):
+    pass
+
+
+class Timeout(Exception):
+    pass
+
+
+def run(cmd, cwd=None, env=None, out=None, deadline=None, check=True):
+    """Run cmd in its own process group; kill the group at the deadline. Returns (rc, text-or-None)."""
+    left = None if deadline is None else deadline - time.time()
+    if left is not None and left <= 0:
+        raise Timeout()
+    f = open(out, "w") if out else subprocess.PIPE
+    p = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=f, stderr=subprocess.STDOUT if out else subprocess.PIPE,
+                         universal_newlines=True, start_new_session=True)
+    try:
+        so, se = p.communicate(timeout=left)
+    except subprocess.TimeoutExpired:
+        os.killpg(p.pid, signal.SIGKILL)
+        p.wait()
+        raise Timeout()
+    finally:
+        if out:
+            f.close()
+    if check and p.returncode != 0:
+        raise Infra("%s: rc=%s %s" % (" ".join(cmd[:3]), p.returncode, (se or "").strip()[-300:]))
+    return p.returncode, so
+
+
+def ssd_units():
+    """Data units written by the Lanes SSD (1 unit = 512,000 bytes), or None."""
+    try:
+        for d in range(10):
+            info = subprocess.run(["smartctl", "-i", "disk%d" % d], capture_output=True, text=True).stdout
+            if "9100 PRO" in info:
+                out = subprocess.run(["smartctl", "-A", "disk%d" % d], capture_output=True, text=True).stdout
+                for line in out.splitlines():
+                    if "Data Units Written" in line:
+                        return int(re.sub(r"[ ,].*", "", line.split(":", 1)[1].strip().replace(",", "")))
+    except Exception:
+        pass
+    return None
+
+
+RUNNING = re.compile(r"^\s+Running (.+?) \((?:.*/)?([^/]+?)(?:-[0-9a-f]{16})?\)\s*$")
+TEST_FAIL = re.compile(r"^test (.+) \.\.\. FAILED$")
+RESULT = re.compile(r"^test result: \w+\. (\d+) passed; (\d+) failed; (\d+) ignored")
+BUILD_ERR = re.compile(r"^error(\[E\d+\])?: ")
+
+
+def parse(path):
+    """Failing test keys, totals and build errors from a cargo test output file."""
+    failures, errors = [], []
+    passed = failed = ignored = 0
+    cur, cur_fail = None, 0
+    with open(path, errors="replace") as f:
+        for line in f:
+            line = line.rstrip("\n")
+            m = RUNNING.match(line)
+            if m:
+                cur, cur_fail = "%s[%s]" % (m.group(2), m.group(1)), 0
+                continue
+            m = TEST_FAIL.match(line)
+            if m and cur:
+                failures.append("%s::%s" % (cur, m.group(1)))
+                cur_fail += 1
+                continue
+            m = RESULT.match(line)
+            if m:
+                passed, failed, ignored = passed + int(m.group(1)), failed + int(m.group(2)), ignored + int(m.group(3))
+                continue
+            if line.startswith("error: test failed,") and cur and cur_fail == 0:
+                failures.append("%s::<test binary failed without naming a test>" % cur)
+            elif BUILD_ERR.match(line) and len(errors) < 8 and "test failed" not in line \
+                    and "targets failed" not in line:
+                errors.append(line[:240])
+    return sorted(set(failures)), {"passed": passed, "failed": failed, "ignored": ignored}, errors
+
+
+def gate_one(sha, tree, timeout, jobs, use_cache):
+    os.makedirs(os.path.join(STATE, "results"), exist_ok=True)
+    os.makedirs(os.path.join(STATE, "logs"), exist_ok=True)
+    cache = os.path.join(STATE, "results", sha + ".json")
+    if use_cache and os.path.exists(cache):
+        r = json.load(open(cache))
+        r["cached"] = True
+        log("cached result for %s" % sha[:10])
+        return r
+    t0 = time.time()
+    deadline = t0 + timeout
+    host = os.uname()[1].split(".")[0]
+    res = {"sha": sha, "host": host, "tree": tree, "cached": False, "status": None, "failures": [],
+           "counts": None, "build_secs": None, "test_secs": None, "duration_secs": None,
+           "bytes_written": None, "log": None, "build_errors": []}
+    logfile = os.path.join(STATE, "logs", "%s-%s.log" % (sha[:12], time.strftime("%Y%m%d-%H%M%S")))
+    res["log"] = logfile
+    try:
+        run(["git", "-C", tree, "fetch", "-q", "lane", "+refs/vivi/candidates/*:refs/vivi/candidates/*",
+             "+refs/heads/vivi/main:refs/remotes/lane/vivi/main"], deadline=deadline)
+        if run(["git", "-C", tree, "cat-file", "-e", sha + "^{commit}"], check=False)[0] != 0:
+            raise Infra("commit %s is not in the tree's repo after the fetch" % sha)
+        run(["git", "-C", tree, "checkout", "-q", "-f", "--detach", sha], deadline=deadline)
+    except Timeout:
+        res["status"] = "timeout"
+        return res
+    tmp = os.path.join(TMP_ROOT, "%s-%d" % (sha[:12], os.getpid()))
+    os.makedirs(tmp)
+    env = dict(os.environ, TMPDIR=tmp, CARGO_BUILD_JOBS=str(jobs), CARGO_TERM_COLOR="never")
+    u0 = ssd_units()
+    try:
+        tb = time.time()
+        rc, _ = run(CARGO_TEST + ["--no-run"], cwd=tree, env=env, out=logfile, deadline=deadline, check=False)
+        res["build_secs"] = round(time.time() - tb, 1)
+        if rc != 0:
+            res["failures"], res["counts"], res["build_errors"] = parse(logfile)
+            if not res["build_errors"]:
+                raise Infra("cargo build failed with no compiler error in %s" % logfile)
+            res["status"] = "build_failed"
+        else:
+            tt = time.time()
+            run(CARGO_TEST + ["--no-fail-fast"], cwd=tree, env=env, out=logfile + ".test", deadline=deadline,
+                check=False)
+            res["test_secs"] = round(time.time() - tt, 1)
+            res["failures"], res["counts"], res["build_errors"] = parse(logfile + ".test")
+            if res["counts"]["passed"] + res["counts"]["failed"] == 0:
+                raise Infra("no tests ran; see %s.test" % logfile)
+            res["build_errors"] = []
+            res["status"] = "ok"
+    except Timeout:
+        res["status"] = "timeout"
+    finally:
+        u1 = ssd_units()
+        if u0 is not None and u1 is not None:
+            res["bytes_written"] = (u1 - u0) * 512000
+        res["duration_secs"] = round(time.time() - t0, 1)
+        subprocess.run(["trash", tmp], capture_output=True)
+    if res["status"] in ("ok", "build_failed"):
+        tmpf = cache + ".tmp"
+        json.dump(res, open(tmpf, "w"))
+        os.rename(tmpf, cache)
+    return res
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--sha", required=True)
+    ap.add_argument("--base")
+    ap.add_argument("--tree", default=DEFAULT_TREE)
+    ap.add_argument("--timeout", type=int, default=1800, help="seconds for the whole gate of one sha")
+    ap.add_argument("--jobs", type=int, default=16)
+    ap.add_argument("--no-cache", action="store_true")
+    a = ap.parse_args()
+    os.makedirs(STATE, exist_ok=True)
+    lock = open(os.path.join(STATE, "gate.lock"), "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        print(json.dumps({"sha": a.sha, "status": "error", "error": "another gate holds the lock"}))
+        sys.exit(4)
+    try:
+        base = None
+        if a.base:
+            base = gate_one(a.base, a.tree, a.timeout, a.jobs, not a.no_cache)
+            if base["status"] != "ok":
+                print(json.dumps({"sha": a.sha, "base": a.base, "status": "baseline_" + str(base["status"]),
+                                  "pass": False, "baseline": base}))
+                sys.exit(3 if base["status"] == "timeout" else 0)
+        res = gate_one(a.sha, a.tree, a.timeout, a.jobs, not a.no_cache)
+        if base is not None:
+            res["base"] = a.base
+            res["baseline_failures"] = base["failures"]
+            res["new_failures"] = sorted(set(res["failures"]) - set(base["failures"]))
+            res["pass"] = res["status"] == "ok" and not res["new_failures"]
+        else:
+            res["pass"] = None
+        print(json.dumps(res))
+        sys.exit(3 if res["status"] == "timeout" else 0)
+    except Infra as e:
+        print(json.dumps({"sha": a.sha, "status": "error", "error": str(e)}))
+        sys.exit(4)
+
+
+if __name__ == "__main__":
+    main()
