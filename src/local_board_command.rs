@@ -171,8 +171,14 @@ fn print_identity(mailspace: &Mailspace, identity: &IdentityBoard) {
     }
     print_schedule_line(&identity.schedule, identity.last_auto_run.as_deref());
     print_items("tasks", &identity.tasks, |_| 0);
+    let needs: Vec<String> = identity
+        .needs
+        .iter()
+        .map(|need| need.handle.clone())
+        .collect();
+    let runs = vivi_core::pump::flow::mail::read::run_counts(mailspace, &needs);
     print_items("needs", &identity.needs, |handle| {
-        vivi_core::pump::flow::mail::read::run_count(mailspace, handle)
+        runs.get(handle).copied().unwrap_or(0)
     });
     print_items("wants", &identity.wants, |_| 0);
     if identity.wants_hidden > 0 {

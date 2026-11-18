@@ -1,6 +1,6 @@
 //! Reader tests on a real mailspace.
 
-use super::{run_count, sentinel_count_of};
+use super::{run_count, run_counts, sentinel_count_of};
 use crate::mailspace::{Mailspace, SendRequest};
 use crate::pump::fixture::project;
 use crate::pump::flow::mail::{MailReader, MailspacePort, NeedStatus, OpenRecords, TaskStatus};
@@ -56,6 +56,40 @@ fn run_count_goes_from_zero_to_two_as_sentinels_are_bound() {
     };
     assert_eq!(port.sentinel_count(&need).unwrap(), 2);
     assert_eq!(port.bound_units(&need).unwrap().len(), 3);
+}
+
+#[test]
+fn run_counts_for_many_needs_match_the_single_need_count() {
+    let project = project();
+    let mailspace = &project.mailspace;
+    let busy = project.need("busy need");
+    let quiet = project.need("quiet need");
+    let first = send_task(mailspace, "sentinel 1", &sentinel_body(&busy, 1, ""));
+    let second = send_task(mailspace, "sentinel 2", &sentinel_body(&busy, 2, ""));
+    let step = send_task(mailspace, "step", &step_body(&busy, 1, "plan", ""));
+    mailspace
+        .backlog_bind_units(&busy, &[first, second, step])
+        .unwrap();
+
+    let asked = vec![busy.clone(), quiet.clone(), "ffffffff".to_string()];
+    let counts = run_counts(mailspace, &asked);
+    assert_eq!(counts.get(&busy).copied(), Some(2));
+    assert_eq!(
+        counts.get(&busy).copied(),
+        Some(run_count(mailspace, &busy))
+    );
+    assert_eq!(
+        counts.get(&quiet).copied().unwrap_or(0),
+        run_count(mailspace, &quiet)
+    );
+    assert_eq!(counts.get("ffffffff").copied().unwrap_or(0), 0);
+
+    let many = mailspace.backlog_bound_units_many(&asked).unwrap();
+    assert_eq!(
+        many.get(&busy).cloned().unwrap_or_default(),
+        mailspace.backlog_bound_units(&busy).unwrap()
+    );
+    assert_eq!(many.get(&busy).map(Vec::len), Some(3));
 }
 
 #[test]

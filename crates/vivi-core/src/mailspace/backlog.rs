@@ -16,6 +16,8 @@ use vivi_storage::storage::{
     WorkGraphEdgeInput, WorkGraphNodeRow,
 };
 
+mod bound_units;
+
 /// A resolved `--depends-on` reference to an existing need or want.
 pub(super) struct BacklogDep {
     pub(super) handle: String,
@@ -634,32 +636,6 @@ impl Mailspace {
             }],
         })?;
         Ok(())
-    }
-
-    /// Units bound to the need named by `handle`, with their node states.
-    ///
-    /// # Errors
-    /// Returns a [`VivariumError`] on storage failure.
-    pub fn backlog_bound_units(
-        &self,
-        handle: &str,
-    ) -> Result<Vec<BacklogBoundUnit>, VivariumError> {
-        let storage = self.storage()?;
-        let Some(graph) = storage.work_graph_by_code(BACKLOG_GRAPH_CODE)? else {
-            return Ok(Vec::new());
-        };
-        let nodes = storage.work_graph_nodes(&graph.handle)?;
-        let Some(parent) = backlog_node_by_token(&storage, &nodes, handle)? else {
-            return Ok(Vec::new());
-        };
-        Ok(storage
-            .work_graph_nodes_by_subgraph(&graph.handle, &parent.source_id)?
-            .into_iter()
-            .map(|unit| BacklogBoundUnit {
-                handle: unit.source_id,
-                state: unit.state,
-            })
-            .collect())
     }
 
     /// Whether the work item named by `handle` has a backlog node at all —

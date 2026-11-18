@@ -1,10 +1,12 @@
 //! Reading half of the mailspace port: task, need and record state, marks,
 //! bound units and the run count derived from bound sentinels.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 use super::{MailReader, MailspacePort, NeedStatus, OpenRecords, TaskState, TaskStatus};
-use crate::mailspace::{Mailspace, PumpState, held_item, is_done, newest_move, sorted_marks};
+use crate::mailspace::{
+    BacklogBoundUnit, Mailspace, PumpState, held_item, is_done, newest_move, sorted_marks,
+};
 use vivi_error::VivariumError;
 use vivi_mail::letter::read::{need_of, step_of};
 use vivi_mail::letter::work::StepFront;
@@ -18,6 +20,11 @@ use vivi_storage::storage::{Storage, StoredMessageView};
 pub fn sentinel_count_of(mailspace: &Mailspace, need: &str) -> Result<usize, VivariumError> {
     let units = mailspace.backlog_bound_units(need)?;
     let storage = mailspace.storage()?;
+    count_sentinels(&storage, &units)
+}
+
+/// Bound units whose step table is a sentinel.
+fn count_sentinels(storage: &Storage, units: &[BacklogBoundUnit]) -> Result<usize, VivariumError> {
     let mut count = 0;
     for unit in units {
         let message_id = storage.resolve_message_token(&unit.handle)?;
@@ -37,6 +44,26 @@ pub fn run_count(mailspace: &Mailspace, need: &str) -> usize {
         Ok(count) => count,
         Err(_) => 0,
     }
+}
+
+/// [`run_count`] for many needs from one read of the backlog graph, keyed by
+/// the handle as given. A need whose count cannot be read shows no runs; a
+/// mailspace that cannot be read gives an empty map.
+#[must_use]
+pub fn run_counts(mailspace: &Mailspace, needs: &[String]) -> HashMap<String, usize> {
+    let Ok(units) = mailspace.backlog_bound_units_many(needs) else {
+        return HashMap::new();
+    };
+    let Ok(storage) = mailspace.storage() else {
+        return HashMap::new();
+    };
+    units
+        .into_iter()
+        .map(|(need, units)| {
+            let count = count_sentinels(&storage, &units).unwrap_or(0);
+            (need, count)
+        })
+        .collect()
 }
 
 impl MailReader for MailspacePort {
