@@ -192,6 +192,18 @@ The pump's other trees (`main`, the faber build tree that
 `hub-studio-faber.timer` uses; `bisect`; `slot-1..8`) stay where they were.
 The agent slots start cold: each slot's first radix build is a full one.
 
+The record writes to the hosted `faberlang` project (since 2026-11-18). Only
+hub's control worker writes it, with its own key at hub
+`~/.vivi/temporal-mcp.key` (principal `hub.temporal@<project>`, key id
+`key_81IxaJWESQs`, member level). The key acts as the project role
+`temporal` (kind `runtime`), so replies read as from `temporal`. Marks and
+closes run `for` `operator`, which holds the needs; without it a mark is
+refused and a close only files a report reply. Proven on a throwaway need,
+`f3266352`, which was replied to, marked and closed. A record failure is
+retried without limit, so a need started on `cluster.toml` must be a real
+`faberlang` handle; the sandbox runs use `sandbox.toml`, whose record only
+logs. Revoke the key with `key_revoke` and the host token.
+
 Hub uses `protoc`-free builds (`temporalio-common/vendored-protox`) with
 `~/.rustup/toolchains/1.93-x86_64-unknown-linux-gnu/bin/cargo`.
 

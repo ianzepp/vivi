@@ -111,7 +111,15 @@ hot_paths = []
 max_backlog_s = 3600
 land_s_per_unit = 180
 
-# The record writes to the control worker's log until the operator picks
-# the vivi project for status replies.
+# The record: status replies, park marks and closes on the need's thread
+# in the faberlang project. Only the control worker (hub) writes it. Its
+# key (principal hub.temporal, key_81IxaJWESQs, minted 2026-11-18) acts as
+# the `temporal` role; marks and closes run for `operator`, which holds the
+# needs. A need started on this config must be a real faberlang handle.
 [record]
-kind = "log"
+kind = "mcp"
+server = "http://127.0.0.1:18190"
+project = "qafq0-wfysf-tsqa6-435tp-kckm5"
+key_file = "~/.vivi/temporal-mcp.key"
+role = "operator"
+vivi = "/usr/local/bin/vivi"

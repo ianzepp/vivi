@@ -71,7 +71,8 @@ fn cluster_config_places_each_step() {
     assert!(!r.gate_hosts.contains(&"mini-m1".to_string()));
     assert_eq!(r.review_hosts(), &["mini-m1".to_string()][..]);
     assert_eq!(c.server.address, "http://192.168.1.237:7233");
-    assert_eq!(c.record.kind, RecordKind::Log);
+    assert_eq!(c.record.kind, RecordKind::Mcp);
+    assert_eq!(c.record.role, "operator");
     assert_eq!(c.target("radix").unwrap().main, "vivi/main");
     assert_eq!(c.target("pump-sandbox").unwrap().main, "temporal/main");
 }
