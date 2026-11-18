@@ -187,8 +187,15 @@ binary (`nehelper`: "Could not find bundle ID or display name"), so the
 connect to `192.168.1.237:7233` fails with `EHOSTUNREACH`, and the ad-hoc
 signing identity changes with every build. Processes started over ssh are
 exempt, which is why foreground workers work. The studios also have no GUI
-session for a prompt. System-domain daemons are expected to be exempt;
-this is not yet proven here. Installing the daemon needs sudo:
+session for a prompt.
+
+The daemon is exempt only while nobody is logged in at the Mac's screen
+(checked 2026-11-18). With a GUI session open, the same check applies to
+the daemon's process and it fails in the same way: the mini failed until
+its screen session was logged out, and the studios work because they sit
+at the login window. Keep worker Macs logged out at the screen; a screen
+login stops that Mac's worker from reaching hub. Installing the daemon
+needs sudo:
 
 ```sh
 sudo cp ~/vivi-temporal/launchd/vivi.temporal.worker.plist /Library/LaunchDaemons/
