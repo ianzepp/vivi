@@ -18,6 +18,7 @@ path = "src/main.rs"
 [dependencies]
 # The #[activities] and #[workflow_methods] macros expand to paths in these two.
 futures = "0.3"
+libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 temporalio-client = "1.2.0"
 # vendored-protox: compile the protos in Rust, so a host without protoc (hub)

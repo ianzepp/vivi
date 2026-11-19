@@ -133,35 +133,33 @@ fn default_check_timeout() -> u64 {
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct AgentConfig {
-    /// Project root of the local mailspace that owns the pool.
-    pub space: String,
-    pub pool: String,
-    /// The pool's `worktree_of` repository: the warm tree.
+    /// The warm repository the agent worktrees are made from.
     pub repo: String,
+    /// The agent worktrees, `slot-<n>`, one per agent activity slot this
+    /// host's agent queue allows.
+    pub slots_dir: String,
     /// A clone the check runs in.
     pub check_tree: String,
     pub model: String,
     #[serde(default = "default_budget")]
     pub budget_s: u64,
-    #[serde(default = "default_vivi")]
-    pub vivi: String,
-    #[serde(default = "default_from")]
-    pub from: String,
-    #[serde(default = "default_to")]
-    pub to: String,
+    /// The implement harness, run with `sh -c` in the worktree. `{model}`
+    /// and `{brief}` (the brief file's path) are filled in.
+    #[serde(default = "default_harness")]
+    pub harness: String,
+    /// The review harness: read-only tools, no shell.
+    #[serde(default = "default_review_harness")]
+    pub review_harness: String,
 }
 
 fn default_budget() -> u64 {
     1_800
 }
-fn default_vivi() -> String {
-    "vivi".to_string()
+fn default_harness() -> String {
+    "pi -p --no-session --model {model} @{brief}".to_string()
 }
-fn default_from() -> String {
-    "operator".to_string()
-}
-fn default_to() -> String {
-    "hand".to_string()
+fn default_review_harness() -> String {
+    "pi -p --no-session --no-mcp --tools read,grep,find,ls --model {model} @{brief}".to_string()
 }
 
 /// The Lander's commands and trees for this target.
@@ -313,7 +311,7 @@ impl Config {
         };
         for target in self.targets.values_mut() {
             let (a, l) = (&mut target.agent, &mut target.lander);
-            for path in [&mut a.space, &mut a.repo, &mut a.check_tree, &mut a.vivi] {
+            for path in [&mut a.repo, &mut a.slots_dir, &mut a.check_tree] {
                 put(path);
             }
             for path in [&mut l.compose, &mut l.gate, &mut l.cache, &mut l.gate_tree] {
@@ -321,6 +319,17 @@ impl Config {
             }
         }
         Ok(self)
+    }
+
+    /// How many agent jobs `host` runs at once: its agent queue's activity
+    /// slots, which is also how many agent worktrees it keeps.
+    pub fn agent_slots(&self, host: &str) -> usize {
+        let queue = self.routing.agent.replace("{host}", host);
+        self.hosts
+            .get(host)
+            .and_then(|h| h.queues.get(&queue))
+            .copied()
+            .unwrap_or(1)
     }
 
     /// The queues a host polls and the activity slots for each.

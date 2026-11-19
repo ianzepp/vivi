@@ -2832,6 +2832,7 @@ name = "vivi-temporal"
 version = "0.2.0"
 dependencies = [
  "futures",
+ "libc",
  "serde",
  "serde_json",
  "temporalio-client",

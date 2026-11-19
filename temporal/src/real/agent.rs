@@ -1,4 +1,5 @@
-//! `implement` and `review`: agent jobs through the pool on this host.
+//! `implement` and `review`: agent jobs in this host's worktrees
+//! (`real::runner`).
 //!
 //! Implement always starts from the lane, not from the heartbeat: the
 //! remote head of the slice branch is the ground truth (heartbeat details
@@ -13,7 +14,7 @@ use temporalio_sdk::activities::{ActivityContext, ActivityError};
 use crate::classify::{FailureClass, to_activity_error};
 use crate::config::{Target, expand};
 use crate::real::git::{Pushed, fetch, git_ok, infra, push_fenced, remote_head};
-use crate::real::pool::{Job, agent_failure, run_job};
+use crate::real::runner::{Job, agent_failure, run_job};
 use crate::types::{Checkpoint, ImplementInput, ReviewResult, StepInput};
 
 /// Bring the warm repository's view of the lane up to date and return the
@@ -42,24 +43,12 @@ pub async fn implement(
     ctx: &ActivityContext,
     input: &ImplementInput,
     host: &str,
+    slots: usize,
 ) -> Result<Checkpoint, ActivityError> {
     let agent = &target.agent;
     let repo = expand(&agent.repo);
     let branch = &input.branch;
     let (head, main) = sync_repo(&repo, target, branch).await?;
-    // The pool continues a local branch only from itself; point it at the
-    // lane's head, or drop a stale one when the lane has none.
-    let local = format!("refs/heads/{branch}");
-    let from = match &head {
-        Some(sha) => {
-            git_ok(&repo, &["update-ref", &local, sha]).await?;
-            branch.clone()
-        }
-        None => {
-            let _ = git_ok(&repo, &["update-ref", "-d", &local]).await;
-            main.clone()
-        }
-    };
     let beat = Checkpoint {
         branch: branch.clone(),
         head: head.clone().unwrap_or_default(),
@@ -69,28 +58,27 @@ pub async fn implement(
     let job = Job {
         subject: format!("{} {} round {}", input.need, input.slice, input.round),
         brief: implement_brief(input, target, &main),
-        flags: vec![
-            "--branch".into(),
-            branch.clone(),
-            "--from".into(),
-            from,
-            "--model".into(),
-            agent.model.clone(),
-        ],
+        from: head.clone().unwrap_or_else(|| main.clone()),
+        read_only: false,
         budget: Duration::from_secs(agent.budget_s),
         ctx,
     };
-    let collected = run_job(agent, job, &beat).await?;
-    let pushed = match collected.push.as_str() {
-        "committed" => publish_wip(&repo, target, branch, &collected.sha, head.as_deref()).await?,
-        _ => head.clone(),
+    let ran = run_job(agent, slots, job, &beat).await?;
+    // Push what the agent committed even when it failed: the next attempt
+    // starts from it.
+    let pushed = match &ran.sha {
+        Some(sha) => publish_wip(&repo, target, branch, sha, head.as_deref()).await?,
+        None => head.clone(),
     };
-    if !collected.agent_ok() {
-        return Err(agent_failure("implement", &collected));
+    if !ran.agent_ok() {
+        return Err(agent_failure("implement", &ran));
     }
-    let Some(head) = pushed else {
+    if ran.sha.is_none() {
         let what = "implement: the agent finished without a change".to_string();
         return Err(to_activity_error(&FailureClass::Format, what));
+    }
+    let Some(head) = pushed else {
+        return Err(infra("implement: no head after the push".to_string()));
     };
     let done = Checkpoint { head, ..beat };
     ctx.record_heartbeat(done.clone()).await?;
@@ -140,6 +128,7 @@ pub async fn review(
     target: &Target,
     ctx: &ActivityContext,
     input: &StepInput,
+    slots: usize,
 ) -> Result<ReviewResult, ActivityError> {
     let agent = &target.agent;
     let repo = expand(&agent.repo);
@@ -153,24 +142,19 @@ pub async fn review(
             input.need, input.slice, input.round
         ),
         brief: review_brief(input, &base, &diff),
-        flags: vec![
-            "--read-only".into(),
-            "--from".into(),
-            input.head.clone(),
-            "--model".into(),
-            agent.model.clone(),
-        ],
+        from: input.head.clone(),
+        read_only: true,
         budget: Duration::from_secs(agent.budget_s.min(900)),
         ctx,
     };
-    let collected = run_job(agent, job, &input.head).await?;
-    if !collected.agent_ok() {
-        return Err(agent_failure("review", &collected));
+    let ran = run_job(agent, slots, job, &input.head).await?;
+    if !ran.agent_ok() {
+        return Err(agent_failure("review", &ran));
     }
-    parse_verdict(&collected.receipt).ok_or_else(|| {
+    parse_verdict(&ran.receipt).ok_or_else(|| {
         let what = format!(
             "review: no verdict line in: {}",
-            crate::real::cmd::tail(&collected.receipt, 400)
+            crate::real::cmd::tail(&ran.receipt, 400)
         );
         to_activity_error(&FailureClass::Format, what)
     })

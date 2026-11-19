@@ -34,13 +34,11 @@ check_command = "cargo test --quiet"
 check_timeout_s = 600
 
 [targets.pump-sandbox.agent]
-space = "~/vivi-temporal/space/pump-sandbox"
-pool = "agent"
 repo = "~/vivi-temporal/trees/pump-sandbox/repo"
+slots_dir = "~/vivi-temporal/trees/pump-sandbox/slots"
 check_tree = "~/vivi-temporal/trees/pump-sandbox/check"
 model = "opencode-go/deepseek-v4.1-flash"
 budget_s = 900
-vivi = "~/.local/bin/vivi"
 
 [targets.pump-sandbox.lander]
 compose = "/private/tmp/claude-501/vt/lander/compose"

@@ -1,4 +1,4 @@
-//! The real activities: thin wrappers over Vivi's pool, git, and the
+//! The real activities: an agent runner of their own, git, and the
 //! `lab/lander` commands, with failures mapped onto the README's classes.
 //! One `Real` registers on every queue a host serves; which activities
 //! actually run there is decided by the queue each step is scheduled on.
@@ -8,7 +8,7 @@ pub mod check;
 pub mod cmd;
 pub mod git;
 pub mod land;
-pub mod pool;
+pub mod runner;
 
 use std::sync::Arc;
 
@@ -50,7 +50,8 @@ impl Real {
         input: ImplementInput,
     ) -> Result<Checkpoint, ActivityError> {
         let target = self.config.target(&input.target)?;
-        agent::implement(target, &ctx, &input, &self.host).await
+        let slots = self.config.agent_slots(&self.host);
+        agent::implement(target, &ctx, &input, &self.host, slots).await
     }
 
     #[activity(definition = defs::Check)]
@@ -68,7 +69,8 @@ impl Real {
         ctx: ActivityContext,
         input: StepInput,
     ) -> Result<ReviewResult, ActivityError> {
-        agent::review(self.config.target(&input.target)?, &ctx, &input).await
+        let slots = self.config.agent_slots(&self.host);
+        agent::review(self.config.target(&input.target)?, &ctx, &input, slots).await
     }
 
     #[activity(definition = defs::Compose)]

@@ -156,8 +156,8 @@ fn for_host_puts_the_host_root_into_target_paths() {
         "/Volumes/Lanes/vivi/temporal/trees/radix/repo"
     );
     assert_eq!(
-        radix.agent.space,
-        "/Volumes/Lanes/vivi/temporal/space/radix"
+        radix.agent.slots_dir,
+        "/Volumes/Lanes/vivi/temporal/trees/radix/slots"
     );
     assert_eq!(
         radix.lander.gate_tree,
@@ -170,4 +170,22 @@ fn for_host_puts_the_host_root_into_target_paths() {
         "~/vivi-temporal/trees/radix/repo"
     );
     assert!(Config::parse(CLUSTER).unwrap().for_host("nowhere").is_err());
+}
+
+#[test]
+fn agent_slots_follow_the_agent_queue() {
+    let c = Config::parse(CLUSTER).unwrap();
+    assert_eq!(c.agent_slots("studio"), 2);
+    assert_eq!(c.agent_slots("mini-m1"), 2);
+    // hub serves no agent queue; it runs no agent job, but one worktree is
+    // the floor.
+    assert_eq!(c.agent_slots("hub"), 1);
+    let radix = c.target("radix").unwrap();
+    assert!(radix.agent.harness.contains("{brief}"));
+    assert!(
+        radix
+            .agent
+            .review_harness
+            .contains("--tools read,grep,find,ls")
+    );
 }

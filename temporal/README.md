@@ -6,9 +6,11 @@ The runtime from
 `LanderWorkflow`, one activity interface (`src/defs.rs`) with two
 implementations, and one worker binary that serves per-host task queues.
 
-- **Real activities** (`src/real/`) wrap existing commands: Vivi's pool
-  (`vivi task send`, `vivi pool dispatch|wait`, `vivi task show`), git, and
-  `lab/lander/compose` and `gate`. Vivi stays the system of record.
+- **Real activities** (`src/real/`) run the agent themselves
+  (`real/runner.rs`: a warm worktree, the harness, a commit), and wrap git
+  and `lab/lander/compose` and `gate`. Temporal does the orchestration;
+  Vivi is only the record (the needs, their dependencies, the thread), on
+  hub. The worker hosts run no Vivi at all.
 - **Stand-in activities** (`src/activities.rs`) replay a scripted fault
   model. The workflow tests use them; they started as the Phase 2 spike.
 
@@ -55,7 +57,7 @@ which resume from their branches.
 |---|---|---|---|
 | `control` | the workflows, `plan`, `record` | pepper | hub |
 | `lane` | `compose`, `publish` (the lane's bare git cache) | pepper | hub |
-| `agent-<host>` | `implement` (the host's pool and warm repo) | studio | studio, studio-02 |
+| `agent-<host>` | `implement` (the host's worktrees and warm repo) | studio | studio, studio-02 |
 | `agent-<host>` for `review_hosts` | `review` (and `plan`, once `plan_hosts` is set) | studio | mini-m1 |
 | `check-<host>` | `check` (the host's check tree) | studio | studio, studio-02 |
 | `gate-<host>` | `gate` (the host's warm gate tree) | studio | studio, studio-02 |
@@ -82,9 +84,9 @@ unset, plan runs on the control queue.
 | Activity | Wraps | Failure classes |
 |---|---|---|
 | `plan` | nothing yet: returns the need's given slices, or one slice for the whole brief | none |
-| `implement` | `git ls-remote` (the branch head on the lane is the resume point), `git fetch`, `vivi task send`, `vivi pool dispatch --branch --from --model --budget`, `vivi pool wait` (heartbeating), `vivi task show --latest` (collected record and receipt), then `git push --force-with-lease=<branch>:<expected>` | 429/quota/rate-limit/5xx text in the receipt → provider (with Retry-After when named); a refused reply or no change at all → format; a fenced push, ssh/slot/pool/git failure, or an agent failure with no signature → infra |
+| `implement` | `git ls-remote` (the branch head on the lane is the resume point), `git fetch`, then the runner: claim a worktree, reset it to the branch head (or main), run the harness with the budget (heartbeating; its process group is killed at the budget or on cancel), commit what changed; then `git push --force-with-lease=<branch>:<expected>`, also when the agent failed | 429/quota/rate-limit/5xx text in the receipt → provider (with Retry-After when named); a refused reply or no change at all → format; a fenced push, a git failure, no free worktree, or an agent failure with no signature → infra |
 | `check` | `git fetch`, `checkout --detach <head>`, `merge --no-ff <main>` in the check tree, then `sh -c <check_command>` with `VIVI_BASE`/`VIVI_HEAD` | a conflict with main or a non-zero exit → red (a value); killed at the limit, exit 126/127, or transport text → infra |
-| `review` | `git diff --stat --patch <base>..<head>` into the brief (the review hosts' harness has no shell), then the same pool path, `--read-only --from <head>`; the receipt must end in `VERDICT: APPROVE` or `VERDICT: CHANGES: …` | as implement; no verdict line → format |
+| `review` | `git diff --stat --patch <base>..<head>` into the brief (the review hosts' harness has no shell), then the runner with the read-only harness at `<head>`, committing nothing; the receipt must end in `VERDICT: APPROVE` or `VERDICT: CHANGES: …` | as implement; no verdict line → format |
 | `compose` | refreshes the bare cache from the target's remote, then `compose --no-fetch --no-push --base <main>` with `LANDER_CACHE`; pushes the candidate to `refs/vivi/candidates/<id>` | exit 2 or bad JSON → infra; per unit: conflict or missing → ejected, already-merged or no-op → merged |
 | `gate` | `gate --sha <candidate> --base <main> --tree <tree> --timeout` | `pass` → pass or fail (bisected); exit 3, exit 4, `baseline_*` (main itself broken) → infra, never a red that ejects good units |
 | `publish` | `merge-base --is-ancestor`, then `git push --force-with-lease=<main>:<base> <candidate>:<main>` (a fast-forward) | a refused lease → `Stale` (re-composed, at most 3 times); other git failures → infra |
@@ -147,7 +149,7 @@ implement. Unit tests sit beside their modules (`*_test.rs`):
 | `routing_test.rs` | queue templates; preferred host first; every host once; stable per-slice order that spreads slices; affinity then fallback waits; a lone host waits the fallback; review hosts default to the agent hosts and ignore the implement host |
 | `admission_test.rs` | backpressure threshold and off switch; path overlap by components; the mutex holds and frees; a granted slice re-asking is granted; duplicate requests queue once |
 | `config_test.rs` | `deploy/sandbox.toml` and `deploy/cluster.toml` parse (the mini serves review only); review and plan hosts default to unset; seconds convert; unknown hosts, 0 slots, a missing control queue, unknown keys and an incomplete MCP record are refused |
-| `real/pool_test.rs` | the `pool_collected` record and receipt from real `vivi task show` output; a throttled agent fails as provider |
+| `real/runner_test.rs` | worktree claims (free, busy, released); harness templating; a worktree is reset between jobs, cleaning untracked files and keeping `target/`, and a job's changes become one commit; killing the process group stops the harness's children; a throttled agent fails as provider |
 | `real/agent_test.rs` | review verdict parsing; the implement brief carries feedback and the proof command; the review brief carries the diff, cut when huge |
 | `real/land_test.rs` | compose JSON → candidate, ejections, already-merged; gate JSON → pass, red, and broken base as an error |
 | `real/git_test.rs` | `ls-remote` parsing; the push fence end to end against a bare repository |
@@ -174,13 +176,14 @@ Every host has `~/vivi-temporal/{bin,config,logs}`: `bin/vivi-temporal`,
 Target trees live under the host's root: `{root}` in a target path is
 `[hosts.<name>] root`, or `~/vivi-temporal` when unset. The studios set
 `/Volumes/Lanes/vivi/temporal`, so builds write to the Lanes drive and not
-the system SSD. Under the root, each agent or review host has the target's
-local mailspace (`space/<target>`) with a pool `agent` worktreeing
-`trees/<target>/repo` into `slots/`; build hosts also have
-`trees/<target>/{check,land}`. `deploy/provision-target.sh` lays this out
-and is safe to run again. The mini's pool harness is
-`pi … --no-mcp --tools read,grep,find,ls`: no shell, so it cannot build,
-test or edit.
+the system SSD. Under the root, each agent or review host has
+`trees/<target>/repo`, the warm repository, and `trees/<target>/slots/`,
+where the runner keeps one worktree per agent activity slot
+(`slot-<n>`, claimed by `slot-<n>.lock`; made on first use and kept, so its
+`target/` stays warm). Build hosts also have `trees/<target>/{check,land}`.
+`deploy/provision-target.sh` lays this out and is safe to run again. The
+review harness is `pi … --no-mcp --tools read,grep,find,ls`: no shell, so a
+review cannot build, test or edit.
 
 `radix` was provisioned on 2026-11-18. On each studio the pump's warm gate
 tree (`/Volumes/Lanes/vivi/trees/faberlang/radix/land`) was moved to
@@ -316,15 +319,13 @@ afterwards.
 ## Not built yet
 
 - an LLM `plan` step: `plan` passes given slices through
-- WIP pushes during one agent job: the pool commits once, at the end of the
-  job, so a lost host loses the work of that one job (everything before it
-  is on the lane). Heartbeats during the job carry the last pushed head
-- a cancelled `implement` stops waiting, but the pool job runs on to its
-  budget and holds its slot until then
+- WIP pushes during one agent job: the runner commits once, at the end of
+  the job, so a lost host loses the work of that one job (everything before
+  it is on the lane). Heartbeats during the job carry the last pushed head
 - a lease leak: a slice workflow that is terminated (not parked) never
   sends `release`, so its hot paths stay held until the Lander restarts
 - `MainWatch`
-- the per-pool provider cooldown (above)
+- the per-provider cooldown (above)
 - Lander continue-as-new, to bound history: the Lander's history grows
   without limit as written
 - signal-with-start for the Lander: a slice started with no Lander parks
