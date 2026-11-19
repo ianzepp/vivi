@@ -21,7 +21,7 @@ use crate::real::Real;
 use crate::record::{LogRecord, McpRecord, MemoryRecord, NeedRecord};
 use crate::slice::SliceWorkflow;
 use crate::types::{NeedInput, NeedOutcome, SliceSpec};
-use crate::{error::ConfigError, need_start_options};
+use crate::{error::ConfigError, need_rerun_options, need_start_options};
 
 /// Workflow tasks are short; this bounds them on the control queue.
 const WORKFLOW_SLOTS: usize = 20;
@@ -164,6 +164,8 @@ pub struct NeedRequest {
     pub target: String,
     pub brief: String,
     pub slices: Vec<SliceSpec>,
+    /// Start again although an earlier run of this need has ended.
+    pub rerun: bool,
 }
 
 /// Start a need and wait for its outcome.
@@ -180,7 +182,11 @@ pub async fn run_need(config: &Config, request: NeedRequest) -> Result<NeedOutco
         slices: request.slices,
         branch_prefix: target.branch_prefix.clone(),
     };
-    let opts = need_start_options(&config.routing.control, &request.handle);
+    let opts = if request.rerun {
+        need_rerun_options(&config.routing.control, &request.handle)
+    } else {
+        need_start_options(&config.routing.control, &request.handle)
+    };
     let handle = client
         .start_workflow(NeedWorkflow::run, input, opts)
         .await

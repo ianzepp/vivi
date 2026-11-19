@@ -17,7 +17,7 @@ use vivi_temporal::types::{
     AdmissionPolicy, NeedOutcome, ParkCause, RecordCall, Routing, SliceInput, SliceSpec,
 };
 use vivi_temporal::world::{Event, ImplementStart};
-use vivi_temporal::{need_start_options, slice_workflow_id};
+use vivi_temporal::{need_rerun_options, need_start_options, slice_workflow_id};
 
 fn slice(id: &str) -> SliceScript {
     SliceScript::new(id)
@@ -138,7 +138,8 @@ async fn timeout_resumes_from_pushed_commit() {
 }
 
 /// Criterion: a duplicate start is refused, both while the need runs and
-/// after it has closed. The plan runs once.
+/// after it has closed. The plan runs once per run; only an asked-for
+/// rerun starts the need again, and never while a run is going.
 #[tokio::test(flavor = "multi_thread")]
 async fn duplicate_start_is_refused() {
     let script = NeedScript::new(vec![slice("u1")]);
@@ -162,10 +163,25 @@ async fn duplicate_start_is_refused() {
         assert_eq!(outcome, landed(&["u1"]));
         let closed = start().await;
         assert_refused(closed);
+        // An asked-for rerun of the ended need starts; a second one while
+        // it runs is refused like any running duplicate.
+        let rerun = || {
+            h.client.start_workflow(
+                NeedWorkflow::run,
+                need_input("n1", tuning()),
+                need_rerun_options(QUEUE, "n1"),
+            )
+        };
+        let again = rerun().await.expect("rerun start");
+        assert_refused(rerun().await);
+        again
+            .get_result(WorkflowGetResultOptions::default())
+            .await
+            .expect("rerun result");
     })
     .await;
     let planned = count(&h.events(), |e| matches!(e, Event::Planned { .. }));
-    assert_eq!(planned, 1);
+    assert_eq!(planned, 2, "the first run and the asked-for rerun");
     h.shutdown().await;
 }
 

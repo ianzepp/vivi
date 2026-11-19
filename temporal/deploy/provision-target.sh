@@ -71,6 +71,10 @@ vivi pool set agent harness "{ name = \"pi\", run = \"$RUN\", models = [\"$MODEL
 vivi pool set agent committer '{ name = "Ian Zepp", email = "ian.zepp@protonmail.com" }' >/dev/null
 grep -q '^name = "hand"' .vivi/mailspace.toml || vivi role add hand --kind hand >/dev/null
 
+step slots
+# Without this the pool has no slots and every dispatch is refused.
+[ -d "$ROOT/slots/$(cat .vivi/mailspace.id)/agent" ] || vivi pool create --pool agent >/dev/null
+
 step done
 sed -n '/^\[pools\.agent\]/,$p' .vivi/mailspace.toml
 ls "$T"

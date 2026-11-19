@@ -105,9 +105,14 @@ async fn run_slice(
     input: NeedInput,
     spec: SliceSpec,
 ) -> SliceOutcome {
+    // A need run starts each slice once, and two runs of one need never
+    // overlap (the server refuses a running need's id), so the only repeat
+    // start of a slice id is an asked-for rerun of its need. That rerun may
+    // start the slice again; it resumes from the slice branch, and work
+    // already on main is found merged by compose.
     let opts = ChildWorkflowOptions::builder()
         .workflow_id(slice_workflow_id(&input.handle, &spec.id))
-        .id_reuse_policy(WorkflowIdReusePolicy::RejectDuplicate)
+        .id_reuse_policy(WorkflowIdReusePolicy::AllowDuplicate)
         .build();
     let slice = spec.id.clone();
     let child = SliceInput {

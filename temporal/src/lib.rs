@@ -45,6 +45,15 @@ pub fn need_start_options(task_queue: &str, handle: &str) -> WorkflowStartOption
         .build()
 }
 
+/// Start options for an asked-for rerun of a need whose last run has
+/// ended (parked, terminated, or closed). A run still going is refused all
+/// the same: the server never runs two with one id.
+pub fn need_rerun_options(task_queue: &str, handle: &str) -> WorkflowStartOptions {
+    WorkflowStartOptions::new(task_queue, need_workflow_id(handle))
+        .id_reuse_policy(WorkflowIdReusePolicy::AllowDuplicate)
+        .build()
+}
+
 /// One worker that runs all three workflows and the stand-in activities on
 /// one queue (the tests). A deployment uses `worker::build`.
 pub fn worker_options(

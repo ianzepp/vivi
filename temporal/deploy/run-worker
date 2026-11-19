@@ -1,0 +1,35 @@
+#!/bin/bash
+# run-worker <host>: run this Mac's vivi-temporal worker in the foreground.
+#
+# Hub starts it over ssh (vivi-temporal-remote@<host>.service) and restarts
+# it when it ends. Processes started over ssh may read the Lanes drive and
+# reach the LAN; a launchd service may not (macOS privacy rules), which is
+# why the Macs run no service of their own.
+#
+# hub runs `ssh -tt`, so the worker owns a terminal: a dropped connection
+# hangs it up and it exits. A worker left over from an earlier session is
+# stopped first, so a host never runs two.
+set -u
+H=${1:?usage: run-worker <host>}
+B=$HOME/vivi-temporal
+export PATH=$HOME/.local/bin:/opt/homebrew/opt/python@3.14/libexec/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin
+cd "$B" || exit 1
+mkdir -p run logs
+LOG=$B/logs/worker.log
+
+if [ -f run/worker.pid ]; then
+  old=$(cat run/worker.pid)
+  if ps -o command= -p "$old" 2>/dev/null | grep -q 'vivi-temporal worker'; then
+    echo "$(date '+%F %T') run-worker: stopping earlier worker $old" >>"$LOG"
+    kill -TERM "$old" 2>/dev/null
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      kill -0 "$old" 2>/dev/null || break
+      sleep 1
+    done
+    kill -KILL "$old" 2>/dev/null
+  fi
+fi
+
+echo $$ >run/worker.pid
+echo "$(date '+%F %T') run-worker: starting $H" >>"$LOG"
+exec "$B/bin/vivi-temporal" worker --host "$H" --config "$B/config/cluster.toml" >>"$LOG" 2>&1

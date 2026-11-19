@@ -44,7 +44,10 @@ A worker polls only the queues its `[hosts.<name>].queues` lists, each with
 its own limit on concurrent activities (a fixed-size slot supplier). The
 control queue also runs the three workflows. `lander` starts the target's
 Lander (`lander-<target>`) unless it already runs. `need` starts
-`need-<handle>` and waits for the outcome.
+`need-<handle>` and waits for the outcome. A need whose id has run before
+(parked, terminated or closed) is refused unless `--rerun yes` is given; a
+run still going is always refused. A rerun restarts the need's slices,
+which resume from their branches.
 
 ### Queue map
 
@@ -210,29 +213,31 @@ Hub uses `protoc`-free builds (`temporalio-common/vendored-protox`) with
 | Host | Service | Start / stop / log |
 |---|---|---|
 | hub | `~/.config/systemd/user/vivi-temporal-worker.service` (lingering on) | `systemctl --user start\|stop\|status vivi-temporal-worker`; `~/vivi-temporal/logs/worker.log` |
-| studio, studio-02, mini-m1 | LaunchDaemon `vivi.temporal.worker`, run as the user (plist in `~/vivi-temporal/launchd/`) | `sudo launchctl bootstrap\|bootout system …`; `~/vivi-temporal/logs/worker.log` |
+| studio, studio-02, mini-m1 | On hub: `vivi-temporal-remote@<host>.service` (`deploy/vivi-temporal-remote@.service`), an `ssh -tt` session running `~/vivi-temporal/bin/run-worker <host>` (`deploy/run-worker`) on the Mac | on hub, `systemctl --user start\|stop\|restart\|status vivi-temporal-remote@<host>`; the log stays on the Mac, `~/vivi-temporal/logs/worker.log` |
 
-**Why a LaunchDaemon on the Macs.** A per-user LaunchAgent cannot reach the
-LAN: macOS Local Network privacy denies the unbundled `vivi-temporal`
-binary (`nehelper`: "Could not find bundle ID or display name"), so the
-connect to `192.168.1.237:7233` fails with `EHOSTUNREACH`, and the ad-hoc
-signing identity changes with every build. Processes started over ssh are
-exempt, which is why foreground workers work. The studios also have no GUI
-session for a prompt.
+**Why hub starts the Mac workers over ssh (2026-11-18).** A launchd
+service on a Mac runs into macOS privacy rules that ssh sessions do not:
+- Local Network privacy refused the unbundled, ad-hoc-signed binary the LAN
+  (`EHOSTUNREACH` to `192.168.1.237:7233`): always for a LaunchAgent, and
+  for a LaunchDaemon whenever someone was logged in at the Mac's screen.
+- Removable-volume privacy refused a LaunchDaemon the Lanes drive
+  (`git`: "Unable to read current working directory: Operation not
+  permitted"; TCC `kTCCServiceSystemPolicyRemovableVolumes`), which stopped
+  the first radix run at its first step.
 
-The daemon is exempt only while nobody is logged in at the Mac's screen
-(checked 2026-11-18). With a GUI session open, the same check applies to
-the daemon's process and it fails in the same way: the mini failed until
-its screen session was logged out, and the studios work because they sit
-at the login window. Keep worker Macs logged out at the screen; a screen
-login stops that Mac's worker from reaching hub. Installing the daemon
-needs sudo:
+Both rules key on the program's code signature, which changes with every
+build, and neither can be answered without a person at the screen.
+Processes started over ssh are allowed both, as the pump's slots and
+`hub-studio-faber.timer` already showed. So the Macs run no service of
+their own; the LaunchDaemons were removed on 2026-11-18.
 
-```sh
-sudo cp ~/vivi-temporal/launchd/vivi.temporal.worker.plist /Library/LaunchDaemons/
-sudo chown root:wheel /Library/LaunchDaemons/vivi.temporal.worker.plist
-sudo launchctl bootstrap system /Library/LaunchDaemons/vivi.temporal.worker.plist
-```
+`run-worker` sets the worker's `PATH`, stops a worker left over from an
+earlier session (`~/vivi-temporal/run/worker.pid`), and runs the worker in
+the foreground. Because hub uses `ssh -tt`, the worker owns the session's
+terminal: a dropped connection hangs it up, systemd starts a new session
+10 s later, and Temporal retries the step that was running once its
+heartbeat lapses. Checked: restarting `vivi-temporal-remote@studio-02` left
+exactly one new worker and one poller on each queue.
 
 ## Measured times
 
@@ -325,3 +330,7 @@ afterwards.
 - signal-with-start for the Lander: a slice started with no Lander parks
   with `InfraExhausted { step: "admit" }`
 - deleting slice branches and candidate refs after landing
+- telling an operator's terminate from a failure: terminating a slice by
+  hand makes its need park with `InfraExhausted` and writes the park to the
+  record (seen 2026-11-18 on 8a2cd8ba; the marks were removed by hand).
+  Terminate the need first, then the slice

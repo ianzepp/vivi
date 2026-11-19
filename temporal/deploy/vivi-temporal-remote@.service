@@ -1,0 +1,25 @@
+# vivi-temporal-remote@<host>.service (systemd --user on hub, lingering on):
+# one long-lived ssh session per Mac, running that Mac's worker in the
+# foreground through ~/vivi-temporal/bin/run-worker. The instance name is
+# the worker host (studio, studio-02, mini-m1), which is also its ssh alias.
+#
+#   systemctl --user enable --now vivi-temporal-remote@studio
+#   systemctl --user status vivi-temporal-remote@studio
+#
+# A dropped session ends the worker (it owns the ssh terminal); systemd
+# starts a new one 10 s later, and Temporal retries the step that was
+# running once its heartbeat lapses. The worker's log stays on the Mac:
+# ~/vivi-temporal/logs/worker.log.
+[Unit]
+Description=vivi-temporal worker on %i, run over ssh from hub
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+ExecStart=/usr/bin/ssh -tt -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 %i /bin/bash vivi-temporal/bin/run-worker %i
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

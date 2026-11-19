@@ -16,7 +16,7 @@ use vivi_temporal::worker::{NeedRequest, run_host, run_need, start_lander};
 const USAGE: &str = "usage:
   vivi-temporal worker --host <name> --config <file>
   vivi-temporal lander --config <file> --target <target>
-  vivi-temporal need --config <file> --target <target> --handle <h> --brief-file <f> [--slice <id>:<paths>]...";
+  vivi-temporal need --config <file> --target <target> --handle <h> --brief-file <f> [--slice <id>:<paths>]... [--rerun yes]";
 
 struct Args {
     command: String,
@@ -51,6 +51,15 @@ impl Args {
     fn all(&self, name: &str) -> Vec<String> {
         let named = self.flags.iter().filter(|(n, _)| n == name);
         named.map(|(_, v)| v.clone()).collect()
+    }
+}
+
+/// `--rerun yes` starts a need again after an earlier run ended.
+fn rerun_flag(args: &Args) -> Result<bool, String> {
+    match args.all("rerun").as_slice() {
+        [] => Ok(false),
+        [v] if v == "yes" => Ok(true),
+        _ => Err("--rerun takes the value yes, once".to_string()),
     }
 }
 
@@ -92,6 +101,7 @@ async fn run(args: Args) -> Result<(), String> {
                 target: args.one("target")?,
                 slices: slices.collect::<Result<_, _>>()?,
                 brief,
+                rerun: rerun_flag(&args)?,
             };
             let outcome = run_need(&config, request)
                 .await
