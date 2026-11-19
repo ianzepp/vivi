@@ -316,6 +316,40 @@ The need closed with `Closed { landed: ["s1"] }` about 2 min 10 s after it
 started. The record ran as `kind = "log"`. The Lander was terminated
 afterwards.
 
+## First radix runs (2026-11-18)
+
+Two real faberlang needs, each one slice, from start to `vivi/main` with
+no hand step after the start. Times are wall clock from the Temporal
+history.
+
+| | `8a2cd8ba` WARN008 false positive | `5edf476d` f16/bf16 NaN sign in release |
+|---|---|---|
+| Agent runner | Vivi's pool (the last pool run) | `real/runner.rs` |
+| implement (studio-02 / studio) | about 30 min | 19.5 min |
+| check | about 30 s | 1.5 min |
+| review (mini-m1, read-only) | 6.5 min, approved | 6.5 min, approved |
+| compose and gate (studio-02) | about 12 min, with a baseline run | about 6.5 min |
+| From start to landed | about 50 min | 35 min |
+| `vivi/main` | `5000179a` → `a50b6c2b` | `a50b6c2b` → `d5248bd7` |
+
+Checked by hand afterwards:
+- `8a2cd8ba`: with the fix reverted, the new test
+  `mut_tensor_param_forwarded_mut_through_an_optional_kernel_call_is_used`
+  fails (WARN008 reported once); with it, all 15 tests in that group pass.
+  The fix covers calls whose callee contract is not available, such as a
+  provider kernel. A same-file kernel call was already handled. Inferentia's
+  own WARN008 count could not be checked: current Inferentia needs a
+  `[run]` manifest section this radix does not parse, and 33a4396 uses the
+  retired `const size`.
+- `5edf476d`: the test fails in release on the base commit, as the need
+  says, and passes in debug and release on the landed commit. The agent's
+  two corpus edits change comments only.
+
+What the first attempts found, all fixed before these runs: the Mac
+workers could not read the Lanes drive as launchd services (they now run
+over ssh from hub); the pool had no slots; a need could not be rerun after
+a terminate (`--rerun yes`).
+
 ## Not built yet
 
 - an LLM `plan` step: `plan` passes given slices through
