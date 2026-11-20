@@ -58,3 +58,33 @@ fn memory_record_keeps_calls_per_need() {
     assert_eq!(record.calls_for("a").unwrap(), vec![a]);
     assert!(record.calls_for("b").unwrap().is_empty());
 }
+
+#[test]
+fn log_handles_skip_the_server() {
+    // An unreachable server and a missing key: a stress handle must not
+    // touch either.
+    let record = McpRecord {
+        config: crate::config::RecordConfig {
+            kind: crate::config::RecordKind::Mcp,
+            server: "http://127.0.0.1:9".into(),
+            project: "p".into(),
+            key_file: "/nonexistent/key".into(),
+            role: String::new(),
+            vivi: "/nonexistent/vivi".into(),
+            log_handles: vec!["stress-".into()],
+        },
+    };
+    let call = RecordCall::Status {
+        need: "stress-r1-01".into(),
+        status: "building".into(),
+    };
+    assert!(record.apply(&call).is_ok());
+    let real = RecordCall::Status {
+        need: "8a2cd8ba".into(),
+        status: "building".into(),
+    };
+    assert!(
+        record.apply(&real).is_err(),
+        "a real handle still goes to the server"
+    );
+}

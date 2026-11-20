@@ -70,6 +70,15 @@ pub struct McpRecord {
 
 impl NeedRecord for McpRecord {
     fn apply(&self, call: &RecordCall) -> Result<(), SpikeError> {
+        let need = call_need(call);
+        if self
+            .config
+            .log_handles
+            .iter()
+            .any(|p| !p.is_empty() && need.starts_with(p.as_str()))
+        {
+            return LogRecord.apply(call);
+        }
         let key_path = expand(&self.config.key_file);
         let key = std::fs::read_to_string(&key_path)
             .map_err(|e| SpikeError::Record(format!("{}: {e}", key_path.display())))?;

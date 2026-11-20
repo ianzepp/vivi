@@ -1,0 +1,68 @@
+#!/usr/bin/env python3
+"""stress-run --set <dir> --run <label> --concurrency <n> [--limit <k>] [--config <file>]
+
+Start the replay briefs in <dir> (01.md, 02.md, ...) as radix-stress needs
+`stress-<label>-<NN>`, keeping <n> needs in flight, in order. Each need runs
+through the whole pipeline (implement, check, review, the Lander) onto
+temporal/stress/main. Prints one line per need as it ends, then a summary;
+the same lines go to <dir>/runs/<label>.log. Run on hub. Cost the window
+afterwards with `stress-report --since <start> --until <end>`.
+
+Labels must be new: a need id that ran before is refused (use a new label
+rather than --rerun).
+"""
+import argparse, glob, os, subprocess, sys, threading, time
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
+
+BIN = os.path.expanduser("~/vivi-temporal/bin/vivi-temporal")
+
+
+def now():
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--set", required=True)
+    ap.add_argument("--run", required=True)
+    ap.add_argument("--concurrency", type=int, required=True)
+    ap.add_argument("--limit", type=int)
+    ap.add_argument("--config", default=os.path.expanduser("~/vivi-temporal/config/cluster.toml"))
+    a = ap.parse_args()
+    briefs = sorted(glob.glob(os.path.join(a.set, "[0-9][0-9].md")))[: a.limit]
+    os.makedirs(os.path.join(a.set, "runs"), exist_ok=True)
+    log = open(os.path.join(a.set, "runs", f"{a.run}.log"), "a")
+    lock = threading.Lock()
+
+    def say(line):
+        with lock:
+            print(line, flush=True)
+            log.write(line + "\n")
+            log.flush()
+
+    def one(brief):
+        n = os.path.basename(brief)[:2]
+        handle = f"stress-{a.run}-{n}"
+        start = time.time()
+        out = subprocess.run([BIN, "need", "--config", a.config, "--target", "radix-stress",
+                              "--handle", handle, "--brief-file", brief],
+                             capture_output=True, text=True)
+        lines = (out.stdout + out.stderr).strip().splitlines()
+        result = lines[-1] if lines else f"rc {out.returncode}"
+        mins = (time.time() - start) / 60
+        say(f"{now()}\t{handle}\t{mins:.1f} min\t{result}")
+        return result
+
+    say(f"{now()}\tstart\trun {a.run}\tconcurrency {a.concurrency}\t{len(briefs)} needs")
+    t0 = time.time()
+    with ThreadPoolExecutor(max_workers=a.concurrency) as pool:
+        results = list(pool.map(one, briefs))
+    landed = sum(1 for r in results if r.startswith("Closed"))
+    parked = sum(1 for r in results if r.startswith("Parked"))
+    say(f"{now()}\tend\trun {a.run}\t{landed} landed, {parked} parked, "
+        f"{len(results) - landed - parked} other\t{(time.time() - t0) / 60:.1f} min")
+
+
+if __name__ == "__main__":
+    main()

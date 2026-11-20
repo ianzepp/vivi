@@ -89,6 +89,34 @@ cache = "~/vivi-temporal/cache/radix.git"
 gate_tree = "{root}/trees/radix/land"
 gate_timeout_s = 2400
 
+# radix-stress: replays known changes for stress runs (temporal/tools/stress-run),
+# landing on the scratch branch temporal/stress/main, never vivi/main. Same
+# warm trees as radix. "implement" applies the patch between the brief's
+# BEGIN/END PATCH lines, then builds what a real agent builds in its
+# worktree; "review" approves. Its needs are `stress-*`, which only log.
+[targets.radix-stress]
+remote = "git@hub.local:faberlang/radix.git"
+main = "temporal/stress/main"
+branch_prefix = "temporal/stress/"
+check_command = "CARGO_BUILD_JOBS=8 CARGO_TERM_COLOR=never cargo test --workspace --lib --bins --tests --no-run --quiet"
+check_timeout_s = 1800
+
+[targets.radix-stress.agent]
+repo = "{root}/trees/radix/repo"
+slots_dir = "{root}/trees/radix/slots"
+check_tree = "{root}/trees/radix/check"
+model = "replay"
+budget_s = 1800
+harness = "sed -n '/^-----BEGIN PATCH-----$/,/^-----END PATCH-----$/p' {brief} | sed '1d;$d' | git apply --3way --whitespace=nowarn && CARGO_BUILD_JOBS=8 CARGO_TERM_COLOR=never cargo test --workspace --lib --bins --tests --no-run --quiet"
+review_harness = "echo 'VERDICT: APPROVE'"
+
+[targets.radix-stress.lander]
+compose = "~/vivi-temporal/bin/compose"
+gate = "~/vivi-temporal/bin/gate"
+cache = "~/vivi-temporal/cache/radix.git"
+gate_tree = "{root}/trees/radix/land"
+gate_timeout_s = 2400
+
 [tuning]
 max_work_rounds = 3
 max_infra_attempts = 3
@@ -120,3 +148,5 @@ project = "qafq0-wfysf-tsqa6-435tp-kckm5"
 key_file = "~/.vivi/temporal-mcp.key"
 role = "operator"
 vivi = "/usr/local/bin/vivi"
+# The replay needs (target radix-stress) only log.
+log_handles = ["stress-"]

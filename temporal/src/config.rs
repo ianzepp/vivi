@@ -234,6 +234,9 @@ pub struct RecordConfig {
     pub key_file: String,
     /// The role the record writes as (`for` on mark and done).
     pub role: String,
+    /// Handle prefixes whose calls only go to the log (the replay needs,
+    /// `stress-`), so a scratch run never writes to the project.
+    pub log_handles: Vec<String>,
     pub vivi: String,
 }
 

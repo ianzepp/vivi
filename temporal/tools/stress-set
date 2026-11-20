@@ -1,0 +1,41 @@
+#!/usr/bin/env python3
+"""stress-set --cache <bare repo> --out <dir> --base <sha> <commit>...
+
+Write one replay brief per commit for the radix-stress target: the commit's
+change cherry-picked onto <base> (git merge-tree, no checkout), as a patch
+between BEGIN/END PATCH lines. Briefs are numbered in the order given
+(01.md, 02.md, ...); <dir>/base holds the base sha. A commit that does not
+apply cleanly onto the base is refused.
+"""
+import argparse, os, subprocess, sys
+
+
+def git(cache, *args):
+    out = subprocess.run(["git", "-C", cache, *args], capture_output=True, text=True)
+    if out.returncode != 0:
+        sys.exit(f"git {' '.join(args[:3])}: {out.stderr.strip() or out.stdout.strip()}")
+    return out.stdout
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--cache", required=True)
+    ap.add_argument("--out", required=True)
+    ap.add_argument("--base", required=True)
+    ap.add_argument("commits", nargs="+")
+    a = ap.parse_args()
+    base = git(a.cache, "rev-parse", a.base).strip()
+    os.makedirs(a.out, exist_ok=True)
+    with open(os.path.join(a.out, "base"), "w") as f:
+        f.write(base + "\n")
+    for n, commit in enumerate(a.commits, 1):
+        tree = git(a.cache, "merge-tree", "--write-tree", f"--merge-base={commit}^", base, commit).split()[0]
+        patch = git(a.cache, "diff", "--binary", base, tree)
+        subject = git(a.cache, "log", "-1", "--format=%s", commit).strip()
+        with open(os.path.join(a.out, f"{n:02d}.md"), "w") as f:
+            f.write(f"Replay of {commit[:10]}: {subject}\n\n-----BEGIN PATCH-----\n{patch}-----END PATCH-----\n")
+        print(f"{n:02d} {commit[:10]} {subject[:70]}")
+
+
+if __name__ == "__main__":
+    main()
