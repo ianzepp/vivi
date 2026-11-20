@@ -332,6 +332,24 @@ pub struct LanderInput {
     pub target: String,
     pub routing: Routing,
     pub admission: AdmissionPolicy,
+    /// Continue-as-new once the history has this many events (or the
+    /// server suggests it). 0: `DEFAULT_ROLLOVER_EVENTS`.
+    #[serde(default)]
+    pub rollover_events: u32,
+    /// What the previous run handed over when it continued as new.
+    #[serde(default)]
+    pub carry: Option<LanderCarry>,
+}
+
+/// The Lander's history length at which it continues as new.
+pub const DEFAULT_ROLLOVER_EVENTS: u32 = 5_000;
+
+/// The Lander's state carried across continue-as-new: the queued land
+/// requests and the admission book (waiting requests and held leases).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LanderCarry {
+    pub queue: Vec<LandRequest>,
+    pub admission: crate::admission::Admission,
 }
 
 /// When a slice may start. See `admission.rs`.

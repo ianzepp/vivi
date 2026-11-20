@@ -381,6 +381,8 @@ impl Config {
                 max_backlog_ms: l.max_backlog_s.saturating_mul(1_000),
                 land_ms_per_unit: l.land_s_per_unit.saturating_mul(1_000),
             },
+            rollover_events: 0,
+            carry: None,
         })
     }
 }

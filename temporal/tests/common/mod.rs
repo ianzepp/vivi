@@ -94,6 +94,16 @@ impl Harness {
     }
 
     pub async fn start_lander_with(&self, batch_window_ms: u64, admission: AdmissionPolicy) {
+        self.start_lander_full(batch_window_ms, admission, 0).await;
+    }
+
+    /// The Lander with a rollover limit (0: the default).
+    pub async fn start_lander_full(
+        &self,
+        batch_window_ms: u64,
+        admission: AdmissionPolicy,
+        rollover_events: u32,
+    ) {
         let input = LanderInput {
             batch_window_ms,
             max_batch: 8,
@@ -102,6 +112,8 @@ impl Harness {
             target: TARGET.to_string(),
             routing: Routing::single(QUEUE),
             admission,
+            rollover_events,
+            carry: None,
         };
         let opts = WorkflowStartOptions::new(QUEUE, LANDER).build();
         self.client

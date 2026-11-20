@@ -531,3 +531,48 @@ async fn a_terminated_slice_stops_its_need_without_parking() {
     );
     h.shutdown().await;
 }
+
+/// Criterion: the Lander continues as new without losing work. With a
+/// tiny rollover limit it restarts several times while eight needs are
+/// admitted, queued and landed; every need still lands, each slice once.
+#[tokio::test(flavor = "multi_thread")]
+async fn lander_continues_as_new_without_losing_work() {
+    let needs: Vec<(String, NeedScript)> = (1..=8)
+        .map(|i| {
+            (
+                format!("n{i}"),
+                NeedScript::new(vec![slice(&format!("u{i}"))]),
+            )
+        })
+        .collect();
+    let refs: Vec<(&str, NeedScript)> =
+        needs.iter().map(|(n, s)| (n.as_str(), s.clone())).collect();
+    let h = Harness::start(refs).await;
+    let outcomes = h
+        .with_worker(async {
+            h.start_lander_full(100, AdmissionPolicy::default(), 40)
+                .await;
+            let runs = needs.iter().map(|(n, _)| h.run_need(n, tuning()));
+            futures::future::join_all(runs).await
+        })
+        .await;
+    for (i, outcome) in outcomes.iter().enumerate() {
+        assert_eq!(outcome, &landed(&[&format!("u{}", i + 1)]), "n{}", i + 1);
+    }
+    let lander = h
+        .client
+        .get_workflow_handle::<vivi_temporal::lander::LanderWorkflow>(common::LANDER)
+        .describe(Default::default())
+        .await
+        .expect("describe lander");
+    let first_run = lander
+        .raw_description
+        .workflow_execution_info
+        .as_ref()
+        .unwrap();
+    assert!(
+        first_run.first_run_id != first_run.execution.as_ref().unwrap().run_id,
+        "the Lander continued as new at least once"
+    );
+    h.shutdown().await;
+}

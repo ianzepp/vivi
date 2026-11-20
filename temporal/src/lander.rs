@@ -12,10 +12,11 @@
 
 use std::time::Duration;
 
+use futures::FutureExt;
 use temporalio_macros::{workflow, workflow_methods};
 use temporalio_sdk::{
-    ActivityOptions, SignalWorkflowOptions, SyncWorkflowContext, WorkflowContext, WorkflowResult,
-    WorkflowTermination,
+    ActivityOptions, ContinueAsNewOptions, SignalWorkflowOptions, SyncWorkflowContext,
+    WorkflowContext, WorkflowContextView, WorkflowResult, WorkflowTermination,
 };
 
 use crate::admission::Admission;
@@ -23,19 +24,23 @@ use crate::defs::Act;
 use crate::routing::placements;
 use crate::slice::SliceWorkflow;
 use crate::types::{
-    AdmitRequest, Candidate, ComposeInput, ComposeResult, GateResult, LandRequest, LandResult,
-    LanderInput, PublishResult,
+    AdmitRequest, Candidate, ComposeInput, ComposeResult, DEFAULT_ROLLOVER_EVENTS, GateResult,
+    LandRequest, LandResult, LanderCarry, LanderInput, PublishResult,
 };
 
 /// Publishes refused because main moved, before a batch gives up.
 const MAX_STALE: u32 = 3;
 
 #[workflow]
-#[derive(Default)]
 pub struct LanderWorkflow {
+    input: LanderInput,
     queue: Vec<LandRequest>,
     in_flight: usize,
     admission: Admission,
+    /// Set when the history is long enough to continue as new: no new
+    /// batch starts, and the admission loop continues as new once no batch
+    /// is in flight.
+    rollover: bool,
 }
 
 impl LanderWorkflow {
@@ -47,13 +52,33 @@ impl LanderWorkflow {
 
 #[workflow_methods]
 impl LanderWorkflow {
+    /// Build the state from the input, carried state included, before any
+    /// signal is applied. Restoring it in `run` instead would overwrite the
+    /// signals a continued run receives before its first task.
+    #[init]
+    pub fn new(_ctx: &WorkflowContextView, input: LanderInput) -> Self {
+        let carry = input.carry.clone().unwrap_or_default();
+        LanderWorkflow {
+            input,
+            queue: carry.queue,
+            in_flight: 0,
+            admission: carry.admission,
+            rollover: false,
+        }
+    }
+
     #[run]
-    pub async fn run(ctx: &mut WorkflowContext<Self>, input: LanderInput) -> WorkflowResult<()> {
-        let admit = admission_loop(ctx.clone(), input.clone());
-        let land = landing_loop(ctx.clone(), input);
-        let (admitted, landed) = temporalio_sdk::workflows::join!(admit, land);
-        admitted?;
-        landed?;
+    pub async fn run(ctx: &mut WorkflowContext<Self>) -> WorkflowResult<()> {
+        let input = ctx.state(|s| s.input.clone());
+        let admit = admission_loop(ctx.clone(), input.clone()).fuse();
+        let land = landing_loop(ctx.clone(), input).fuse();
+        futures::pin_mut!(admit, land);
+        // Both loops run forever; the first to end (continue-as-new, or an
+        // error) ends the run.
+        temporalio_sdk::workflows::select! {
+            ended = admit => ended?,
+            ended = land => ended?,
+        }
         Ok(())
     }
 
@@ -79,8 +104,13 @@ async fn admission_loop(
 ) -> Result<(), WorkflowTermination> {
     loop {
         let policy = input.admission.clone();
-        ctx.wait_condition(move |s| s.admission.has_grantable(&policy, s.backlog()))
-            .await?;
+        ctx.wait_condition(move |s| {
+            s.admission.has_grantable(&policy, s.backlog()) || (s.rollover && s.in_flight == 0)
+        })
+        .await?;
+        if ctx.state(|s| s.rollover && s.in_flight == 0) {
+            return continue_as_new(&ctx, &input);
+        }
         let granted = ctx.state_mut(|s| {
             let backlog = s.backlog();
             s.admission.grant(&input.admission, backlog)
@@ -98,6 +128,37 @@ async fn admission_loop(
                 ctx.state_mut(|s| s.admission.release(&request.reply_to));
             }
         }
+        check_rollover(&ctx, &input);
+    }
+}
+
+/// Mark the run for continue-as-new when its history is long enough.
+fn check_rollover(ctx: &WorkflowContext<LanderWorkflow>, input: &LanderInput) {
+    let limit = match input.rollover_events {
+        0 => DEFAULT_ROLLOVER_EVENTS,
+        n => n,
+    };
+    if ctx.continue_as_new_suggested() || ctx.history_length() >= limit {
+        ctx.state_mut(|s| s.rollover = true);
+    }
+}
+
+/// Continue as new, handing the queue and the admission book over.
+fn continue_as_new(
+    ctx: &WorkflowContext<LanderWorkflow>,
+    input: &LanderInput,
+) -> Result<(), WorkflowTermination> {
+    let carry = ctx.state(|s| LanderCarry {
+        queue: s.queue.clone(),
+        admission: s.admission.clone(),
+    });
+    let next = LanderInput {
+        carry: Some(carry),
+        ..input.clone()
+    };
+    match ctx.continue_as_new(next, ContinueAsNewOptions::default()) {
+        Err(termination) => Err(termination),
+        Ok(never) => match never {},
     }
 }
 
@@ -106,7 +167,8 @@ async fn landing_loop(
     input: LanderInput,
 ) -> Result<(), WorkflowTermination> {
     loop {
-        ctx.wait_condition(|s| !s.queue.is_empty()).await?;
+        ctx.wait_condition(|s| !s.queue.is_empty() && !s.rollover)
+            .await?;
         ctx.timer(Duration::from_millis(input.batch_window_ms))
             .await;
         let batch = ctx.state_mut(|s| {
@@ -116,10 +178,13 @@ async fn landing_loop(
             batch
         });
         let results = land_batch(&ctx, &input, batch).await?;
-        ctx.state_mut(|s| s.in_flight = 0);
+        // The batch stays in flight until every slice has its result, so a
+        // continue-as-new never cuts a notification short.
         for (request, result) in results {
             notify(&ctx, request, result).await;
         }
+        ctx.state_mut(|s| s.in_flight = 0);
+        check_rollover(&ctx, &input);
     }
 }
 
