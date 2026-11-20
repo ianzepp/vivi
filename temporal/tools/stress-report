@@ -1,0 +1,197 @@
+#!/usr/bin/env python3
+"""stress-report --since <time> [--until <time>] [--address host:port] [--tsv file] [--steps file]
+
+Cost each Temporal step in a time window: its host, how long it ran, and how
+many GB that host's Lanes drive wrote while it ran. Run on hub.
+
+- Steps come from the Temporal histories of every NeedWorkflow, SliceWorkflow and
+  LanderWorkflow run that started or closed in the window: each activity's start
+  (with the worker identity that ran it) and its end (completed, failed, timed out).
+- Writes come from `lanes-watch.tsv` (per-minute cumulative SMART data units per
+  studio Lanes drive, 1 unit = 512,000 bytes), interpolated at each step's start
+  and end. The figure is the whole drive's writes during the step: exact when the
+  step ran alone on its host, an upper bound when steps overlapped.
+
+Prints a per-step-type table, the window's totals per drive, and GB and wall time
+per landed need. `--steps file` also writes every step as TSV.
+Times are UTC (`2026-11-19T20:00:00Z` or `2026-11-19 20:00`).
+"""
+import argparse, bisect, json, re, statistics, subprocess, sys
+from datetime import datetime, timezone
+
+UNIT = 512_000
+HOST_DRIVE = {"studio": "studio-01", "studio-01": "studio-01", "studio-02": "studio-02"}
+
+
+def parse_time(text):
+    """UTC from an ISO time (Temporal's carry nanoseconds) or `YYYY-MM-DD HH:MM[:SS]`,
+    which is read as UTC."""
+    text = text.strip().replace("Z", "+00:00").replace(" ", "T", 1)
+    m = re.match(r"^(\d{4}-\d\d-\d\dT\d\d:\d\d(?::\d\d)?)(\.\d+)?([+-]\d\d:\d\d)?$", text)
+    if not m:
+        sys.exit(f"cannot read time {text!r}")
+    base, frac, zone = m.groups()
+    frac = (frac or "")[:7]
+    when = datetime.fromisoformat(base + frac)
+    if zone:
+        return datetime.fromisoformat(base + frac + zone).astimezone(timezone.utc)
+    return when.replace(tzinfo=timezone.utc)
+
+
+def temporal(address, *args):
+    out = subprocess.run(["temporal", *args, "--address", address, "-o", "json"],
+                         capture_output=True, text=True, timeout=120)
+    if out.returncode != 0:
+        sys.exit(f"temporal {' '.join(args[:2])}: {out.stderr.strip()[:300]}")
+    text = out.stdout.strip()
+    if not text:
+        return []
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return [json.loads(line) for line in text.splitlines() if line.strip()]
+
+
+def runs(address, since, until):
+    q = (f'StartTime < "{until.strftime("%Y-%m-%dT%H:%M:%SZ")}" AND '
+         f'(CloseTime > "{since.strftime("%Y-%m-%dT%H:%M:%SZ")}" OR ExecutionStatus = "Running")')
+    listed = temporal(address, "workflow", "list", "--query", q, "--limit", "5000")
+    for w in listed:
+        ex = w.get("execution", {})
+        yield w.get("type", {}).get("name", ""), ex.get("workflowId", ""), ex.get("runId", ""), w
+
+
+def steps_of(address, wtype, wid, rid):
+    shown = temporal(address, "workflow", "show", "-w", wid, "-r", rid)
+    events = shown.get("events", []) if isinstance(shown, dict) else []
+    sched, started, out = {}, {}, []
+    for e in events:
+        t = e.get("eventType", "")
+        eid = str(e.get("eventId"))
+        when = parse_time(e["eventTime"])
+        if t.endswith("ACTIVITY_TASK_SCHEDULED"):
+            a = e["activityTaskScheduledEventAttributes"]
+            sched[eid] = (a["activityType"]["name"], a.get("taskQueue", {}).get("name", ""))
+        elif t.endswith("ACTIVITY_TASK_STARTED"):
+            a = e["activityTaskStartedEventAttributes"]
+            started[str(a["scheduledEventId"])] = (when, a.get("identity", ""), int(a.get("attempt", 1)))
+        else:
+            for kind in ("COMPLETED", "FAILED", "TIMED_OUT", "CANCELED"):
+                if t.endswith("ACTIVITY_TASK_" + kind):
+                    key = "activityTask" + kind.title().replace("_", "") + "EventAttributes"
+                    a = e.get(key) or next((v for k, v in e.items() if k.endswith("EventAttributes")), {})
+                    s = str(a.get("scheduledEventId"))
+                    if s in started and s in sched:
+                        t0, ident, attempt = started[s]
+                        name, queue = sched[s]
+                        out.append({"workflow": wid, "type": wtype, "step": name, "queue": queue,
+                                    "host": ident.split("/")[0], "start": t0, "end": when,
+                                    "result": kind.lower(), "attempt": attempt})
+    return out
+
+
+def load_writes(path):
+    series = {}
+    with open(path) as f:
+        for line in f:
+            p = line.rstrip("\n").split("\t")
+            if len(p) < 4 or not p[3].isdigit():
+                continue
+            when = datetime.strptime(p[0], "%Y-%m-%d %H:%M:%S").astimezone(timezone.utc)
+            series.setdefault(p[1], []).append((when, int(p[3])))
+    for s in series.values():
+        s.sort()
+    return series
+
+
+def units_at(series, when):
+    times = [t for t, _ in series]
+    i = bisect.bisect_left(times, when)
+    if i == 0 or i >= len(series):
+        return None
+    (t0, u0), (t1, u1) = series[i - 1], series[i]
+    span = (t1 - t0).total_seconds() or 1
+    return u0 + (u1 - u0) * (when - t0).total_seconds() / span
+
+
+def gb(series, start, end):
+    if series is None:
+        return None
+    a, b = units_at(series, start), units_at(series, end)
+    if a is None or b is None:
+        return None
+    return max(b - a, 0) * UNIT / 1e9
+
+
+def fmt(x, digits=1):
+    return "-" if x is None else f"{x:.{digits}f}"
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--since", required=True)
+    ap.add_argument("--until")
+    ap.add_argument("--address", default="127.0.0.1:7233")
+    ap.add_argument("--tsv", default="/vivi/orch/orch/lanes-watch.tsv")
+    ap.add_argument("--steps")
+    args = ap.parse_args()
+    since = parse_time(args.since)
+    until = parse_time(args.until) if args.until else datetime.now(timezone.utc)
+    writes = load_writes(args.tsv)
+
+    steps, needs = [], []
+    for wtype, wid, rid, w in runs(args.address, since, until):
+        if wtype not in ("NeedWorkflow", "SliceWorkflow", "LanderWorkflow"):
+            continue
+        if wtype == "NeedWorkflow":
+            needs.append(w)
+        steps.extend(s for s in steps_of(args.address, wtype, wid, rid)
+                     if s["end"] >= since and s["start"] <= until)
+    for s in steps:
+        drive = HOST_DRIVE.get(s["host"])
+        s["seconds"] = (s["end"] - s["start"]).total_seconds()
+        s["gb"] = gb(writes.get(drive), s["start"], s["end"]) if drive else None
+
+    print(f"window {since:%Y-%m-%d %H:%M} to {until:%Y-%m-%d %H:%M} UTC, {len(steps)} steps\n")
+    print("| step | host | runs | failed | median s | max s | median GB | total GB* |")
+    print("|---|---|---:|---:|---:|---:|---:|---:|")
+    groups = {}
+    for s in steps:
+        groups.setdefault((s["step"], s["host"]), []).append(s)
+    for (step, host), g in sorted(groups.items()):
+        secs = [s["seconds"] for s in g]
+        gbs = [s["gb"] for s in g if s["gb"] is not None]
+        failed = sum(1 for s in g if s["result"] != "completed")
+        print(f"| {step} | {host} | {len(g)} | {failed} | {statistics.median(secs):.0f} | {max(secs):.0f} "
+              f"| {fmt(statistics.median(gbs) if gbs else None)} | {fmt(sum(gbs) if gbs else None)} |")
+    print("\n*the drive's writes while the step ran; steps that overlapped on one host share them.\n")
+
+    print("| drive | GB written in the window |")
+    print("|---|---:|")
+    for drive, series in sorted(writes.items()):
+        print(f"| {drive} | {fmt(gb(series, since, until))} |")
+
+    closed = [w for w in needs if "COMPLETED" in str(w.get("status", "")).upper()]
+    total = sum(v for v in (gb(writes.get(d), since, until) for d in writes) if v is not None)
+    print(f"\nneeds started or running: {len(needs)}; completed: {len(closed)}")
+    if closed:
+        walls = []
+        for w in closed:
+            st, ct = w.get("startTime"), w.get("closeTime")
+            if st and ct:
+                walls.append((parse_time(ct) - parse_time(st)).total_seconds() / 60)
+        if walls:
+            print(f"wall time per completed need: median {statistics.median(walls):.1f} min, "
+                  f"max {max(walls):.1f} min")
+        print(f"Lanes GB per completed need (both drives, whole window): {total / len(closed):.1f}")
+
+    if args.steps:
+        with open(args.steps, "w") as f:
+            f.write("workflow\tstep\thost\tattempt\tresult\tstart\tseconds\tgb\n")
+            for s in sorted(steps, key=lambda s: s["start"]):
+                f.write(f"{s['workflow']}\t{s['step']}\t{s['host']}\t{s['attempt']}\t{s['result']}\t"
+                        f"{s['start']:%Y-%m-%dT%H:%M:%S}\t{s['seconds']:.0f}\t{fmt(s['gb'], 2)}\n")
+
+
+if __name__ == "__main__":
+    main()
