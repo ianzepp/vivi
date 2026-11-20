@@ -31,6 +31,7 @@ import fcntl
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -183,7 +184,7 @@ def gate_one(sha, tree, timeout, jobs, use_cache):
         if u0 is not None and u1 is not None:
             res["bytes_written"] = (u1 - u0) * 512000
         res["duration_secs"] = round(time.time() - t0, 1)
-        subprocess.run(["trash", tmp], capture_output=True)
+        shutil.rmtree(tmp, ignore_errors=True)
     if res["status"] in ("ok", "build_failed"):
         tmpf = cache + ".tmp"
         json.dump(res, open(tmpf, "w"))
