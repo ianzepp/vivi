@@ -198,34 +198,20 @@ and is safe to run again. The review harness is
 `pi … --no-mcp --tools read,grep,find,ls`: no shell, so a review cannot
 build, test or edit.
 
-`radix` was provisioned on 2026-11-18. On each studio the pump's warm gate
-tree (`/Volumes/Lanes/vivi/trees/faberlang/radix/land`) became the gate
-tree, still a worktree of the studio's radix mirror
-(`/Volumes/Lanes/vivi/repos/github.com/faberlang/radix.git`). The check
-tree's `target/` was seeded from it with an APFS clone. Measured on studio:
-- gate tree, first no-op build after the move: 78 s; the next one: 0 s;
-- check tree, first build on vivi/main: 149 s, rebuilding only radix's own
-  71 crates (a cold build is about 9 min).
+On each studio, radix's `land` is a worktree of the studio's radix mirror
+(`/Volumes/Lanes/vivi/repos/github.com/faberlang/radix.git`), not of
+`repo`. The pump's trees sit beside the Temporal ones in
+`trees/faberlang/radix/`: `main` is the faber build tree that
+`hub-studio-faber.timer` uses; `bisect` and `slot-1..8` are unused.
 
-From 2026-11-18 to 2026-11-20 the trees sat at
-`/Volumes/Lanes/vivi/temporal/trees/<target>/`, against S2 and S15. On
-2026-11-20 they moved to `trees/faberlang/radix/` (a rename on the same
-drive, then `git worktree repair`).
-
-**Moving a build tree does not make Cargo rebuild it.** Cargo's
-fingerprints hold paths relative to the tree, so after the move every
-crate looked fresh. But radix compiles `env!("CARGO_MANIFEST_DIR")` into
-its code (to find `locale/*/pack.toml`, fixtures and the like), so the old
-binaries kept reading the old directory. The first gate after the move
-failed 2,757 tests against the base's 101, all on "No such file" under the
-old path. The fix, per moved tree: move the workspace members'
-fingerprints aside (`target/*/.fingerprint/<member>-*` into
-`.fingerprint-premove/`), so Cargo rebuilds radix's 68 crates once and
-keeps the dependencies. A tree moved again needs the same.
-
-The pump's other trees (`main`, the faber build tree that
-`hub-studio-faber.timer` uses; `bisect`; `slot-1..8`) are in the same
-`trees/faberlang/radix/` directory, beside the Temporal ones.
+**A moved build tree must rebuild its own crates.** Cargo's fingerprints
+hold paths relative to the tree, so a moved tree looks fresh to Cargo. But
+radix compiles `env!("CARGO_MANIFEST_DIR")` into its code (to find
+`locale/*/pack.toml`, fixtures and the like), so its binaries keep reading
+the old directory and tests fail with "No such file". After moving a tree,
+move the workspace members' fingerprints (`target/*/.fingerprint/<member>-*`)
+out of `target/`, so Cargo rebuilds radix's crates once; dependencies stay
+built.
 
 The record writes to the hosted `faberlang` project (since 2026-11-18). Only
 hub's control worker writes it, with its own key at hub

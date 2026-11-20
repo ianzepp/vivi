@@ -63,8 +63,7 @@ compose = "~/vivi-temporal/bin/compose"
 gate = "~/vivi-temporal/bin/gate"
 gate_timeout_s = 900
 
-# radix: provisioned 2026-11-18; trees moved to trees/faberlang/radix on
-# 2026-11-20 (mini-m1: a repository and its review worktrees only).
+# radix (mini-m1: a repository and its review worktrees only).
 # The check builds every test target without running tests (main carries
 # about 73 known failures; the gate judges tests against main's baseline).
 [targets.radix]
