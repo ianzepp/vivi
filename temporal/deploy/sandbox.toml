@@ -12,11 +12,10 @@ namespace = "default"
 control = "control"
 lane = "lane"
 agent = "agent-{host}"
-check = "check-{host}"
+verify = "verify-{host}"
 review = "agent-{host}"
-gate = "gate-{host}"
 agent_hosts = ["studio"]
-gate_hosts = ["studio"]
+verify_hosts = ["studio"]
 affinity_wait_s = 60
 fallback_wait_s = 600
 
@@ -26,7 +25,7 @@ queues = { control = 50, lane = 2 }
 # The same root as in cluster.toml, so both configs use one set of trees.
 [hosts.studio]
 root = "/Volumes/Lanes/vivi"
-queues = { agent-studio = 2, check-studio = 2, gate-studio = 1 }
+queues = { agent-studio = 2, verify-studio = 1 }
 
 [targets.pump-sandbox]
 remote = "git@hub.local:faberlang/pump-sandbox.git"

@@ -12,14 +12,16 @@ namespace = "default"
 control = "control"
 lane = "lane"
 agent = "agent-{host}"
-check = "check-{host}"
+# Check and gate share one queue per studio, with one slot, so they take
+# turns in the studio's verification tree. Each target's home studio comes
+# from its <owner>/<repo>; check and gate both prefer it.
+verify = "verify-{host}"
 review = "agent-{host}"
-gate = "gate-{host}"
 agent_hosts = ["studio", "studio-02"]
 # Review runs only on the mini (queue agent-mini-m1). Plan stays on the
 # control queue until an LLM planner exists; then add plan_hosts = ["mini-m1"].
 review_hosts = ["mini-m1"]
-gate_hosts = ["studio", "studio-02"]
+verify_hosts = ["studio", "studio-02"]
 affinity_wait_s = 60
 fallback_wait_s = 600
 
@@ -34,11 +36,11 @@ queues = { control = 50, lane = 2 }
 
 [hosts.studio]
 root = "/Volumes/Lanes/vivi"
-queues = { agent-studio = 2, check-studio = 1, gate-studio = 1 }
+queues = { agent-studio = 2, verify-studio = 1 }
 
 [hosts.studio-02]
 root = "/Volumes/Lanes/vivi"
-queues = { agent-studio-02 = 2, check-studio-02 = 1, gate-studio-02 = 1 }
+queues = { agent-studio-02 = 2, verify-studio-02 = 1 }
 
 # 8 GB: two pi processes at most. Its pool's harness has no shell tool.
 # ~/vivi is what the mini's /vivi link points at.

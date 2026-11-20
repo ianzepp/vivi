@@ -11,8 +11,7 @@ fn sandbox_config_parses() {
         c.queues_for("studio").unwrap(),
         vec![
             ("agent-studio".to_string(), 2),
-            ("check-studio".to_string(), 2),
-            ("gate-studio".to_string(), 1),
+            ("verify-studio".to_string(), 1),
         ]
     );
     assert_eq!(
@@ -58,17 +57,21 @@ fn cluster_config_places_each_step() {
             .collect()
     };
     assert_eq!(q("hub"), ["control", "lane"]);
-    assert_eq!(q("studio"), ["agent-studio", "check-studio", "gate-studio"]);
-    assert_eq!(
-        q("studio-02"),
-        ["agent-studio-02", "check-studio-02", "gate-studio-02"]
-    );
-    // The mini serves review only: no check or gate queue, and it is not
+    assert_eq!(q("studio"), ["agent-studio", "verify-studio"]);
+    assert_eq!(q("studio-02"), ["agent-studio-02", "verify-studio-02"]);
+    // The mini serves review only: no verify queue, and it is not
     // an agent host, so implement never lands there.
     assert_eq!(q("mini-m1"), ["agent-mini-m1"]);
     let r = c.routing();
     assert!(!r.agent_hosts.contains(&"mini-m1".to_string()));
-    assert!(!r.gate_hosts.contains(&"mini-m1".to_string()));
+    assert!(!r.verify_hosts.contains(&"mini-m1".to_string()));
+    // Check and gate share one template, and every target has a home among
+    // the verify hosts; targets on one remote share it.
+    assert_eq!(r.verify, "verify-{host}");
+    let home = r.home("radix").unwrap();
+    assert!(r.verify_hosts.iter().any(|h| h == home));
+    assert_eq!(r.home("radix-stress"), Some(home));
+    assert!(r.home("pump-sandbox").is_some());
     assert_eq!(r.review_hosts(), &["mini-m1".to_string()][..]);
     assert_eq!(c.server.address, "http://192.168.1.237:7233");
     assert_eq!(c.record.kind, RecordKind::Mcp);
@@ -80,8 +83,8 @@ fn cluster_config_places_each_step() {
 #[test]
 fn review_host_without_hosts_entry_is_refused() {
     let text = SANDBOX.replace(
-        "gate_hosts = [\"studio\"]",
-        "gate_hosts = [\"studio\"]\nreview_hosts = [\"mini-m1\"]",
+        "verify_hosts = [\"studio\"]",
+        "verify_hosts = [\"studio\"]\nreview_hosts = [\"mini-m1\"]",
     );
     let err = Config::parse(&text).unwrap_err().to_string();
     assert!(err.contains("mini-m1"), "{err}");
@@ -94,14 +97,17 @@ fn with(replace: &str, by: &str) -> String {
 
 #[test]
 fn routing_host_without_hosts_entry_is_refused() {
-    let text = with("gate_hosts = [\"studio\"]", "gate_hosts = [\"studio-02\"]");
+    let text = with(
+        "verify_hosts = [\"studio\"]",
+        "verify_hosts = [\"studio-02\"]",
+    );
     let err = Config::parse(&text).unwrap_err().to_string();
     assert!(err.contains("studio-02"), "{err}");
 }
 
 #[test]
 fn zero_slots_and_missing_control_are_refused() {
-    let text = with("gate-studio = 1", "gate-studio = 0");
+    let text = with("agent-studio = 2", "agent-studio = 0");
     assert!(
         Config::parse(&text)
             .unwrap_err()
@@ -154,12 +160,11 @@ fn for_host_puts_trees_under_root_owner_and_repo() {
     let trees = "/Volumes/Lanes/vivi/trees/faberlang/radix";
     assert_eq!(radix.agent.repo, format!("{trees}/repo"));
     assert_eq!(radix.agent.slots_dir, format!("{trees}/slots"));
-    assert_eq!(radix.agent.check_tree, format!("{trees}/check"));
-    assert_eq!(radix.lander.gate_tree, format!("{trees}/land"));
+    assert_eq!(radix.verify_tree, format!("{trees}/verify"));
     // A second target on the same remote shares the trees.
     let stress = studio.target("radix-stress").unwrap();
     assert_eq!(stress.agent.repo, radix.agent.repo);
-    assert_eq!(stress.lander.gate_tree, radix.lander.gate_tree);
+    assert_eq!(stress.verify_tree, radix.verify_tree);
     let sandbox = studio.target("pump-sandbox").unwrap();
     assert_eq!(
         sandbox.agent.repo,
@@ -245,6 +250,25 @@ fn a_remote_without_an_owner_is_refused() {
         "remote = \"git@hub.local:faberlang/pump-sandbox.git\"",
         "remote = \"git@hub.local:pump-sandbox.git\"",
     );
+    assert!(Config::parse(&text).is_err());
+}
+
+#[test]
+fn a_verify_host_serves_its_verify_queue_with_one_slot() {
+    let text = with("verify-studio = 1", "verify-studio = 2");
+    let err = Config::parse(&text).unwrap_err().to_string();
+    assert!(err.contains("one slot"), "{err}");
+    let text = with("verify-studio = 1", "other = 1");
+    let err = Config::parse(&text).unwrap_err().to_string();
+    assert!(err.contains("verify-studio"), "{err}");
+}
+
+#[test]
+fn separate_check_and_gate_queues_are_refused() {
+    // One verify template keeps check and gate out of the tree at once.
+    let text = with("verify = \"verify-{host}\"", "check = \"check-{host}\"");
+    assert!(Config::parse(&text).is_err());
+    let text = with("verify_hosts", "gate_hosts");
     assert!(Config::parse(&text).is_err());
 }
 

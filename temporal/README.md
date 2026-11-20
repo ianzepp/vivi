@@ -59,8 +59,7 @@ which resume from their branches.
 | `lane` | `compose`, `publish` (the lane's bare git cache) | pepper | hub |
 | `agent-<host>` | `implement` (the host's worktrees and warm repo) | studio | studio, studio-02 |
 | `agent-<host>` for `review_hosts` | `review` (and `plan`, once `plan_hosts` is set) | studio | mini-m1 |
-| `check-<host>` | `check` (the host's check tree) | studio | studio, studio-02 |
-| `gate-<host>` | `gate` (the host's warm gate tree) | studio | studio, studio-02 |
+| `verify-<host>` (one slot) | `check` and `gate`, in turn, in the host's verification tree | studio | studio, studio-02 |
 
 Queue names are templates in `[routing]` (`agent-{host}`); a template
 without `{host}` names one shared queue, which is how the tests run every
@@ -85,7 +84,7 @@ unset, plan runs on the control queue.
 |---|---|---|
 | `plan` | nothing yet: returns the need's given slices, or one slice for the whole brief | none |
 | `implement` | `git ls-remote` (the branch head on the lane is the resume point), `git fetch`, then the runner: claim a worktree, reset it to the branch head (or main), run the harness with the budget (heartbeating; its process group is killed at the budget or on cancel), commit what changed; then `git push --force-with-lease=<branch>:<expected>`, also when the agent failed | 429/quota/rate-limit/5xx text in the receipt → provider (with Retry-After when named); a refused reply or no change at all → format; a fenced push, a git failure, no free worktree, or an agent failure with no signature → infra |
-| `check` | `git fetch`, `checkout --detach <head>`, `merge --no-ff <main>` in the check tree, then `sh -c <check_command>` with `VIVI_BASE`/`VIVI_HEAD` | a conflict with main or a non-zero exit → red (a value); killed at the limit, exit 126/127, or transport text → infra |
+| `check` | `git fetch`, `checkout --detach <head>`, `merge --no-ff <main>` in the verification tree, then `sh -c <check_command>` with `VIVI_BASE`/`VIVI_HEAD` | a conflict with main or a non-zero exit → red (a value); killed at the limit, exit 126/127, or transport text → infra |
 | `review` | `git diff --stat --patch <base>..<head>` into the brief (the review hosts' harness has no shell), then the runner with the read-only harness at `<head>`, committing nothing; the receipt must end in `VERDICT: APPROVE` or `VERDICT: CHANGES: …` | as implement; no verdict line → format |
 | `compose` | refreshes the bare cache from the target's remote, then `compose --no-fetch --no-push --base <main>` with `LANDER_CACHE`; pushes the candidate to `refs/vivi/candidates/<id>` | exit 2 or bad JSON → infra; per unit: conflict or missing → ejected, already-merged or no-op → merged |
 | `gate` | `gate --sha <candidate> --base <main> --tree <tree> --timeout` | `pass` → pass or fail (bisected); exit 3, exit 4, `baseline_*` (main itself broken) → infra, never a red that ejects good units |
@@ -182,12 +181,14 @@ from the target's name (register S2 and S15). For a remote
 - `{root}/trees/<owner>/<repo>/slots/` is where the runner keeps one
   worktree per agent activity slot (`slot-<n>`, claimed by `slot-<n>.lock`;
   made on first use and kept, so its `target/` stays warm);
-- `{root}/trees/<owner>/<repo>/{check,land}` are the check and gate trees,
-  on build hosts;
+- `{root}/trees/<owner>/<repo>/verify` is the verification tree, on verify
+  hosts: check and gate both build there, taking turns through the host's
+  one-slot `verify-<host>` queue, so a checked change is already built when
+  its gate runs;
 - `{root}/cache/<owner>/<repo>.git` is the lane cache, on the lane host.
 
 These paths are not configurable: `Config::for_host` sets them, and a
-`repo`, `slots_dir`, `check_tree`, `cache` or `gate_tree` key is refused.
+`repo`, `slots_dir`, `cache` or tree key is refused.
 So two targets on one remote (`radix`, `radix-stress`) share trees, and two
 repos of the same name under different owners never collide. A remote
 with no owner is refused. The roots: hub `/vivi`; the studios
@@ -198,7 +199,10 @@ and is safe to run again. The review harness is
 `pi … --no-mcp --tools read,grep,find,ls`: no shell, so a review cannot
 build, test or edit.
 
-On each studio, radix's `land` is a worktree of the studio's radix mirror
+Each target has a home verify host, chosen from its `<owner>/<repo>`
+(radix: studio). Check and gate prefer it and fall back to the other verify
+host after `affinity_wait_s`. On each studio, radix's `verify` is a worktree
+of the studio's radix mirror
 (`/Volumes/Lanes/vivi/repos/github.com/faberlang/radix.git`), not of
 `repo`. The pump's trees sit beside the Temporal ones in
 `trees/faberlang/radix/`: `main` is the faber build tree that

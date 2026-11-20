@@ -275,9 +275,11 @@ async fn publish(
         .await?)
 }
 
-/// Gate on the gate hosts in turn. A host that does not take the task in
-/// time, or fails it three times, passes it on; after every host the
-/// Lander waits and starts over, because a gate must not drop units.
+/// Gate on the verify hosts in turn, the target's home first: its
+/// verification tree has already built the checked units. A host that does
+/// not take the task in time, or fails it three times, passes it on; after
+/// every host the Lander waits and starts over, because a gate must not
+/// drop units.
 async fn gate(
     ctx: &WorkflowContext<LanderWorkflow>,
     input: &LanderInput,
@@ -286,9 +288,9 @@ async fn gate(
     let routing = &input.routing;
     let places = placements(
         routing,
-        &routing.gate,
-        &routing.gate_hosts,
-        None,
+        &routing.verify,
+        &routing.verify_hosts,
+        routing.home(&input.target),
         &candidate.id,
     );
     loop {

@@ -1,4 +1,5 @@
-//! `check`: the pre-queue machine check, in this host's check tree. It
+//! `check`: the pre-queue machine check, in this host's verification tree
+//! (shared with the gate, never at the same time: one verify queue slot). It
 //! checks the slice head merged with current main (the main it will join),
 //! then runs the target's check command. Red is a value; only a check that
 //! could not run is an error.
@@ -15,7 +16,7 @@ use crate::real::git::{IDENT, fetch, git, git_ok, infra};
 use crate::types::{CheckResult, StepInput};
 
 pub async fn check(target: &Target, input: &StepInput) -> Result<CheckResult, ActivityError> {
-    let tree = expand(&target.agent.check_tree);
+    let tree = expand(&target.verify_tree);
     let specs = vec![
         format!("+refs/heads/{0}:refs/remotes/lane/{0}", target.main),
         format!("+refs/heads/{0}:refs/remotes/lane/{0}", input.branch),

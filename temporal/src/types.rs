@@ -1,6 +1,8 @@
 //! Values that cross workflow and activity boundaries. Everything here is
 //! serde, because Temporal stores each of them in workflow history.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 /// Timeouts and budgets a workflow applies to its steps. Tests pass short
@@ -37,21 +39,28 @@ pub struct Routing {
     /// Compose and publish, next to the lane's git cache.
     pub lane: String,
     pub agent: String,
-    pub check: String,
+    /// Check and gate. One template, so both run on one queue per host:
+    /// with that queue's one activity slot they take turns in the host's
+    /// verification tree and never share it at once.
+    pub verify: String,
     pub review: String,
-    pub gate: String,
     /// Template for `plan` when `plan_hosts` is set.
     pub plan: String,
-    /// Hosts that serve the agent and check templates, and review and plan
-    /// unless those have their own hosts.
+    /// Hosts that serve the agent template, and review and plan unless
+    /// those have their own hosts.
     pub agent_hosts: Vec<String>,
     /// Hosts that serve the review template. Empty: the agent hosts.
     pub review_hosts: Vec<String>,
     /// Hosts that serve the plan template. Empty: plan runs on the control
     /// queue.
     pub plan_hosts: Vec<String>,
-    /// Hosts that serve the gate template.
-    pub gate_hosts: Vec<String>,
+    /// Hosts with a verification tree: they serve the verify template.
+    pub verify_hosts: Vec<String>,
+    /// Each target's home verify host: check and gate prefer it, so a change
+    /// is built once in one warm tree and the gate only adds the test run.
+    /// The other verify hosts are the fallback.
+    #[serde(default)]
+    pub homes: BTreeMap<String, String>,
     /// Schedule-to-start on the preferred host (the warm tree). When it
     /// passes, the step moves to the next host.
     pub affinity_wait_ms: u64,
@@ -66,17 +75,22 @@ impl Routing {
             control: queue.to_string(),
             lane: queue.to_string(),
             agent: queue.to_string(),
-            check: queue.to_string(),
+            verify: queue.to_string(),
             review: queue.to_string(),
-            gate: queue.to_string(),
             plan: queue.to_string(),
             agent_hosts: vec!["local".to_string()],
             review_hosts: Vec::new(),
             plan_hosts: Vec::new(),
-            gate_hosts: vec!["local".to_string()],
+            verify_hosts: vec!["local".to_string()],
+            homes: BTreeMap::new(),
             affinity_wait_ms: 60_000,
             fallback_wait_ms: 600_000,
         }
+    }
+
+    /// The home verify host of `target`, if it has one.
+    pub fn home(&self, target: &str) -> Option<&str> {
+        self.homes.get(target).map(String::as_str)
     }
 
     /// The hosts review runs on: its own set, or the agent hosts.

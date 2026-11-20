@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use serde::Deserialize;
 
 use crate::error::ConfigError;
+use crate::routing::hosts_in_order;
 use crate::types::{AdmissionPolicy, LanderInput, Routing, Tuning};
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -46,12 +47,11 @@ pub struct RoutingConfig {
     pub lane: String,
     #[serde(default = "q_agent")]
     pub agent: String,
-    #[serde(default = "q_check")]
-    pub check: String,
+    /// Check and gate share this template (see `Routing::verify`).
+    #[serde(default = "q_verify")]
+    pub verify: String,
     #[serde(default = "q_agent")]
     pub review: String,
-    #[serde(default = "q_gate")]
-    pub gate: String,
     #[serde(default = "q_agent")]
     pub plan: String,
     pub agent_hosts: Vec<String>,
@@ -61,7 +61,9 @@ pub struct RoutingConfig {
     /// Plan on its own hosts. Unset: plan runs on the control queue.
     #[serde(default)]
     pub plan_hosts: Vec<String>,
-    pub gate_hosts: Vec<String>,
+    /// Hosts with a verification tree. Each target's home is one of them,
+    /// chosen from its `<owner>/<repo>`, so targets on one remote share it.
+    pub verify_hosts: Vec<String>,
     #[serde(default = "default_affinity")]
     pub affinity_wait_s: u64,
     #[serde(default = "default_fallback")]
@@ -77,11 +79,8 @@ fn q_lane() -> String {
 fn q_agent() -> String {
     "agent-{host}".to_string()
 }
-fn q_check() -> String {
-    "check-{host}".to_string()
-}
-fn q_gate() -> String {
-    "gate-{host}".to_string()
+fn q_verify() -> String {
+    "verify-{host}".to_string()
 }
 fn default_affinity() -> u64 {
     60
@@ -125,6 +124,11 @@ pub struct Target {
     pub check_timeout_s: u64,
     pub agent: AgentConfig,
     pub lander: LanderPaths,
+    /// The verification tree on the verify hosts, where check and gate
+    /// both build: `{root}/trees/<owner>/<repo>/verify`. It has a `lane`
+    /// remote. Set by `Config::for_host`.
+    #[serde(skip)]
+    pub verify_tree: String,
 }
 
 impl Target {
@@ -150,7 +154,7 @@ fn default_check_timeout() -> u64 {
     900
 }
 
-/// The agent steps of a target. The three paths are not configured: they
+/// The agent steps of a target. The two paths are not configured: they
 /// are set by `Config::for_host` from the host's root and the remote.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -163,9 +167,6 @@ pub struct AgentConfig {
     /// host's agent queue allows: `{root}/trees/<owner>/<repo>/slots`.
     #[serde(skip)]
     pub slots_dir: String,
-    /// A clone the check runs in: `{root}/trees/<owner>/<repo>/check`.
-    #[serde(skip)]
-    pub check_tree: String,
     pub model: String,
     #[serde(default = "default_budget")]
     pub budget_s: u64,
@@ -200,10 +201,6 @@ pub struct LanderPaths {
     /// Set by `Config::for_host`: `{root}/cache/<owner>/<repo>.git`.
     #[serde(skip)]
     pub cache: String,
-    /// The warm gate tree on the gate hosts; it has a `lane` remote.
-    /// Set by `Config::for_host`: `{root}/trees/<owner>/<repo>/land`.
-    #[serde(skip)]
-    pub gate_tree: String,
     #[serde(default = "default_gate_timeout")]
     pub gate_timeout_s: u64,
 }
@@ -293,7 +290,7 @@ impl Config {
             .iter()
             .chain(&self.routing.review_hosts)
             .chain(&self.routing.plan_hosts)
-            .chain(&self.routing.gate_hosts);
+            .chain(&self.routing.verify_hosts);
         for host in hosts {
             if !self.hosts.contains_key(host) {
                 return bad(format!(
@@ -319,6 +316,19 @@ impl Config {
                 self.routing.control
             ));
         }
+        for host in &self.routing.verify_hosts {
+            let queue = self.routing.verify.replace("{host}", host);
+            match self.hosts.get(host).and_then(|h| h.queues.get(&queue)) {
+                Some(1) => {}
+                Some(n) => {
+                    return bad(format!(
+                        "[hosts.{host}] queue {queue:?} has {n} slots; a verify queue has one slot, \
+                         so check and gate never share the verification tree at once"
+                    ));
+                }
+                None => return bad(format!("verify host {host:?} does not serve {queue:?}")),
+            }
+        }
         for (name, target) in &self.targets {
             if target.lane_path().is_none() {
                 return bad(format!(
@@ -336,7 +346,7 @@ impl Config {
     }
 
     /// This config as `host` sees it. Each target's trees go under
-    /// `{root}/trees/<owner>/<repo>/` (`repo`, `slots`, `check`, `land`) and
+    /// `{root}/trees/<owner>/<repo>/` (`repo`, `slots`, `verify`) and
     /// its lane cache at `{root}/cache/<owner>/<repo>.git` (S2, S15), where
     /// `{root}` is the host's `root`. A leading `{root}` in `compose` and
     /// `gate` becomes the root too.
@@ -362,8 +372,7 @@ impl Config {
             let (a, l) = (&mut target.agent, &mut target.lander);
             a.repo = format!("{trees}/repo");
             a.slots_dir = format!("{trees}/slots");
-            a.check_tree = format!("{trees}/check");
-            l.gate_tree = format!("{trees}/land");
+            target.verify_tree = format!("{trees}/verify");
             l.cache = format!("{root}/cache/{lane}.git");
             put(&mut l.compose);
             put(&mut l.gate);
@@ -403,14 +412,24 @@ impl Config {
             control: r.control.clone(),
             lane: r.lane.clone(),
             agent: r.agent.clone(),
-            check: r.check.clone(),
+            verify: r.verify.clone(),
             review: r.review.clone(),
-            gate: r.gate.clone(),
             plan: r.plan.clone(),
             agent_hosts: r.agent_hosts.clone(),
             review_hosts: r.review_hosts.clone(),
             plan_hosts: r.plan_hosts.clone(),
-            gate_hosts: r.gate_hosts.clone(),
+            verify_hosts: r.verify_hosts.clone(),
+            homes: self
+                .targets
+                .iter()
+                .filter_map(|(name, t)| {
+                    let lane = t.lane_path()?;
+                    let home = hosts_in_order(&r.verify_hosts, None, &lane)
+                        .into_iter()
+                        .next()?;
+                    Some((name.clone(), home))
+                })
+                .collect(),
             affinity_wait_ms: r.affinity_wait_s.saturating_mul(1_000),
             fallback_wait_ms: r.fallback_wait_s.saturating_mul(1_000),
         }

@@ -14,7 +14,6 @@ fn agent(slots_dir: &Path) -> AgentConfig {
     AgentConfig {
         repo: "/unused".into(),
         slots_dir: slots_dir.display().to_string(),
-        check_tree: "/unused".into(),
         model: "m1".into(),
         budget_s: 60,
         harness: "pi --model {model} @{brief}".into(),

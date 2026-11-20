@@ -129,7 +129,7 @@ fn exclusion_text(reason: &str, files: Option<&Value>) -> String {
 }
 
 pub async fn gate(target: &Target, candidate: &Candidate) -> Result<GateResult, ActivityError> {
-    let tree = expand(&target.lander.gate_tree).display().to_string();
+    let tree = expand(&target.verify_tree).display().to_string();
     let timeout = target.lander.gate_timeout_s.to_string();
     let args = [
         "--sha",

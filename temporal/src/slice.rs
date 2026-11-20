@@ -216,9 +216,10 @@ async fn run_round(
     land(ctx, input, checkpoint).await
 }
 
-/// `Some` when the round ends before landing. Check and review prefer the
-/// host that holds the work in its warm tree; review on its own hosts
-/// (`review_hosts`) prefers it only when it is one of them.
+/// `Some` when the round ends before landing. Check prefers the target's
+/// home verify host, whose verification tree the gate builds in too. Review
+/// prefers the host that holds the work, but only when it is one of its own
+/// hosts (`review_hosts`).
 async fn check_and_review(
     ctx: &WorkflowContext<SliceWorkflow>,
     input: &SliceInput,
@@ -236,7 +237,13 @@ async fn check_and_review(
         checkpoint: checkpoint.clone(),
     };
     let opts = step_options(tuning);
-    let check_places = place(&routing.check, &routing.agent_hosts);
+    let check_places = placements(
+        routing,
+        &routing.verify,
+        &routing.verify_hosts,
+        routing.home(&input.target),
+        &key,
+    );
     let checked = run_placed(
         ctx,
         "check",
