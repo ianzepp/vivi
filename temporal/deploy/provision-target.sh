@@ -1,15 +1,18 @@
 #!/bin/bash
-# provision-target.sh <full|review> <target> <remote> <root> [<warm-land>]
+# provision-target.sh <full|review> <remote> <root> [<warm-land>]
 #
-# Lay out one target on this host under <root> (the host's `root` in
-# cluster.toml), as the worker expects it:
+# Lay out one lane on this host under <root> (the host's `root` in
+# cluster.toml), as the worker expects it. <owner>/<repo> comes from the
+# remote, as in Config::for_host (S2), so every target on that remote
+# shares these trees:
 #
-#   <root>/trees/<target>/repo   the warm repository the agent worktrees
-#                                come from (a clone)
-#   <root>/trees/<target>/slots  the agent worktrees; the worker makes
-#                                slot-<n> on first use
-#   <root>/trees/<target>/check  full only: the check tree (a clone)
-#   <root>/trees/<target>/land   full only: the gate tree (remote `lane`)
+#   <root>/trees/<owner>/<repo>/repo   the warm repository the agent
+#                                      worktrees come from (a clone)
+#   <root>/trees/<owner>/<repo>/slots  the agent worktrees; the worker
+#                                      makes slot-<n> on first use
+#   <root>/trees/<owner>/<repo>/check  full only: the check tree (a clone)
+#   <root>/trees/<owner>/<repo>/land   full only: the gate tree (remote
+#                                      `lane`)
 #
 # full:   an agent, check and gate host (the studios). <warm-land>, when
 #         given, is an existing warm gate worktree that is moved into place
@@ -22,9 +25,19 @@
 #
 # Safe to run again: each step checks before it changes anything.
 set -euo pipefail
-MODE=$1 TARGET=$2 REMOTE=$3 ROOT=$4 WARM=${5:-}
+MODE=$1 REMOTE=$2 ROOT=${3%/} WARM=${4:-}
 export PATH=$HOME/.local/bin:/opt/homebrew/bin:$PATH
-T=$ROOT/trees/$TARGET
+# <owner>/<repo>: the last two segments after any ':', without .git.
+lane=${REMOTE%/}; lane=${lane%.git}; lane=${lane##*:}
+repo=${lane##*/}; owner=${lane%/*}; owner=${owner##*/}
+case "$lane" in */*) ;; *) owner= ;; esac
+case "$owner/$repo" in
+''/* | */'' | ./* | ../* | */. | */..)
+  echo "remote $REMOTE names no <owner>/<repo>" >&2
+  exit 1
+  ;;
+esac
+T=$ROOT/trees/$owner/$repo
 mkdir -p "$T/slots"
 step() { printf '== %s\n' "$*"; }
 

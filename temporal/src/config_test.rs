@@ -148,28 +148,110 @@ fn tilde_expands_to_home() {
 }
 
 #[test]
-fn for_host_puts_the_host_root_into_target_paths() {
+fn for_host_puts_trees_under_root_owner_and_repo() {
     let studio = Config::parse(CLUSTER).unwrap().for_host("studio").unwrap();
     let radix = studio.target("radix").unwrap();
+    let trees = "/Volumes/Lanes/vivi/trees/faberlang/radix";
+    assert_eq!(radix.agent.repo, format!("{trees}/repo"));
+    assert_eq!(radix.agent.slots_dir, format!("{trees}/slots"));
+    assert_eq!(radix.agent.check_tree, format!("{trees}/check"));
+    assert_eq!(radix.lander.gate_tree, format!("{trees}/land"));
+    // A second target on the same remote shares the trees.
+    let stress = studio.target("radix-stress").unwrap();
+    assert_eq!(stress.agent.repo, radix.agent.repo);
+    assert_eq!(stress.lander.gate_tree, radix.lander.gate_tree);
+    let sandbox = studio.target("pump-sandbox").unwrap();
     assert_eq!(
-        radix.agent.repo,
-        "/Volumes/Lanes/vivi/temporal/trees/radix/repo"
+        sandbox.agent.repo,
+        "/Volumes/Lanes/vivi/trees/faberlang/pump-sandbox/repo"
+    );
+    let hub = Config::parse(CLUSTER).unwrap().for_host("hub").unwrap();
+    assert_eq!(
+        hub.target("radix").unwrap().lander.cache,
+        "/vivi/cache/faberlang/radix.git"
     );
     assert_eq!(
-        radix.agent.slots_dir,
-        "/Volumes/Lanes/vivi/temporal/trees/radix/slots"
+        hub.target("radix").unwrap().lander.compose,
+        "~/vivi-temporal/bin/compose"
     );
-    assert_eq!(
-        radix.lander.gate_tree,
-        "/Volumes/Lanes/vivi/temporal/trees/radix/land"
-    );
-    assert_eq!(radix.lander.cache, "~/vivi-temporal/cache/radix.git");
     let mini = Config::parse(CLUSTER).unwrap().for_host("mini-m1").unwrap();
     assert_eq!(
         mini.target("radix").unwrap().agent.repo,
-        "~/vivi-temporal/trees/radix/repo"
+        "~/vivi/trees/faberlang/radix/repo"
+    );
+    // No root set: the default.
+    let pepper = Config::parse(SANDBOX).unwrap().for_host("pepper").unwrap();
+    assert_eq!(
+        pepper.target("pump-sandbox").unwrap().lander.cache,
+        "~/vivi-temporal/cache/faberlang/pump-sandbox.git"
     );
     assert!(Config::parse(CLUSTER).unwrap().for_host("nowhere").is_err());
+}
+
+#[test]
+fn same_repo_name_under_two_owners_gets_two_trees() {
+    let text = format!("{}\n{}", CLUSTER, CLUSTER_RADIX_FORK);
+    let c = Config::parse(&text).unwrap().for_host("studio").unwrap();
+    assert_ne!(
+        c.target("radix").unwrap().agent.repo,
+        c.target("radix-fork").unwrap().agent.repo
+    );
+    assert_eq!(
+        c.target("radix-fork").unwrap().agent.repo,
+        "/Volumes/Lanes/vivi/trees/someone/radix/repo"
+    );
+}
+
+const CLUSTER_RADIX_FORK: &str = r#"
+[targets.radix-fork]
+remote = "git@hub.local:someone/radix.git"
+main = "main"
+check_command = "true"
+
+[targets.radix-fork.agent]
+model = "m"
+
+[targets.radix-fork.lander]
+compose = "c"
+gate = "g"
+"#;
+
+#[test]
+fn lane_path_reads_owner_and_repo_from_the_remote() {
+    let lane = |remote: &str| {
+        let mut t = Config::parse(CLUSTER)
+            .unwrap()
+            .target("radix")
+            .unwrap()
+            .clone();
+        t.remote = remote.to_string();
+        t.lane_path()
+    };
+    assert_eq!(
+        lane("git@hub.local:faberlang/radix.git").as_deref(),
+        Some("faberlang/radix")
+    );
+    assert_eq!(lane("ssh://git@host:22/o/r.git").as_deref(), Some("o/r"));
+    assert_eq!(lane("https://github.com/o/r").as_deref(), Some("o/r"));
+    assert_eq!(lane("https://github.com/o/r.git/").as_deref(), Some("o/r"));
+    assert_eq!(lane("git@hub.local:radix.git"), None);
+    assert_eq!(lane("git@hub.local:../radix.git"), None);
+    assert_eq!(lane("/srv/git/../radix.git"), None);
+}
+
+#[test]
+fn a_remote_without_an_owner_is_refused() {
+    let text = with(
+        "remote = \"git@hub.local:faberlang/pump-sandbox.git\"",
+        "remote = \"git@hub.local:pump-sandbox.git\"",
+    );
+    assert!(Config::parse(&text).is_err());
+}
+
+#[test]
+fn configured_tree_paths_are_refused() {
+    let text = with("budget_s = 900\n", "budget_s = 900\nrepo = \"/x\"\n");
+    assert!(Config::parse(&text).is_err());
 }
 
 #[test]

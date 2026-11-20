@@ -95,18 +95,24 @@ fn default_fallback() -> u64 {
 pub struct HostConfig {
     /// Queue name → most activities this host runs from it at once.
     pub queues: BTreeMap<String, usize>,
-    /// What `{root}` means in this host's target paths. Unset: `~/vivi-temporal`.
+    /// This host's root (S15): target trees live at
+    /// `{root}/trees/<owner>/<repo>/` and lane caches at
+    /// `{root}/cache/<owner>/<repo>.git`; `{root}` in `compose` and `gate`
+    /// means it too. Unset: `~/vivi-temporal`.
     #[serde(default)]
     pub root: Option<String>,
 }
 
-/// `{root}` in a target path when the host sets no `root`.
+/// A host's root when it sets no `root`.
 pub const DEFAULT_ROOT: &str = "~/vivi-temporal";
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Target {
-    /// The lane: `git@hub.local:<owner>/<repo>.git`.
+    /// The lane: `git@hub.local:<owner>/<repo>.git`. Its owner and repo
+    /// name the target's trees and cache (see `Config::for_host`), so two
+    /// targets on one remote share them and two repos of one name under
+    /// different owners never do.
     pub remote: String,
     /// The branch the Lander publishes to.
     pub main: String,
@@ -121,6 +127,22 @@ pub struct Target {
     pub lander: LanderPaths,
 }
 
+impl Target {
+    /// `<owner>/<repo>` from the remote, for `git@host:owner/repo.git`,
+    /// `ssh://git@host:22/owner/repo.git` and `https://host/owner/repo`.
+    /// `None` when the remote has no owner or a segment is `.` or `..`.
+    pub fn lane_path(&self) -> Option<String> {
+        let path = self.remote.trim_end_matches('/');
+        let path = path.strip_suffix(".git").unwrap_or(path);
+        let path = path.rsplit_once(':').map_or(path, |(_, rest)| rest);
+        let mut parts = path.rsplit('/');
+        let repo = parts.next()?;
+        let owner = parts.next()?;
+        let ok = |s: &str| !s.is_empty() && s != "." && s != "..";
+        (ok(owner) && ok(repo)).then(|| format!("{owner}/{repo}"))
+    }
+}
+
 fn default_prefix() -> String {
     "vivi/".to_string()
 }
@@ -128,17 +150,21 @@ fn default_check_timeout() -> u64 {
     900
 }
 
-/// Where the agent hosts keep this target. `~` is the worker's home;
-/// `{root}` is the host's `root` (see `Config::for_host`).
+/// The agent steps of a target. The three paths are not configured: they
+/// are set by `Config::for_host` from the host's root and the remote.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct AgentConfig {
-    /// The warm repository the agent worktrees are made from.
+    /// The warm repository the agent worktrees are made from:
+    /// `{root}/trees/<owner>/<repo>/repo`.
+    #[serde(skip)]
     pub repo: String,
     /// The agent worktrees, `slot-<n>`, one per agent activity slot this
-    /// host's agent queue allows.
+    /// host's agent queue allows: `{root}/trees/<owner>/<repo>/slots`.
+    #[serde(skip)]
     pub slots_dir: String,
-    /// A clone the check runs in.
+    /// A clone the check runs in: `{root}/trees/<owner>/<repo>/check`.
+    #[serde(skip)]
     pub check_tree: String,
     pub model: String,
     #[serde(default = "default_budget")]
@@ -171,8 +197,12 @@ pub struct LanderPaths {
     /// `lab/lander/gate`.
     pub gate: String,
     /// A bare clone of the lane on the lane host; compose works in it.
+    /// Set by `Config::for_host`: `{root}/cache/<owner>/<repo>.git`.
+    #[serde(skip)]
     pub cache: String,
     /// The warm gate tree on the gate hosts; it has a `lane` remote.
+    /// Set by `Config::for_host`: `{root}/trees/<owner>/<repo>/land`.
+    #[serde(skip)]
     pub gate_tree: String,
     #[serde(default = "default_gate_timeout")]
     pub gate_timeout_s: u64,
@@ -289,6 +319,14 @@ impl Config {
                 self.routing.control
             ));
         }
+        for (name, target) in &self.targets {
+            if target.lane_path().is_none() {
+                return bad(format!(
+                    "[targets.{name}] remote {:?} names no <owner>/<repo>",
+                    target.remote
+                ));
+            }
+        }
         if self.record.kind == RecordKind::Mcp
             && (self.record.server.is_empty() || self.record.project.is_empty())
         {
@@ -297,8 +335,11 @@ impl Config {
         Ok(())
     }
 
-    /// This config as `host` sees it: a leading `{root}` in every target
-    /// path becomes the host's `root`.
+    /// This config as `host` sees it. Each target's trees go under
+    /// `{root}/trees/<owner>/<repo>/` (`repo`, `slots`, `check`, `land`) and
+    /// its lane cache at `{root}/cache/<owner>/<repo>.git` (S2, S15), where
+    /// `{root}` is the host's `root`. A leading `{root}` in `compose` and
+    /// `gate` becomes the root too.
     pub fn for_host(mut self, host: &str) -> Result<Config, ConfigError> {
         let root = self
             .hosts
@@ -307,19 +348,25 @@ impl Config {
             .root
             .clone()
             .unwrap_or_else(|| DEFAULT_ROOT.to_string());
+        let root = root.trim_end_matches('/');
         let put = |path: &mut String| {
             if let Some(rest) = path.strip_prefix("{root}") {
-                *path = format!("{}{rest}", root.trim_end_matches('/'));
+                *path = format!("{root}{rest}");
             }
         };
-        for target in self.targets.values_mut() {
+        for (name, target) in self.targets.iter_mut() {
+            let lane = target.lane_path().ok_or_else(|| {
+                ConfigError::Invalid(format!("[targets.{name}] remote names no <owner>/<repo>"))
+            })?;
+            let trees = format!("{root}/trees/{lane}");
             let (a, l) = (&mut target.agent, &mut target.lander);
-            for path in [&mut a.repo, &mut a.slots_dir, &mut a.check_tree] {
-                put(path);
-            }
-            for path in [&mut l.compose, &mut l.gate, &mut l.cache, &mut l.gate_tree] {
-                put(path);
-            }
+            a.repo = format!("{trees}/repo");
+            a.slots_dir = format!("{trees}/slots");
+            a.check_tree = format!("{trees}/check");
+            l.gate_tree = format!("{trees}/land");
+            l.cache = format!("{root}/cache/{lane}.git");
+            put(&mut l.compose);
+            put(&mut l.gate);
         }
         Ok(self)
     }

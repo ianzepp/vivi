@@ -23,22 +23,27 @@ gate_hosts = ["studio", "studio-02"]
 affinity_wait_s = 60
 fallback_wait_s = 600
 
+# Each host's root is its S15 root. A target's trees are
+# {root}/trees/<owner>/<repo>/{repo,slots,check,land} and its lane cache
+# {root}/cache/<owner>/<repo>.git, both named from the target's remote (S2).
+# The studios use the physical Lanes path, never the /vivi link, so the
+# builds write to the Lanes drive and worktree paths stay stable.
 [hosts.hub]
+root = "/vivi"
 queues = { control = 50, lane = 2 }
 
-# The studios keep build-heavy target trees on the Lanes drive, not the
-# system SSD: `{root}` in a target path is the host's root. The mini keeps
-# the default, ~/vivi-temporal (it only reads trees, never builds).
 [hosts.studio]
-root = "/Volumes/Lanes/vivi/temporal"
+root = "/Volumes/Lanes/vivi"
 queues = { agent-studio = 2, check-studio = 1, gate-studio = 1 }
 
 [hosts.studio-02]
-root = "/Volumes/Lanes/vivi/temporal"
+root = "/Volumes/Lanes/vivi"
 queues = { agent-studio-02 = 2, check-studio-02 = 1, gate-studio-02 = 1 }
 
 # 8 GB: two pi processes at most. Its pool's harness has no shell tool.
+# ~/vivi is what the mini's /vivi link points at.
 [hosts.mini-m1]
+root = "~/vivi"
 queues = { agent-mini-m1 = 2 }
 
 # The sandbox lane: a tiny Rust crate. main/vivi/main are never touched.
@@ -50,22 +55,16 @@ check_command = "cargo test --quiet"
 check_timeout_s = 600
 
 [targets.pump-sandbox.agent]
-repo = "~/vivi-temporal/trees/pump-sandbox/repo"
-slots_dir = "~/vivi-temporal/trees/pump-sandbox/slots"
-check_tree = "~/vivi-temporal/trees/pump-sandbox/check"
 model = "opencode-go/deepseek-v4.1-flash"
 budget_s = 900
 
 [targets.pump-sandbox.lander]
 compose = "~/vivi-temporal/bin/compose"
 gate = "~/vivi-temporal/bin/gate"
-cache = "~/vivi-temporal/cache/pump-sandbox.git"
-gate_tree = "~/vivi-temporal/trees/pump-sandbox/land"
 gate_timeout_s = 900
 
-# radix: provisioned 2026-11-18 under each host's {root} (studios: the
-# Lanes drive; mini-m1: ~/vivi-temporal, a repository and its review
-# worktrees only).
+# radix: provisioned 2026-11-18; trees moved to trees/faberlang/radix on
+# 2026-11-20 (mini-m1: a repository and its review worktrees only).
 # The check builds every test target without running tests (main carries
 # about 73 known failures; the gate judges tests against main's baseline).
 [targets.radix]
@@ -76,17 +75,12 @@ check_command = "CARGO_BUILD_JOBS=8 CARGO_TERM_COLOR=never cargo test --workspac
 check_timeout_s = 1800
 
 [targets.radix.agent]
-repo = "{root}/trees/radix/repo"
-slots_dir = "{root}/trees/radix/slots"
-check_tree = "{root}/trees/radix/check"
 model = "opencode-go/deepseek-v4.1-flash"
 budget_s = 1800
 
 [targets.radix.lander]
 compose = "~/vivi-temporal/bin/compose"
 gate = "~/vivi-temporal/bin/gate"
-cache = "~/vivi-temporal/cache/radix.git"
-gate_tree = "{root}/trees/radix/land"
 gate_timeout_s = 2400
 
 # radix-stress: replays known changes for stress runs (temporal/tools/stress-run),
@@ -94,6 +88,7 @@ gate_timeout_s = 2400
 # warm trees as radix. "implement" applies the patch between the brief's
 # BEGIN/END PATCH lines, then builds what a real agent builds in its
 # worktree; "review" approves. Its needs are `stress-*`, which only log.
+# It has radix's remote, so it uses radix's warm trees and cache.
 [targets.radix-stress]
 remote = "git@hub.local:faberlang/radix.git"
 main = "temporal/stress/main"
@@ -102,9 +97,6 @@ check_command = "CARGO_BUILD_JOBS=8 CARGO_TERM_COLOR=never cargo test --workspac
 check_timeout_s = 1800
 
 [targets.radix-stress.agent]
-repo = "{root}/trees/radix/repo"
-slots_dir = "{root}/trees/radix/slots"
-check_tree = "{root}/trees/radix/check"
 model = "replay"
 budget_s = 1800
 harness = "sed -n '/^-----BEGIN PATCH-----$/,/^-----END PATCH-----$/p' {brief} | sed '1d;$d' | git apply --3way --whitespace=nowarn && CARGO_BUILD_JOBS=8 CARGO_TERM_COLOR=never cargo test --workspace --lib --bins --tests --no-run --quiet"
@@ -113,8 +105,6 @@ review_harness = "echo 'VERDICT: APPROVE'"
 [targets.radix-stress.lander]
 compose = "~/vivi-temporal/bin/compose"
 gate = "~/vivi-temporal/bin/gate"
-cache = "~/vivi-temporal/cache/radix.git"
-gate_tree = "{root}/trees/radix/land"
 gate_timeout_s = 2400
 
 [tuning]

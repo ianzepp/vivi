@@ -170,33 +170,53 @@ implement. Unit tests sit beside their modules (`*_test.rs`):
 
 Every host has `~/vivi-temporal/{bin,config,logs}`: `bin/vivi-temporal`,
 `config/cluster.toml`, `logs/worker.log`. The lane host also has
-`bin/compose` (`lab/lander/compose`) and `cache/`; the gate hosts
+`bin/compose` (`lab/lander/compose`); its lane caches are under its root; the gate hosts
 `bin/gate` (`lab/lander/gate`).
 
-Target trees live under the host's root: `{root}` in a target path is
-`[hosts.<name>] root`, or `~/vivi-temporal` when unset. The studios set
-`/Volumes/Lanes/vivi/temporal`, so builds write to the Lanes drive and not
-the system SSD. Under the root, each agent or review host has
-`trees/<target>/repo`, the warm repository, and `trees/<target>/slots/`,
-where the runner keeps one worktree per agent activity slot
-(`slot-<n>`, claimed by `slot-<n>.lock`; made on first use and kept, so its
-`target/` stays warm). Build hosts also have `trees/<target>/{check,land}`.
-`deploy/provision-target.sh` lays this out and is safe to run again. The
-review harness is `pi … --no-mcp --tools read,grep,find,ls`: no shell, so a
-review cannot build, test or edit.
+Target trees live under the host's root, `[hosts.<name>] root`
+(`~/vivi-temporal` when unset), and are named from the target's remote, not
+from the target's name (register S2 and S15). For a remote
+`git@hub.local:<owner>/<repo>.git`:
+- `{root}/trees/<owner>/<repo>/repo` is the warm repository, on agent and
+  review hosts;
+- `{root}/trees/<owner>/<repo>/slots/` is where the runner keeps one
+  worktree per agent activity slot (`slot-<n>`, claimed by `slot-<n>.lock`;
+  made on first use and kept, so its `target/` stays warm);
+- `{root}/trees/<owner>/<repo>/{check,land}` are the check and gate trees,
+  on build hosts;
+- `{root}/cache/<owner>/<repo>.git` is the lane cache, on the lane host.
+
+These paths are not configurable: `Config::for_host` sets them, and a
+`repo`, `slots_dir`, `check_tree`, `cache` or `gate_tree` key is refused.
+So two targets on one remote (`radix`, `radix-stress`) share trees, and two
+repos of the same name under different owners never collide. A remote
+with no owner is refused. The roots: hub `/vivi`; the studios
+`/Volumes/Lanes/vivi` (the physical path, never the `/vivi` link, so builds
+write to the Lanes drive and worktree paths stay stable); mini-m1 `~/vivi`.
+`deploy/provision-target.sh <full|review> <remote> <root>` lays this out
+and is safe to run again. The review harness is
+`pi … --no-mcp --tools read,grep,find,ls`: no shell, so a review cannot
+build, test or edit.
 
 `radix` was provisioned on 2026-11-18. On each studio the pump's warm gate
-tree (`/Volumes/Lanes/vivi/trees/faberlang/radix/land`) was moved to
-`trees/radix/land`, still a worktree of the studio's radix mirror. The
-check tree's `target/` was seeded from it with an APFS clone. Measured on
-studio:
+tree (`/Volumes/Lanes/vivi/trees/faberlang/radix/land`) became the gate
+tree, still a worktree of the studio's radix mirror
+(`/Volumes/Lanes/vivi/repos/github.com/faberlang/radix.git`). The check
+tree's `target/` was seeded from it with an APFS clone. Measured on studio:
 - gate tree, first no-op build after the move: 78 s; the next one: 0 s;
 - check tree, first build on vivi/main: 149 s, rebuilding only radix's own
   71 crates (a cold build is about 9 min).
 
+From 2026-11-18 to 2026-11-20 the trees sat at
+`/Volumes/Lanes/vivi/temporal/trees/<target>/`, against S2 and S15. On
+2026-11-20 they moved to `trees/faberlang/radix/` (a rename on the same
+drive, then `git worktree repair`). Cargo keys radix's own crates by their
+path, so each tree's first build after the move rebuilt those crates once;
+dependencies stayed warm.
+
 The pump's other trees (`main`, the faber build tree that
-`hub-studio-faber.timer` uses; `bisect`; `slot-1..8`) stay where they were.
-The agent slots start cold: each slot's first radix build is a full one.
+`hub-studio-faber.timer` uses; `bisect`; `slot-1..8`) are in the same
+`trees/faberlang/radix/` directory, beside the Temporal ones.
 
 The record writes to the hosted `faberlang` project (since 2026-11-18). Only
 hub's control worker writes it, with its own key at hub

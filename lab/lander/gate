@@ -38,7 +38,7 @@ import time
 
 HOME = os.path.expanduser("~")
 STATE = os.path.join(HOME, "lander")
-DEFAULT_TREE = "/Volumes/Lanes/vivi/temporal/trees/radix/land"
+DEFAULT_TREE = "/Volumes/Lanes/vivi/trees/faberlang/radix/land"
 TMP_ROOT = "/Volumes/Lanes/vivi/tmp/lander"
 CARGO_TEST = ["cargo", "test", "--workspace", "--lib", "--bins", "--tests"]
 
