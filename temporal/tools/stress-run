@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""stress-run --set <dir> --run <label> --concurrency <n> [--limit <k>] [--config <file>]
+"""stress-run --set <dir> --run <label> --concurrency <n> [--first <i>] [--limit <k>] [--config <file>]
 
 Start the replay briefs in <dir> (01.md, 02.md, ...) as radix-stress needs
-`stress-<label>-<NN>`, keeping <n> needs in flight, in order. Each need runs
+`stress-<label>-<NN>`, keeping <n> needs in flight, in order: <k> briefs
+from number <i> on (default: all, from 01). Each need runs
 through the whole pipeline (implement, check, review, the Lander) onto
 temporal/stress/main. Prints one line per need as it ends, then a summary;
 the same lines go to <dir>/runs/<label>.log. Run on hub. Cost the window
@@ -27,10 +28,12 @@ def main():
     ap.add_argument("--set", required=True)
     ap.add_argument("--run", required=True)
     ap.add_argument("--concurrency", type=int, required=True)
+    ap.add_argument("--first", type=int, default=1)
     ap.add_argument("--limit", type=int)
     ap.add_argument("--config", default=os.path.expanduser("~/vivi-temporal/config/cluster.toml"))
     a = ap.parse_args()
-    briefs = sorted(glob.glob(os.path.join(a.set, "[0-9][0-9].md")))[: a.limit]
+    briefs = sorted(glob.glob(os.path.join(a.set, "[0-9][0-9].md")))
+    briefs = [b for b in briefs if int(os.path.basename(b)[:2]) >= a.first][: a.limit]
     os.makedirs(os.path.join(a.set, "runs"), exist_ok=True)
     log = open(os.path.join(a.set, "runs", f"{a.run}.log"), "a")
     lock = threading.Lock()
