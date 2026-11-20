@@ -105,10 +105,17 @@ def load_writes(path):
 
 
 def units_at(series, when):
+    """The drive's cumulative units at `when`, interpolated between samples.
+    Within 5 minutes past either end, the nearest sample; further out, None."""
     times = [t for t, _ in series]
     i = bisect.bisect_left(times, when)
-    if i == 0 or i >= len(series):
-        return None
+    near = 300
+    if i >= len(series):
+        last_t, last_u = series[-1]
+        return last_u if (when - last_t).total_seconds() <= near else None
+    if i == 0:
+        first_t, first_u = series[0]
+        return first_u if (first_t - when).total_seconds() <= near else None
     (t0, u0), (t1, u1) = series[i - 1], series[i]
     span = (t1 - t0).total_seconds() or 1
     return u0 + (u1 - u0) * (when - t0).total_seconds() / span
