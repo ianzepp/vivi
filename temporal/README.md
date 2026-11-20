@@ -210,9 +210,18 @@ tree's `target/` was seeded from it with an APFS clone. Measured on studio:
 From 2026-11-18 to 2026-11-20 the trees sat at
 `/Volumes/Lanes/vivi/temporal/trees/<target>/`, against S2 and S15. On
 2026-11-20 they moved to `trees/faberlang/radix/` (a rename on the same
-drive, then `git worktree repair`). Cargo keys radix's own crates by their
-path, so each tree's first build after the move rebuilt those crates once;
-dependencies stayed warm.
+drive, then `git worktree repair`).
+
+**Moving a build tree does not make Cargo rebuild it.** Cargo's
+fingerprints hold paths relative to the tree, so after the move every
+crate looked fresh. But radix compiles `env!("CARGO_MANIFEST_DIR")` into
+its code (to find `locale/*/pack.toml`, fixtures and the like), so the old
+binaries kept reading the old directory. The first gate after the move
+failed 2,757 tests against the base's 101, all on "No such file" under the
+old path. The fix, per moved tree: move the workspace members'
+fingerprints aside (`target/*/.fingerprint/<member>-*` into
+`.fingerprint-premove/`), so Cargo rebuilds radix's 68 crates once and
+keeps the dependencies. A tree moved again needs the same.
 
 The pump's other trees (`main`, the faber build tree that
 `hub-studio-faber.timer` uses; `bisect`; `slot-1..8`) are in the same
