@@ -22,8 +22,8 @@ fn agent(slots_dir: &Path) -> AgentConfig {
     }
 }
 
-#[test]
-fn claims_take_free_slots_and_release_on_drop() {
+#[tokio::test]
+async fn claims_take_free_slots_and_release_on_drop() {
     let dir = scratch("claim");
     let (a, lock_a) = claim(&dir, 2).unwrap();
     let (b, _lock_b) = claim(&dir, 2).unwrap();
@@ -31,7 +31,7 @@ fn claims_take_free_slots_and_release_on_drop() {
     assert!(claim(&dir, 2).is_err(), "a third job finds no worktree");
     drop(lock_a);
     assert_eq!(
-        claim(&dir, 2).unwrap().0,
+        claim_waiting(&dir, 2).await.unwrap().0,
         1,
         "a released slot is free again"
     );
@@ -132,4 +132,31 @@ async fn killing_the_group_stops_children_too() {
         "group {pgid} still has {:?}",
         left.stdout
     );
+}
+
+#[test]
+fn the_agents_message_is_taken_and_removed() {
+    let dir = scratch("msg");
+    let forbid = vec!["8a2cd8ba".to_string(), "temporal/8a2cd8ba/s1".to_string()];
+    std::fs::write(
+        dir.join(MESSAGE_FILE),
+        "Keep a NaN's sign through f16 rounding\n\nBody.\n",
+    )
+    .unwrap();
+    assert_eq!(
+        take_message(&dir, &forbid),
+        "Keep a NaN's sign through f16 rounding\n\nBody."
+    );
+    assert!(
+        !dir.join(MESSAGE_FILE).exists(),
+        "the file is not committed"
+    );
+    assert_eq!(take_message(&dir, &forbid), FALLBACK_MESSAGE, "no file");
+    std::fs::write(dir.join(MESSAGE_FILE), "Fix 8a2cd8ba\n").unwrap();
+    assert_eq!(
+        take_message(&dir, &forbid),
+        FALLBACK_MESSAGE,
+        "names the need"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }

@@ -7,6 +7,7 @@
 
 use std::time::Duration;
 
+use temporalio_common::error::IncomingError;
 use temporalio_macros::{workflow, workflow_methods};
 use temporalio_sdk::workflows::join_all;
 use temporalio_sdk::{
@@ -68,13 +69,18 @@ impl NeedWorkflow {
             .map(|s| run_slice(ctx.clone(), input.clone(), s));
         let outcomes = join_all(children).await;
         let mut landed = Vec::new();
+        let mut parked = None;
         for outcome in outcomes {
             match outcome {
                 SliceOutcome::Landed { slice, .. } => landed.push(slice),
+                SliceOutcome::Stopped { slice } => return Ok(NeedOutcome::Stopped { slice }),
                 SliceOutcome::Parked { slice, cause } => {
-                    return park(ctx, &input, slice, cause).await;
+                    parked.get_or_insert((slice, cause));
                 }
             }
+        }
+        if let Some((slice, cause)) = parked {
+            return park(ctx, &input, slice, cause).await;
         }
         let summary = format!("landed {}", landed.join(", "));
         record(ctx, &input, RecordCall::Close { need, summary }).await?;
@@ -140,8 +146,17 @@ async fn run_slice(
     };
     match started.result().await {
         Ok(outcome) => outcome,
+        // An operator's terminate or cancel is not a failure of the work.
+        Err(err) if stopped_by_operator(err.cause()) => SliceOutcome::Stopped { slice },
         Err(err) => failed(err.to_string()),
     }
+}
+
+fn stopped_by_operator(cause: Option<&IncomingError>) -> bool {
+    matches!(
+        cause,
+        Some(IncomingError::Terminated(_) | IncomingError::Cancelled(_))
+    )
 }
 
 async fn park(

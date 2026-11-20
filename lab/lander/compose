@@ -111,7 +111,10 @@ def compose(base_sha, branches):
         if tree == git("rev-parse", f"{cur}^{{tree}}").stdout.strip():
             excluded.append({"branch": b, "reason": "no-op"})
             continue
-        cur = git("commit-tree", tree, "-p", cur, "-p", tip, "-m", f"Merge {b}", env=env).stdout.strip()
+        # The message is the change's own subject, never the branch name: commits on
+        # vivi/main are public history and never name needs, units or branches.
+        subject = git("log", "-1", "--format=%s", tip).stdout.strip()
+        cur = git("commit-tree", tree, "-p", cur, "-p", tip, "-m", f"Merge: {subject}", env=env).stdout.strip()
         included.append({"branch": b, "tip": tip, "pin_resolved": pin_resolved})
         print(f"compose: + {b}{' (pin side kept)' if pin_resolved else ''}", file=sys.stderr)
     return (cur if included else None), included, excluded

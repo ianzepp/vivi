@@ -57,6 +57,7 @@ pub async fn implement(
     };
     let job = Job {
         subject: format!("{} {} round {}", input.need, input.slice, input.round),
+        forbid: vec![input.need.clone(), branch.clone()],
         brief: implement_brief(input, target, &main),
         from: head.clone().unwrap_or_else(|| main.clone()),
         read_only: false,
@@ -117,8 +118,13 @@ pub fn implement_brief(input: &ImplementInput, target: &Target, main: &str) -> S
     brief.push_str(&format!(
         "\nRules:\n- Keep the change small and inside the slice.\n\
          - The runner commits your changes; do not commit or push yourself.\n\
+         - Before you finish, write the commit message to the file `{}` in the \
+         repository root: a subject line of at most 72 characters saying what the \
+         change does, for a reader of the public history, then a blank line and a \
+         short body. Never name needs, handles, slices, rounds or branches in it.\n\
          - The proof is `{}`; run it before you finish.\n\
          - Current main is {main}.\n",
+        crate::real::runner::MESSAGE_FILE,
         target.check_command
     ));
     brief
@@ -141,6 +147,7 @@ pub async fn review(
             "review {} {} round {}",
             input.need, input.slice, input.round
         ),
+        forbid: Vec::new(),
         brief: review_brief(input, &base, &diff),
         from: input.head.clone(),
         read_only: true,

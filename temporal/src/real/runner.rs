@@ -27,8 +27,12 @@ use crate::real::git::{git, git_ok, infra};
 
 /// One job to run.
 pub struct Job<'a> {
-    /// The commit message, and the job's name in errors.
+    /// The job's name in errors and logs. Never a commit message: commits
+    /// are public history and must not name needs or branches.
     pub subject: String,
+    /// Words a commit message must not contain (the need's handle, the
+    /// branch). A message that has one is replaced by `FALLBACK_MESSAGE`.
+    pub forbid: Vec<String>,
     pub brief: String,
     /// The commit the worktree starts from.
     pub from: String,
@@ -91,7 +95,7 @@ where
     T: temporalio_common::data_converters::TemporalSerializable + Clone + 'static,
 {
     let dir = expand(&agent.slots_dir);
-    let (n, _lock) = claim(&dir, slots)?;
+    let (n, _lock) = claim_waiting(&dir, slots).await?;
     let tree = dir.join(format!("slot-{n}"));
     let repo = expand(&agent.repo);
     reset(&repo, &tree, &job.from).await?;
@@ -99,10 +103,35 @@ where
     std::fs::write(&brief, &job.brief).map_err(|e| infra(format!("{}: {e}", brief.display())))?;
     let command = harness_command(agent, job.read_only, &brief);
     let mut ran = run_harness(&command, &tree, job.budget, job.ctx, beat).await?;
+    let message = take_message(&tree, &job.forbid);
     if !job.read_only {
-        ran.sha = commit(&tree, &job.subject).await?;
+        ran.sha = commit(&tree, &message).await?;
     }
     Ok(ran)
+}
+
+/// The file the agent writes its commit message to, at the worktree root.
+/// The runner reads and removes it before committing.
+pub const MESSAGE_FILE: &str = ".commit-message";
+
+/// The commit message when the agent wrote none, or wrote one that names
+/// something it must not.
+pub const FALLBACK_MESSAGE: &str = "Agent change without a commit message";
+
+/// Read and remove the agent's commit message; fall back when it is
+/// missing, empty, or contains a forbidden word.
+pub fn take_message(tree: &Path, forbid: &[String]) -> String {
+    let path = tree.join(MESSAGE_FILE);
+    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    let _ = std::fs::remove_file(&path);
+    let text = text.trim();
+    let named = forbid
+        .iter()
+        .any(|w| !w.is_empty() && text.contains(w.as_str()));
+    if text.is_empty() || named {
+        return FALLBACK_MESSAGE.to_string();
+    }
+    text.to_string()
 }
 
 /// Lock the first free `slot-<n>.lock` under `dir`, 1..=slots. The lock is
@@ -125,6 +154,21 @@ pub fn claim(dir: &Path, slots: usize) -> Result<(usize, File), ActivityError> {
         "all {slots} worktrees under {} are in use",
         dir.display()
     )))
+}
+
+/// `claim`, retried for a few seconds. A lock just released can still look
+/// held for a moment: a child process spawned by another job inherits the
+/// lock file until it execs (the file is close-on-exec).
+pub async fn claim_waiting(dir: &Path, slots: usize) -> Result<(usize, File), ActivityError> {
+    let mut last = None;
+    for _ in 0..10 {
+        match claim(dir, slots) {
+            Ok(claimed) => return Ok(claimed),
+            Err(err) => last = Some(err),
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    Err(last.expect("at least one try"))
 }
 
 /// Make `tree` a clean detached checkout of `from`, keeping `target/`.

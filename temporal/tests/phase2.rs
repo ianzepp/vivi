@@ -488,3 +488,46 @@ async fn hot_file_mutex_serializes_overlapping_slices() {
     assert!(first_start("u3") < merged(first), "u3 was held back");
     h.shutdown().await;
 }
+
+/// Criterion: an operator stopping a slice is not a failure of the work.
+/// Terminating the slice workflow ends its need as `Stopped`, with no park
+/// and no close written to the record.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_terminated_slice_stops_its_need_without_parking() {
+    use temporalio_client::WorkflowTerminateOptions;
+    let script = NeedScript::new(vec![slice("u1").implement(&["lost@1"]).unwrap()]);
+    let h = Harness::start(vec![("n1", script)]).await;
+    let outcome = h
+        .with_worker(async {
+            h.start_lander(100).await;
+            let need = h
+                .client
+                .start_workflow(
+                    NeedWorkflow::run,
+                    need_input("n1", tuning()),
+                    need_start_options(QUEUE, "n1"),
+                )
+                .await
+                .expect("start need");
+            // Wait until the slice is implementing (and has gone dark).
+            while starts(&h.events(), "u1").is_empty() {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            h.client
+                .get_workflow_handle::<SliceWorkflow>(slice_workflow_id("n1", "u1"))
+                .terminate(WorkflowTerminateOptions::builder().reason("drill").build())
+                .await
+                .expect("terminate slice");
+            need.get_result(WorkflowGetResultOptions::default())
+                .await
+                .expect("need result")
+        })
+        .await;
+    assert_eq!(outcome, NeedOutcome::Stopped { slice: "u1".into() });
+    let calls = h.record.calls_for("n1").unwrap();
+    assert!(
+        calls.iter().all(|c| matches!(c, RecordCall::Status { .. })),
+        "only status writes: {calls:?}"
+    );
+    h.shutdown().await;
+}

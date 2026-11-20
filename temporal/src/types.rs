@@ -154,13 +154,28 @@ pub enum SliceOutcome {
         slice: String,
         cause: ParkCause,
     },
+    /// The slice's workflow was terminated or cancelled by an operator.
+    /// Built by the need, never returned by a slice.
+    Stopped {
+        slice: String,
+    },
 }
 
 /// What a need workflow returns.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum NeedOutcome {
-    Closed { landed: Vec<String> },
-    Parked { slice: String, cause: ParkCause },
+    Closed {
+        landed: Vec<String>,
+    },
+    Parked {
+        slice: String,
+        cause: ParkCause,
+    },
+    /// An operator stopped a slice: the need ends without parking and
+    /// writes nothing to the record. Start it again with `--rerun yes`.
+    Stopped {
+        slice: String,
+    },
 }
 
 /// The pushed work in progress for a slice: its branch and head commit.
