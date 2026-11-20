@@ -11,11 +11,12 @@ use temporalio_common::error::IncomingError;
 use temporalio_macros::{workflow, workflow_methods};
 use temporalio_sdk::workflows::join_all;
 use temporalio_sdk::{
-    ActivityOptions, ChildWorkflowOptions, WorkflowContext, WorkflowIdReusePolicy, WorkflowResult,
-    WorkflowTermination,
+    ActivityOptions, ChildWorkflowOptions, SignalWorkflowOptions, WorkflowContext,
+    WorkflowIdReusePolicy, WorkflowResult, WorkflowTermination,
 };
 
 use crate::defs::Act;
+use crate::lander::LanderWorkflow;
 use crate::routing::placements;
 use crate::slice::SliceWorkflow;
 use crate::steps::{run_placed, run_step, step_options};
@@ -121,6 +122,8 @@ async fn run_slice(
         .id_reuse_policy(WorkflowIdReusePolicy::AllowDuplicate)
         .build();
     let slice = spec.id.clone();
+    let slice_id = slice_workflow_id(&input.handle, &spec.id);
+    let lander_id = input.lander_id.clone();
     let child = SliceInput {
         need: input.handle,
         slice: spec,
@@ -146,8 +149,20 @@ async fn run_slice(
     };
     match started.result().await {
         Ok(outcome) => outcome,
-        // An operator's terminate or cancel is not a failure of the work.
-        Err(err) if stopped_by_operator(err.cause()) => SliceOutcome::Stopped { slice },
+        // An operator's terminate or cancel is not a failure of the work. A
+        // stopped slice never released its admission lease, so release it
+        // here, or its hot paths stay held (across continue-as-new too).
+        Err(err) if stopped_by_operator(err.cause()) => {
+            let lander = ctx.external_workflow(lander_id, None);
+            let _ = lander
+                .signal(
+                    LanderWorkflow::release,
+                    slice_id,
+                    SignalWorkflowOptions::default(),
+                )
+                .await;
+            SliceOutcome::Stopped { slice }
+        }
         Err(err) => failed(err.to_string()),
     }
 }

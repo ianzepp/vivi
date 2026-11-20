@@ -491,15 +491,21 @@ async fn hot_file_mutex_serializes_overlapping_slices() {
 
 /// Criterion: an operator stopping a slice is not a failure of the work.
 /// Terminating the slice workflow ends its need as `Stopped`, with no park
-/// and no close written to the record.
+/// and no close written to the record, and its admission lease is given
+/// back: a second need under the same hot path is admitted and lands.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_terminated_slice_stops_its_need_without_parking() {
     use temporalio_client::WorkflowTerminateOptions;
     let script = NeedScript::new(vec![slice("u1").implement(&["lost@1"]).unwrap()]);
-    let h = Harness::start(vec![("n1", script)]).await;
-    let outcome = h
+    let after = NeedScript::new(vec![slice("u1")]);
+    let h = Harness::start(vec![("n1", script), ("n2", after)]).await;
+    let hot = AdmissionPolicy {
+        hot_paths: vec!["src/u1.rs".into()],
+        ..AdmissionPolicy::default()
+    };
+    let (outcome, second) = h
         .with_worker(async {
-            h.start_lander(100).await;
+            h.start_lander_with(100, hot).await;
             let need = h
                 .client
                 .start_workflow(
@@ -518,12 +524,21 @@ async fn a_terminated_slice_stops_its_need_without_parking() {
                 .terminate(WorkflowTerminateOptions::builder().reason("drill").build())
                 .await
                 .expect("terminate slice");
-            need.get_result(WorkflowGetResultOptions::default())
+            let outcome = need
+                .get_result(WorkflowGetResultOptions::default())
                 .await
-                .expect("need result")
+                .expect("need result");
+            let second = tokio::time::timeout(
+                std::time::Duration::from_secs(60),
+                h.run_need("n2", tuning()),
+            )
+            .await
+            .expect("n2 was admitted: n1's lease was released");
+            (outcome, second)
         })
         .await;
     assert_eq!(outcome, NeedOutcome::Stopped { slice: "u1".into() });
+    assert_eq!(second, landed(&["u1"]));
     let calls = h.record.calls_for("n1").unwrap();
     assert!(
         calls.iter().all(|c| matches!(c, RecordCall::Status { .. })),

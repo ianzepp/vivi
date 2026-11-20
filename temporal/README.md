@@ -350,22 +350,65 @@ workers could not read the Lanes drive as launchd services (they now run
 over ssh from hub); the pool had no slots; a need could not be rerun after
 a terminate (`--rerun yes`).
 
+## Added after the first runs (2026-11-19)
+
+- **Commit messages.** The agent writes its message to `.commit-message`;
+  the runner takes and removes it, and falls back to a neutral subject when
+  it is missing or names the need or branch. compose names each merge
+  `Merge: <the change's subject>`. vivi/main never names needs or branches.
+- **Stopping a need by hand.** Terminate its slice workflow
+  (`slice-<need>-<id>`). The need ends as `Stopped`, writes nothing to the
+  record, and releases the slice's admission lease. Start it again with
+  `--rerun yes`.
+- **Cleanup.** After a publish, the landed slice branches (each only while
+  it still points at the head that landed) and the candidate ref are
+  deleted. compose drops its target's leftover candidates. Candidate refs
+  are `refs/vivi/candidates/<target>/<sha12>`.
+- **Lander continue-as-new.** At 5,000 history events (or when the server
+  suggests it) the Lander finishes its batch and continues as new with its
+  queue and leases; `#[init]` restores them before any signal is applied.
+  A deploy that changes Lander code needs the running Lander terminated and
+  started again (it was idle each time so far).
+- **Worktree claims** retry for a few seconds: a lock just released can
+  look held while a child spawned by another job has not yet exec'd.
+
+## Stress runs (`radix-stress`)
+
+Replays known changes through the whole pipeline onto the scratch branch
+`temporal/stress/main`, never vivi/main, to measure time and SSD writes
+under load without spending tokens or depending on an agent:
+
+- `tools/stress-set --cache <bare repo> --out <dir> --base <sha> <commit>...`
+  writes one brief per commit: the commit cherry-picked onto `<base>` (git
+  merge-tree), as a patch between BEGIN/END PATCH lines.
+- The target's implement harness applies that patch (`git apply --3way`)
+  and then builds what a real agent builds in its worktree; its review
+  harness approves. Its needs are `stress-*`, which only log
+  (`[record] log_handles`).
+- `tools/stress-run --set <dir> --run <label> --concurrency <n> [--first <i>] [--limit <k>]`
+  starts the briefs as needs `stress-<label>-<NN>`, keeping `n` in flight.
+  Run it on hub under `systemd-run --user`.
+- `tools/stress-report --since <utc> --until <utc>` costs every step in the
+  window: duration and the GB its host's Lanes drive wrote meanwhile (from
+  `lanes-watch.tsv`), and totals per drive and per landed need.
+
+Set `set-a` (on hub, `/vivi/orch/stress/set-a`): 28 commits from radix
+vivi/main before 2026-11-16, cherry-picked onto `9bb54ee1fb` with pairwise
+disjoint files, across about 20 crates.
+
 ## Not built yet
 
 - an LLM `plan` step: `plan` passes given slices through
 - WIP pushes during one agent job: the runner commits once, at the end of
   the job, so a lost host loses the work of that one job (everything before
   it is on the lane). Heartbeats during the job carry the last pushed head
-- a lease leak: a slice workflow that is terminated (not parked) never
-  sends `release`, so its hot paths stay held until the Lander restarts
+- a lease leak when the need workflow itself is terminated: its slices are
+  terminated with it and nothing releases their leases (carried across the
+  Lander's continue-as-new). Stop a need by terminating its slice instead:
+  the need then ends as `Stopped` and releases the lease
 - `MainWatch`
 - the per-provider cooldown (above)
-- Lander continue-as-new, to bound history: the Lander's history grows
-  without limit as written
 - signal-with-start for the Lander: a slice started with no Lander parks
   with `InfraExhausted { step: "admit" }`
-- deleting slice branches and candidate refs after landing
-- telling an operator's terminate from a failure: terminating a slice by
-  hand makes its need park with `InfraExhausted` and writes the park to the
-  record (seen 2026-11-18 on 8a2cd8ba; the marks were removed by hand).
-  Terminate the need first, then the slice
+- branch cleanup for parked needs: their slice branches stay (a rerun
+  resumes from them) until someone deletes them
