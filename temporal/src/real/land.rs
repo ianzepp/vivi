@@ -18,7 +18,7 @@ use temporalio_sdk::activities::ActivityError;
 
 use crate::config::{Target, expand};
 use crate::real::cmd::{Cmd, run, tail};
-use crate::real::git::{Pushed, git_ok, infra, push_fenced};
+use crate::real::git::{Pushed, git, git_ok, infra, push_fenced};
 use crate::types::{Candidate, ComposeInput, ComposeResult, Excluded, GateResult, PublishResult};
 
 /// Refresh the cache (cloning it bare on first use) and return main's sha.
@@ -66,6 +66,9 @@ pub async fn compose(target: &Target, input: ComposeInput) -> Result<ComposeResu
     let mut result = read_compose(&report, &input, &base)
         .ok_or_else(|| infra(format!("compose JSON not understood: {}", out.tail(400))))?;
     if let Some(candidate) = &result.candidate {
+        // One candidate is alive per target at a time (the Lander works its
+        // batches and halves in turn), so any left on the lane is spent.
+        drop_spent_candidates(&cache, target, &input.target).await;
         let refname = format!("{}:refs/vivi/candidates/{}", candidate.sha, candidate.id);
         git_ok(&cache, &["push", "-q", &target.remote, &refname]).await?;
     }
@@ -96,7 +99,9 @@ pub fn read_compose(report: &Value, input: &ComposeInput, base: &str) -> Option<
     }
     let candidate = match report.get("candidate")? {
         Value::String(sha) if !included.is_empty() => Some(Candidate {
-            id: format!("{}-{}", input.target, sha.get(..12).unwrap_or(sha)),
+            // `<target>/<sha>`: each target's candidate refs sit in their own
+            // folder, so one target's cleanup never touches another's.
+            id: format!("{}/{}", input.target, sha.get(..12).unwrap_or(sha)),
             target: input.target.clone(),
             base: base.to_string(),
             sha: sha.clone(),
@@ -219,13 +224,67 @@ pub async fn publish(
         Some(&candidate.base),
     );
     match pushed.await? {
-        Pushed::Accepted => Ok(PublishResult::Published {
-            sha: candidate.sha.clone(),
-        }),
+        Pushed::Accepted => {
+            drop_landed(&cache, target, candidate).await;
+            Ok(PublishResult::Published {
+                sha: candidate.sha.clone(),
+            })
+        }
         Pushed::Fenced(text) => Ok(PublishResult::Stale {
             text: format!("{} moved off {}: {text}", target.main, candidate.base),
         }),
     }
+}
+
+/// The refspecs that delete `refs/vivi/candidates/<target>/*` on the lane.
+pub fn spent_candidate_deletes(ls_remote: &str, target: &str) -> Vec<String> {
+    let prefix = format!("refs/vivi/candidates/{target}/");
+    ls_remote
+        .lines()
+        .filter_map(|line| line.split_once('\t'))
+        .map(|(_, name)| name.trim())
+        .filter(|name| name.starts_with(&prefix))
+        .map(|name| format!(":{name}"))
+        .collect()
+}
+
+/// Delete this target's leftover candidate refs. Best effort: a failure
+/// leaves them for the next compose.
+async fn drop_spent_candidates(cache: &Path, target: &Target, name: &str) {
+    let pattern = format!("refs/vivi/candidates/{name}/*");
+    let Ok(listed) = git_ok(cache, &["ls-remote", &target.remote, &pattern]).await else {
+        return;
+    };
+    let deletes = spent_candidate_deletes(&listed, name);
+    if deletes.is_empty() {
+        return;
+    }
+    let mut args = vec!["push", "-q", target.remote.as_str()];
+    args.extend(deletes.iter().map(String::as_str));
+    let _ = git(cache, &args).await;
+}
+
+/// After a publish: delete the landed slice branches, each only if it still
+/// points at the head that landed, and the candidate's ref. Best effort.
+async fn drop_landed(cache: &Path, target: &Target, candidate: &Candidate) {
+    let mut args = vec!["push".to_string(), "-q".to_string(), "--atomic".to_string()];
+    let mut deletes = Vec::new();
+    for unit in &candidate.units {
+        if unit.branch.is_empty() || unit.head.is_empty() {
+            continue;
+        }
+        let refname = format!("refs/heads/{}", unit.branch);
+        args.push(format!("--force-with-lease={refname}:{}", unit.head));
+        deletes.push(format!(":{refname}"));
+    }
+    if !deletes.is_empty() {
+        args.push(target.remote.clone());
+        args.extend(deletes);
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let _ = git(cache, &args).await;
+    }
+    let candidate_ref = format!(":refs/vivi/candidates/{}", candidate.id);
+    let _ = git(cache, &["push", "-q", &target.remote, &candidate_ref]).await;
 }
 
 #[cfg(test)]

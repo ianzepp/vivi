@@ -33,7 +33,7 @@ fn compose_report_maps_back_to_units() {
     });
     let got = read_compose(&report, &input(), "base0").unwrap();
     let cand = got.candidate.unwrap();
-    assert_eq!(cand.id, "pump-sandbox-0123456789ab");
+    assert_eq!(cand.id, "pump-sandbox/0123456789ab");
     assert_eq!(cand.base, "base0");
     assert_eq!(cand.units, vec![unit("a")]);
     assert_eq!(got.already, vec![unit("c")]);
@@ -72,4 +72,19 @@ fn gate_pass_fail_and_broken_base() {
     assert!(read_gate(&json!({"status": "baseline_build_failed", "pass": false})).is_err());
     assert!(read_gate(&json!({"status": "error", "error": "lock"})).is_err());
     assert!(read_gate(&json!({"status": "ok"})).is_err());
+}
+
+#[test]
+fn only_this_targets_candidates_are_dropped() {
+    let listed = "a1\trefs/vivi/candidates/radix/aaaa\n\
+                  b2\trefs/vivi/candidates/radix-stress/bbbb\n\
+                  c3\trefs/vivi/candidates/radix/cccc\n";
+    assert_eq!(
+        spent_candidate_deletes(listed, "radix"),
+        vec![
+            ":refs/vivi/candidates/radix/aaaa".to_string(),
+            ":refs/vivi/candidates/radix/cccc".to_string(),
+        ],
+        "radix-stress's candidate is not radix's"
+    );
 }
