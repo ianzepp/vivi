@@ -41,6 +41,6 @@ The dry run took 29 min of gate time for all 41 branches. The pin file caused no
 
 ## Known limits
 
-- Flaky tests are not retried. A flake outside the baseline would eject a branch. The one test that varies between hosts is tolerated.
+- Flaky tests: since 2026-11-20 the gate reruns a candidate's new failures once, by exact name; a test that passes then is reported as `flaky` and does not eject the batch. Seen: a Metal GPU timing test failed under a loaded studio and passed 12 of 12 when idle.
 - `bytes_written` is the whole drive's delta, so it is accurate only while the cluster is idle.
 - `CARGO_BUILD_JOBS=16` overrides the studio-wide `jobs = 2`.

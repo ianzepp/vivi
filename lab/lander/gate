@@ -18,6 +18,9 @@ What it does:
 
 With --base SHA it also gates the base first (cached, so once per sha per host) and judges:
   pass = status ok and no failing test that is not also failing on the base.
+New failures are rerun once, by exact name, in the same tree; those that pass then are reported
+as `flaky` and do not fail the gate (a Metal GPU timing test failed under a loaded studio and
+passed 12 of 12 idle, 2026-11-20).
 Without --base, `failures` is the whole failing set and `pass` is null; the caller compares.
 
 Output: one JSON object on stdout. Everything else goes to stderr. Exit 0 when the gate ran (pass or
@@ -188,6 +191,28 @@ def gate_one(sha, tree, timeout, jobs, use_cache):
     return res
 
 
+UNNAMED = "<test binary failed without naming a test>"
+
+
+def retry_new_failures(sha, tree, jobs, keys, deadline):
+    """Rerun the candidate's new failures once, by exact test name, in the same tree (still at
+    `sha`). Returns (still_failing, flaky): a test that passes on the rerun failed only under the
+    first run's conditions (seen: a Metal GPU timing test under a loaded studio). A failure with
+    no test name cannot be rerun alone and stays failing."""
+    names = sorted({k.split("::", 1)[1] for k in keys if not k.endswith(UNNAMED)})
+    if not names:
+        return sorted(keys), []
+    logfile = os.path.join(STATE, "logs", "%s-retry-%s.log" % (sha[:12], time.strftime("%Y%m%d-%H%M%S")))
+    env = dict(os.environ, CARGO_BUILD_JOBS=str(jobs), CARGO_TERM_COLOR="never")
+    run(CARGO_TEST + ["--no-fail-fast", "--", "--exact"] + names, cwd=tree, env=env, out=logfile,
+        deadline=deadline, check=False)
+    again, _, _ = parse(logfile)
+    still = sorted(k for k in keys if k in set(again) or k.endswith(UNNAMED))
+    flaky = sorted(set(keys) - set(still))
+    log("retried %d new failures: %d still fail, %d passed (flaky)" % (len(keys), len(still), len(flaky)))
+    return still, flaky
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--sha", required=True)
@@ -217,6 +242,14 @@ def main():
             res["base"] = a.base
             res["baseline_failures"] = base["failures"]
             res["new_failures"] = sorted(set(res["failures"]) - set(base["failures"]))
+            res["flaky"] = []
+            if res["status"] == "ok" and res["new_failures"]:
+                deadline = time.time() + a.timeout
+                try:
+                    res["new_failures"], res["flaky"] = retry_new_failures(
+                        a.sha, a.tree, a.jobs, res["new_failures"], deadline)
+                except Timeout:
+                    log("retry of new failures timed out; they stand")
             res["pass"] = res["status"] == "ok" and not res["new_failures"]
         else:
             res["pass"] = None
