@@ -137,8 +137,9 @@ for that slice, Temporal retries included, starting at 1. The lab's
 
 ## Tests and what each proves
 
-`tests/phase2.rs` has one test for each Phase 2 pass criterion, plus one for
-the park path and one for the hot-file mutex. The workflow tests run the
+`tests/phase2.rs` has one test for each Phase 2 pass criterion, plus one each
+for the park path, the hot-file mutex, an operator's stop and the Lander's
+continue-as-new. The workflow tests run the
 stand-ins through the same activity definitions the real activities
 implement. Unit tests sit beside their modules (`*_test.rs`):
 
@@ -164,6 +165,8 @@ implement. Unit tests sit beside their modules (`*_test.rs`):
 | `lander_bisection_ejects_exactly_bad_units` | A Lander bisection ejects exactly the bad units | Six slices land together and two are `bad`. At least one batch is bisected. The only units ejected are the two bad ones, and `main` holds exactly the four good ones, each once. The bad slices loop with the gate's text, run out of rounds, and park the need with `WorkExhausted`. |
 | `hot_file_mutex_serializes_overlapping_slices` | Hot-file mutex | Two slices under the hot path `crates/hot`: the second starts implementing only after the first has merged. A third slice elsewhere starts at once. |
 | `exhausted_attempts_park_with_cause` | Out of attempts → park, never restart | Two red checks park `n1` with `WorkExhausted { rounds: 2, .. }`. Three lost hosts park `n2` with `InfraExhausted { step: "implement" }`. The record's last call for each is a `Park`. The plan ran once per need. |
+| `a_terminated_slice_stops_its_need_without_parking` | An operator's stop is not a park | Terminating a slice workflow ends its need as `Stopped`, with no park and no close in the record. Its admission lease is given back: a second need under the same hot path is admitted and lands. |
+| `lander_continues_as_new_without_losing_work` | Continue-as-new keeps the queue | With a tiny rollover limit the Lander restarts several times while eight needs are admitted, queued and landed. Every need lands, each slice once. |
 
 ## Cluster deployment (`deploy/cluster.toml`)
 
@@ -306,9 +309,9 @@ Checked against the crate source and its `examples/`, not only its README.
 
 ## Findings for the real build
 
-All three are handled now: implement resumes from the lane's branch head
-(`git ls-remote`), every push is fenced with `--force-with-lease`, and the
-per-pool provider cooldown is still open (listed below).
+Two of the three are handled now: implement resumes from the lane's branch
+head (`git ls-remote`), and every push is fenced with `--force-with-lease`.
+The per-pool provider cooldown is still open (listed below).
 
 - **Heartbeat details lag the pushed head.** Core throttles heartbeats to `heartbeat_timeout * 0.8`. A host that dies between two flushes loses its last checkpoint, but that commit is already pushed. The real `implement` should resume from the remote branch head, and use the heartbeat details only as a hint. The stand-in sidesteps this, because a dark host always dies right after its first heartbeat, which is sent immediately.
 - **Pushes need a fence.** Temporal runs activities at least once. A host declared lost, or one that overran its cap, may still be running when the retry starts. `World::push` refuses a push whose expected head is stale. The real agent should push the same way: plain `git push` without force, or `--force-with-lease=<expected>`.

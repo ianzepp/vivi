@@ -11,7 +11,7 @@ selected slot's raw log tail, whose contents depend on the worker output and
 are not redacted by the monitor.
 
 ```sh
-vivi monitor [--project <root> ...] [--once [--json]]
+vivi monitor [--root <root> ...] [--once [--json]]
 ```
 
 Without `--once`, the terminal view refreshes every second. It shows pump and

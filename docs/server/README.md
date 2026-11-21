@@ -24,6 +24,15 @@ directly from its own `.vivi/` (no copy), with MCP acting on it live through
 the `vivi` library. See
 [`phase-04-hosted-projects.md`](phase-04-hosted-projects.md).
 
+**The web console** (`crates/vivi-console`) is a read-only HTML view of the
+hosted projects, mounted at `/ui`. It lists every hosted project the server
+serves that is neither archived nor retired. Each project has pages for its
+overview, needs (with each need's attempts and flow), jobs, slots (with each
+slot's history), failures, pump, pools and roles, and mail. It opens each
+project's stores through connections that cannot write. There is no sign-in:
+the console is meant for a trusted local network. See
+[`../console-plan.md`](../console-plan.md).
+
 ## Quickstart
 
 `vivi server` is part of the vivi binary (a `vivi-server` link to it runs the

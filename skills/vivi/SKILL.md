@@ -173,7 +173,7 @@ project sets only what is its own.
   `description`, `archive`, `sync`, mail and the store.
 - **Merge.** Tables merge key by key and the deeper file wins; arrays and
   scalars replace whole. A file removes inherited keys with
-  `unset = ["pools.studio.size_gib", "identities.reviewer"]` (dotted paths;
+  `unset = ["pools.remote.size_gib", "identities.reviewer"]` (dotted paths;
   quote a segment that contains a dot: `pools."a.b".x`).
 - **Charters** fall back to the nearest base's `charters/<role>.md`.
 - **Writers** (`vivi pool set`, `vivi role ...`, `vivi config set`) edit
@@ -364,7 +364,7 @@ The probe prints one JSON object on stdout:
 ```json
 {
   "facts": ["main is at deadbeef"],
-  "sections": [{"title": "world", "lines": ["radix main deadbeef"]}],
+  "sections": [{"title": "world", "lines": ["app main deadbeef"]}],
   "verdicts": [{"handle": "abc12345", "verdict": "stale", "detail": "commit already on main"}]
 }
 ```
@@ -431,7 +431,7 @@ operating as a role. Assign work to a pool with the role, not by editing TOML:
 vivi role show <role> --project <root>
 vivi role charter show <role> --project <root>
 vivi role status <role> --project <root>
-vivi role add <name> --kind hand --pool glm --model P2-S0
+vivi role add <name> --kind hand --pool fast --model P2-S0
 vivi role set <role> --pool <pool> --read-only true
 vivi role pool <role> <pool>
 vivi config show [--resolved] [--json | --porcelain]
@@ -633,7 +633,7 @@ digest = "90d"
 ```
 
 The `digest` tag is hidden from memo listings by default; use the memo list
-command's `--include-hidden` when you need to inspect it.
+command's `--all` when you need to inspect it.
 
 When a mailspace has a configured archive, absorption exports one Markdown
 record to that dedicated Git repository. Vivi does not stage or commit the
@@ -1128,7 +1128,8 @@ is `landed`, `red`, `conflict` or `raced`. A red landing takes `--command` (the
 failing command) and `--tail-file` (the end of its output; the last 4096 bytes
 are kept); a conflict takes one `--file` per conflicting path. The event does
 not close or reopen a dispatch, so a landing of an older job leaves a newer
-open dispatch of the same task open. `vivi slot history` shows the landing.
+open dispatch of the same task open. `vivi slot history --json` shows the
+landing (`landing`, `landing_at`, `landing_reason`).
 
 #### Role → pool
 
@@ -1150,7 +1151,7 @@ choice.
 [[identities]]
 name = "hand"
 kind = "hand"
-pool = "glm"
+pool = "fast"
 model = "P2-S0"
 
 [[identities]]
@@ -1158,11 +1159,11 @@ name = "merge"
 kind = "merge"
 pool = "host"
 
-[pools.glm]
+[pools.fast]
 provider = "local"
 slots = 10
-[pools.glm.caps]
-"deepseek/deepseek-v4-flash" = 10
+[pools.fast.caps]
+"vendor/model-a" = 10
 
 [pools.host]
 provider = "local"
@@ -1192,11 +1193,11 @@ new `vivi config validate` error rolled back. They print `backup <path>`
 notes.
 
 ```sh
-vivi pool set glm slots 10
-vivi pool set glm local.worktree_of /path/to/repo
-vivi pool set glm harness.models '["m1", "m2"]'
-vivi pool set glm harness '{ name = "pi", run = "runner {model} {brief}", models = ["m1"] }'
-vivi pool unset glm image
+vivi pool set fast slots 10
+vivi pool set fast local.worktree_of /path/to/repo
+vivi pool set fast harness.models '["m1", "m2"]'
+vivi pool set fast harness '{ name = "pi", run = "runner {model} {brief}", models = ["m1"] }'
+vivi pool unset fast image
 ```
 
 `vivi pool list` / `vivi pool show <name>` (`--json` or `--porcelain`):
@@ -1267,16 +1268,16 @@ For warm builds, declare repository-bound slots in the owning mailspace's
 as written; Vivi does not append `repo/` or derive an owner/repo layout.
 
 ```toml
-[pools.studio]
+[pools.builders]
 provider = "ssh"
 # Add the usual harness/committer settings; no counted slots or ssh.host needed.
 
 [[slot]]
-name = "radix-1"
-repository = "faberlang/radix"
-host = "ianzepp@studio-01"
-dir = "/vivi/trees/faberlang/radix/slot-1"
-pools = ["studio"]
+name = "app-1"
+repository = "owner/app"
+host = "user@builder"
+dir = "/srv/trees/owner/app/slot-1"
+pools = ["builders"]
 ```
 
 Names are unique within the mailspace. `repository` is exactly `owner/repo`,
@@ -1295,6 +1296,12 @@ when the slot is destroyed. Use physical absolute paths, without symlinks or
 `.`/`..` components. Explicit slots use the persistent `ssh` provider, not
 per-job workspace disks. Multi-repository `--also-target` jobs need a generic
 pool; explicit slots never put extra repository caches in their records.
+Fetches in an explicit slot are full, not `--depth`: its directory may be a
+Git worktree of a mirror shared with sibling slots, and a shallow fetch would
+hide history from all of them (the pool's `depth` setting does not apply).
+A fetch that meets another slot's Git lock is tried again, up to twenty tries in all.
+The slot's temporary directory is `.<slot-dir-name>.tmp` beside the slot, when
+no symlink is on its path.
 
 On every host, set its operator budget in `~/vivi-worker/worker.conf`:
 
@@ -1315,12 +1322,28 @@ on one physical host must use the same writable `VIVI_WORKER_ROOT` (default
 each job discards the build. Their bounded-workspace documentation remains
 available for disposable work; use persistent repository slots for warm builds.
 
-Example fleet: studio-01 has eight `faberlang/radix` entries (`radix-1` through
-`radix-8`) at `/vivi/trees/faberlang/radix/slot-1` through `slot-8`, and two
-`faberlang/gradus` entries (`gradus-1`, `gradus-2`) at
-`/vivi/trees/faberlang/gradus/slot-1` and `slot-2`. All ten are declared only
-in the faberlang mailspace, with `max_busy=8` on the host. The vivi mailspace
-declares its own vivi slots, never those of faberlang.
+Example fleet: one host has eight `owner/app` entries (`app-1` through
+`app-8`) at `/srv/trees/owner/app/slot-1` through `slot-8`, and two
+`owner/lib` entries (`lib-1`, `lib-2`) at `/srv/trees/owner/lib/slot-1` and
+`slot-2`. All ten are declared only in the mailspace of the project that owns
+them, with `max_busy=8` on the host. Another mailspace declares its own slots,
+never those of the first.
+
+`vivi slot` reads those slots and the jobs they ran. It contacts no host: it
+reads the `slot_runs` index, which Vivi keeps in step with the pool events.
+
+```sh
+vivi slot list [--json]                          # each declared slot, busy (with its job) or free
+vivi slot show <slot> [--json]                   # one slot, and its running or last job
+vivi slot history <slot> [--pool <name>] [--limit N] [--json]   # its jobs, newest first (default 20)
+vivi slot rebuild                                # make the index again from the pool events
+```
+
+A history line gives the dispatch time, job, pool, task, need and model, then
+the outcome, push result, and agent, check and job seconds. `--json` adds the
+CPU seconds (`agent_cpu_s`, `check_cpu_s`) and the landing recorded by `vivi
+pool landed`. Run `rebuild` only if the index looks wrong; it is safe to
+repeat.
 
 - **A `local` pool can give each job its own workspace disk.** A
   `[pools.<name>.workspace]` table with `enabled = true` makes a fresh disk for
@@ -2061,6 +2084,14 @@ from it; units that need another unit's code start `--from` that unit's branch
   base at the cap is only recorded: merging it is the agent's move. On a
   worktree pool nothing is fetched — the refs are local refs of the shared
   repository and the agent sees them by name.
+- Every fetching job also gets the integration branch: before the agent
+  starts, the runner fetches `main` of the selected target (`[pump] main`, or
+  the target's own `main`; `main` when no pump is configured) into
+  `refs/remotes/origin/<main>`, at the pool's fetch depth, and sets a
+  credential-free `origin` URL. It deepens the same way as an extra ref until
+  the start commit and that branch share a merge base (capped at 5000), so the
+  agent can merge it by name. If that fetch fails the job ends `fetch_failed`.
+  A worktree pool fetches it through its repository's `origin`.
 - The result names the list: `with_count`, then `with_N_ref`, `with_N_local`
   and `with_N_sha` for each ref, and on a fetching pool also
   `with_N_merge_base` (the merge base with the start commit, `none` when
@@ -2121,7 +2152,10 @@ config outside the agent's writable checkout and put policy in the command,
 not in a repository script the agent can rewrite.
 
 Results carry `check_rc`, `check_s`, and `check_tail` in the collected record;
-the task summary says `runner check: passed` or `runner check: failed`.
+the task summary says `runner check: passed` or `runner check: failed`. The
+runner also measures the CPU seconds the agent and the check used and records
+them as `agent_cpu_s` and `check_cpu_s`; the receipt shows `(cpu Ns)` after each
+time. They are absent when the host could not read them.
 Combined output capture keeps only the final 1024 bytes / 40 lines, stripped
 of controls and escaped into one value of at most 4096 bytes. Timeout is 124
 (or 137 after forced kill). Failure still publishes the branch, but the pump
@@ -2334,7 +2368,8 @@ size_gib = 12                 # required for apfs and ram
 - **Per dispatch.** A dispatch builds the slot (the driver checks the request
   against the worker's budgets, builds the boundary, unpacks and seeds the
   slot), and collecting the result destroys it, boundary and all. Nothing
-  rests between jobs and nothing is cached: every job starts cold and clean.
+  rests between jobs: every job starts cold and clean, apart from the opt-in
+  Cargo output below.
 - **Slot indices are reserved on the worker**, under its lock: two dispatches
   never build the same index, and one that finds its index taken moves to the
   next. A dispatch that fails while building or seeding tears its slot down
@@ -2345,6 +2380,16 @@ size_gib = 12                 # required for apfs and ram
   limit; it takes disk only as written), made by the login user so its volume
   is writable without root. `ram`: a RAM disk. `dir`: a plain directory, no
   limit. All three work over SSH with nobody logged in at the console.
+- **Persistent Cargo output (opt-in).** `[pools.<name>.worker.cargo_target]`
+  with `enabled = true` keeps one Cargo target directory per slot index at
+  `<root>/slot-targets/<pool>/slot-NN`, outside the job boundary, and passes it
+  to the job as `CARGO_TARGET_DIR`. Keys: `root` (an absolute path on the
+  worker; default the parent of `apfs_dir`), `cap_gib` (1 to 1024, default 32:
+  an idle target over the cap is removed when its slot is destroyed) and
+  `sccache = true` (a shared sccache, with `CARGO_INCREMENTAL=0`; `sccache` must
+  be on the worker's login `PATH`). A target built by a different `rustc -vV`
+  is discarded. Off when the table is absent. See
+  `docs/worker-driver-protocol.md` in the Vivi source.
 - **Stopping** a slot ends every process with a file or working directory in
   its boundary, plus the boot wrapper's process group and descendants.
 - **Worker budgets** live on the worker, in `<root>/worker.conf`:
@@ -2374,15 +2419,15 @@ server for a job ticket (see Job tickets under [Server](#server)) and starts
 and its ticket-scoped Git access from the server and pushes one branch back.
 
 ```toml
-[pools.studio]
+[pools.remote]
 provider = "ticket"
 slots = 2                     # most open jobs at once; NO `image`
 
-[pools.studio.ticket]
-host = "studio"               # required; anything `ssh` accepts, reached with BatchMode
-server = "http://hub:8080"    # required; the URL THIS machine uses for its vivi server
+[pools.remote.ticket]
+host = "builder"              # required; anything `ssh` accepts, reached with BatchMode
+server = "http://server-host:8080" # required; the URL THIS machine uses for its vivi server
 # tunnel = true               # default: ssh -R forwards the server's port to the worker
-# worker_server = "https://hub.example"   # required when tunnel = false: the worker's own URL
+# worker_server = "https://server.example"   # required when tunnel = false: the worker's own URL
 # vivi = "vivi"               # the vivi binary on the host; letters, digits and _ . / ~ - $ only
 # worker_home = "~/.vivi"     # VIVI_HOME for the worker on the host; same character rule
 # project = "app"             # default: this mailspace's name (what a hosted project is called)
@@ -2479,10 +2524,13 @@ host = "user@server"          # required; anything `ssh` accepts, including a Ho
 - **Start/stop.** Start launches the boot script detached (`setsid`, or Perl's
   `POSIX::setsid` on macOS when the utility is absent; a pid file), so it outlives the SSH session. A slot "runs" while that process is
   alive and carries `VIVI_SLOT_ROOT=<slot dir>` in its environment (a reused pid
-  is not mistaken for it). Linux reads `/proc`; macOS finds exact environment
-  tokens through `ps -E`. Stop kills every process carrying the tag, then
-  escalates to KILL, so nothing a job started outlives a stop; a process that
-  scrubs its environment can escape. The hard job time limit, the idle stop and
+  is not mistaken for it). Linux reads `/proc`. macOS shows no process
+  environments, so there the slot's processes are its process groups: the
+  boot's, and each group the runner starts for the agent, facts and check,
+  recorded with the leader's start time (a reused pid is ignored). Stop kills
+  every process carrying the tag (or in a recorded group), then escalates to
+  KILL, so nothing a job started outlives a stop; a process that scrubs its
+  environment, or on macOS leaves its group, can escape. The hard job time limit, the idle stop and
   the linger work as on the other hosts.
 - **Claim.** Atomic on the host and safe for two `vivi` processes on two
   machines: the claim is a hard link of a complete file (task, time, nonce);
@@ -3021,6 +3069,23 @@ A role's **cadence** is its maximum silence interval from the latest durable
 outbound signal. A due role with a charter and room under the open-work caps
 gets a durable role job. The board shows **next_due_at** and the latest result.
 
+A role with a `command`, a `cadence` and optionally a `target` is a **command
+cadence role**: a lint, test or wide check against the target's main. Make one
+with `vivi role add <name> --cadence 1h --pool <pool> --command "<shell>"
+--target <id>`. The pump runs the command as a read-only pool job with no
+model (the same harness as `vivi pool dispatch --command`). It needs no
+charter and ignores the open-work caps; one run per role is in flight. While
+main has not moved since the check last passed, nothing runs (status
+`command-waiting-main-change`). Only a non-zero exit of the command on a
+recorded commit is **red**. A missing tool, a lost or timed-out job or an
+unreadable main tip is the environment: the pump raises a `cadence-command-*`
+exception, files nothing, and retries with backoff. A red with no open red need
+files one need marked `cadence`, from the role to the pump's reply recipient;
+its subject names the role, target and commit and the command is in the body. A
+later red replies once on that need, and the next green closes it. A red need
+closed elsewhere counts as none. These runs still dispatch while the need
+flow is switched off (`[pump.subsystems] flow = false`).
+
 Head-ceo research needs are filed with **vivi need send --mark research
 --explores &lt;want&gt; --done-when "..."**, followed by **vivi pump send --need
 &lt;need&gt;** (the mark is written first; flow intake reads the run kind from it
@@ -3531,15 +3596,14 @@ status plus the JSON `status` field (`ok`, `down`, `credential_dead`).
 Provider `kind` is `native`, `child`, or `upstream`. Native adapters shipped
 in this binary: `chatgpt-codex` (Responses plus the existing chat shim) and
 `kimi-coding` / `openai-passthrough` (header injection and byte passthrough),
-and `xai-grok` (the Grok CLI OIDC login file, refreshed under a lock; byte
-passthrough to `https://api.x.ai/v1`). Example `grok` block:
-`kind = "native"`, `adapter = "xai-grok"`, `credentials = "~/.grok/auth.json"`
+and `xai-grok` (an OIDC login file, refreshed under a lock; byte
+passthrough to the provider's API). An `xai-grok` block is `kind = "native"`,
+`adapter = "xai-grok"` and `credentials = "<path to the login file>"`
 (optional `upstream`, `token_url`, `client_id`, `models`; or `key_cmd` for a
 static bearer with no refresh). `openai-passthrough` also serves non-Kimi
-OpenAI-style upstreams with a `key_cmd`, for example an `opencode-go` block:
-`upstream = "https://opencode.ai/zen/go/v1"` and a `key_cmd` that prints the
-key (it forwards every path, including `/messages`, and sends only the
-bearer, never Kimi identity headers).
+OpenAI-style upstreams with a `key_cmd`: set `upstream` to the base URL and
+`key_cmd` to a command that prints the key (it forwards every path, including
+`/messages`, and sends only the bearer, never Kimi identity headers).
 `openai-passthrough` has no OAuth state: no refresh, no dead mark, no Kimi
 home-directory credential fallbacks, and a 401 goes back to the client
 unchanged. Its `/health` reports `"provider":"openai-passthrough"`. Only a
@@ -3547,9 +3611,8 @@ unchanged. Its `/health` reports `"provider":"openai-passthrough"`. Only a
 dead Kimi credential never refuses any other provider.
 Optional `session_header = "<lowercase header name>"` (`openai-passthrough`
 only; not `authorization`, `host`, `content-length` or a hop-by-hop name)
-for upstreams that refuse a request without a session id, for example
-OpenCode Go (`MissingSessionID`, HTTP 400): `session_header =
-"x-opencode-session"`. A client-supplied header of that name is forwarded
+for upstreams that refuse a request without a session id (HTTP 400): for
+example `session_header = "x-session-id"`. A client-supplied header of that name is forwarded
 unchanged. Otherwise the proxy adds `ses_<32 hex>` to non-GET requests:
 a hash of the model plus the first non-system message, so one conversation
 keeps one id (cache affinity) and the id never derives from a credential;
@@ -3567,7 +3630,7 @@ Transient token-endpoint failures do not mark the credential dead.
 `credential_dead` or `down`). The aggregate `/health` returns HTTP 200
 whenever the listener is up and at least one provider is healthy, 503
 otherwise, with per-provider status rows in the `providers` body array. There is no background token refresh. When `models` is omitted,
-native Codex `/v1/models` serves `gpt-6-luna` and `gpt-6.1-sol`.
+native `chatgpt-codex` `/v1/models` serves the adapter's built-in model list.
 
 ## Self-update
 

@@ -10,8 +10,9 @@ what they need from each other and what they learned, in a form that survives
 restarts, context compaction and hand-offs between different models. Vivi is
 that place. A mailspace needs no server and works offline on one machine.
 Optional parts build on it: `vivi sync` replicates letters through a project
-server, `vivi pool` runs tasks on remote machines, and `vivi pump` is an
-unattended dispatcher built on pools.
+server, `vivi pool` runs tasks on remote machines, `vivi pump` is an
+unattended dispatcher built on pools, and `vivi server` hosts project
+mailspaces over HTTP with a read-only web console.
 
 There are two ways to run work through Vivi. The pump can take a need through
 its whole flow (research, plan, slice, build, verify, merge) on its own. Or
@@ -19,6 +20,11 @@ Vivi is infrastructure for an orchestrator outside it, a person or an agent,
 that files needs, dispatches bounded units to pools and lands the work itself;
 see [Running work without the pump](#running-work-without-the-pump). The two
 mix: the pump's subsystems switch off one at a time.
+
+The pump, its flows, pools and declared slots are the runtime for smaller
+projects. For large projects the repository also carries a Temporal runtime
+(`temporal/`), a separate tool with its own Cargo workspace; see
+[Separate tools in this repository](#separate-tools-in-this-repository).
 
 The local pool provider can reset its slot to the dispatch base before launch.
 Remote jobs fetch the job's `FROM` with their job-scoped credential, then check
@@ -288,7 +294,7 @@ The `vivi` skill (see [Agent skills](#agent-skills)) documents usage patterns.
 | `role` | `list`, `show`, `add`, `set`, `rename`, `pool`, `status`, `charter show\|set` |
 | `mail` | `send`, `reply`, `deliver` (an `.eml` file), `list`, `show`, `thread`, `watch`, `absorb`, `dump` |
 | `task` | `send`, `from` (derive from a handle), `list`, `show`, `done`, `reopen`, `depend`, `watch`, `absorb`, `dump` |
-| `need` | `send`, `list`, `show`, `done`, `reopen`, `assign`, `withdraw`, `bind`, `mark`, `unmark`, `depend`, `watch`, `absorb`, `dump` |
+| `need` | `send`, `list`, `show`, `attempts`, `done`, `reopen`, `assign`, `withdraw`, `bind`, `mark`, `unmark`, `depend`, `watch`, `absorb`, `dump` |
 | `want` | `send`, `list`, `show`, `set-priority`, `done`, `drop`, `mark`, `unmark`, `depend`, `watch`, `absorb`, `dump` |
 | `memo` | `save`, `list`, `search`, `show`, `delete`, `absorb`, `dump` |
 | `rule` | `save`, `list`, `show`, `search`, `supersede`, `retire`, `absorb` |
@@ -297,17 +303,23 @@ The `vivi` skill (see [Agent skills](#agent-skills)) documents usage patterns.
 | `step` | Adjudicate the backlog graph into a dispatch/exception manifest; `--apply <handle>` completes a settled item |
 | `trace` | The cross-role communication tree around a handle (not work-graph topology) |
 | `cycle` | `cycle intake --for <role>`: cycle intake for a role, with an optional cursor file |
-| `sync` | Needs a server: `push`, `pull`, `resync`, `fetch`, `join`, `create`, `directory`, `vouch`, `api-key mint\|list\|revoke`. Local: `status`, `key`, `prune`, `keep-local` |
+| `sync` | Needs a server: `push`, `pull`, `resync`, `fetch`, `join`, `create`, `directory`, `vouch`, `api-key mint\|list\|revoke`. Local: `status`, `key`, `prune`, `keep-local`, `quarantine` |
 | `mcp` | Needs a server: a stdio bridge to the server-level MCP endpoint (`<server>/v1/mcp`); `tools` lists its tools and `call <tool> [json]` runs one |
-| `pool` | `list`, `show`, `add`, `set`, `unset`, `remove`, `bands`, `create`, `status`, `destroy`, `scale`, `dispatch`, `wait`, `reconcile`, `clean`, `reset`, `doctor`, `run` (a worker runs one server job) |
+| `pool` | `list`, `show`, `add`, `set`, `unset`, `remove`, `bands`, `create`, `status`, `destroy`, `scale`, `dispatch`, `wait`, `reconcile`, `landed` (record how landing a job's branch ended), `clean`, `reset`, `doctor`, `run` (a worker runs one server job) |
+| `slot` | `list`, `show <slot>`, `history <slot> [--pool <pool>] [--limit <n>]`, `rebuild`: the declared slots and the jobs they ran, read from the recorded pool events; contacts no host. `--json` |
 | `config` | `show [--resolved]`, `validate`, `migrate [--write]`, `set <key> <value>`, `unset <key>` |
 | `pump` | `run`, `health`, `once`, `start`, `pause`, `resume`, `stop`, `reset`, `log` (`-n`, `-f`, `--unit`, `--grep`, `--exceptions`), `priority`, `target list\|add\|remove`, `rungs show\|set`, `service`, `send --need <need>`, the actions on a need's open pump record (`requeue <step-task>...` or `requeue --job <job>`, `withdraw <need>...`, `replan <need>`, `answer <step-task> <word>`, `unlock <need>`) and the pump record verbs `list`, `show`, `done`, `reopen`, `history` |
 | `flow` | `list`; `show <kind> [--need <need>]`: the shipped flows, and a need's runs through one (read-only) |
 | `delivery` | `send` a structured branch handoff to a merge role; `close` after merge |
-| `monitor` | Read-only live pump and pool-slot view; `--project` adds roots, `--once [--json]` prints a snapshot |
+| `monitor` | Read-only live pump and pool-slot view; `--root` adds project roots, `--once [--json]` prints a snapshot |
 | `report` | Read-only attempt and need summaries: `records`, `throughput`, `durations`, `needs`, `failures` |
+| `project` | `create <name>`, `delete <name>`, `lane add`: create a project on a host (git repository, mailspace, registration) and attach repository lanes |
+| `server` | `init`, `run`, `pump pause\|resume\|status`: the hosted project server (see [Sync, the server and MCP](#sync-the-server-and-mcp)) |
+| `key` | `show`, `git-credential`: this machine's key (`$VIVI_HOME/keys/machine.ed25519`) |
+| `mind` | `attach`, `status`, `probe`, `log`, `pause`, `resume`, `stop`, `start`, `compact`, `history`, `service`: the hub-wide mind service that watches every registered pump (the CLI marks it exploratory; see [`docs/design-vivi-mind.md`](docs/design-vivi-mind.md)) |
 | `proxy` | Local loopback front door for model providers: `run`, `install`, `uninstall`, `status`, `log`, `providers`, `check` |
 | `skills` | `list`, `show <name> [--file <path>]`, `install <dir> [--force]` for the skills embedded in the binary; needs no mailspace |
+| `update`, `versions`, `uninstall` | Install, list and remove versioned release binaries (see [Install](#install)) |
 
 Commands that list, show or dump take `--json`. A large dump to stdout needs
 `--confirm-large` (or `--output <file>`). The `watch` commands (`mail`, `task`,
@@ -356,7 +368,7 @@ Vivi's own configuration is one file per project, under `<project>/.vivi/`.
 | --- | --- |
 | `mailspace.toml` | The config file. Writes are atomic and held under `mailspace.toml.lock`. Config commands (`config set`/`unset`, `pump target`, `pump rungs`, `pool` and `role` edits) are refused while the pump runs (`vivi pump pause` first), keep a `mailspace.toml.bak.<stamp>` backup (10 kept) and roll back a write that adds a new validate error |
 | `mailspace.id` | A copy of the mailspace id, used to restore it if the config loses it |
-| `mail.sqlite` | The store: items, events, goals, links, work graphs |
+| `mail.sqlite` | The store: items, events, goals, links, work graphs and the `slot_runs` index (schema version 12). A binary refuses a store written by a newer schema ("newer than this vivi supports"), so upgrade every binary that opens a mailspace together |
 | `blobs/` | Content-addressed message payloads (`.eml`) |
 | `charters/<role>.md` | Role charters |
 | `chat/identity.ed25519` | The 32-byte sync identity seed, created on demand (for example by `vivi sync key`) |
@@ -382,6 +394,9 @@ mailspaces with one id collide at `vivi sync join`.
 | `[sync]` | `server` (base URL), `project` (the server-side project id), `name` (this checkout's member name), `send` (`all`, the default, or `addressed`) |
 | `[pump]`, `[pump.*]` | The pump; see below. `[pump.subsystems]` switches parts of its tick off ([The pump](#pump-subsystems)) |
 | `[pools.<name>]` | One table per remote lane pool; see below |
+| `[[slot]]` | Declared repository slots: `name`, `repository`, `host`, `dir`, optional `pools`; see [Pools](#pools) |
+| `[remote]` | `server`, `project` and optional `key_file`: sends `need send\|list\|show\|done\|reopen`, `mail reply\|thread`, `board` and `boot` to a server's project instead of the local store; any other command is refused by name |
+| `base`, `unset` | `base = true` marks a `.vivi/mailspace.toml` in a parent directory as a base config. Projects below it inherit `pump`, `pools`, `identities`, `judgment`, `probes`, `absorb` and `memo` (deeper files win; `identities` merge by role name). `unset = ["dotted.key", ...]` removes an inherited key |
 
 Memo retention can be set per tag. On a tagged memo save, Vivi checks only that
 identity's memos carrying each newly saved tag and deletes records dated
@@ -396,14 +411,16 @@ digest = "90d"
 
 ### Pools
 
-A pool table is complete on its own: nothing is inherited. Keys: `provider`
-(`fly` by default, `docker`, `ssh`, `local`, `runpod`), `repo` (`owner/name`),
-`slots`, `fallback` (next pool in the role routing chain), `image`, `setup`, `seed`, `requires`, `facts`, `build_dir`, `depth`,
+A pool table is complete on its own: nothing is inherited from another pool
+(a base config can supply whole pool tables; see `base` above). Keys: `provider`
+(`fly` by default, `docker`, `ssh`, `local`, `runpod`, `worker`, `ticket`),
+`repo` (`owner/name`) or `remote_url` (an SSH or `file://` Git address),
+`slots`, `fallback` (next pool in the role routing chain), `image`, `setup`, `seed`, `requires`, `facts`, `build_dir`, `build_baseline_gib`, `depth`,
 `restore`, and the sub-tables `bands` (`P0` to `P5`, each a list of
-`{ model, reasoning }`), `github` (`app_id`, `private_key`), `harness` (`name`,
+`{ model, reasoning }`), `caps`, `github` (`app_id`, `private_key`), `harness` (`name`,
 `run`, `models`, `env`, `rules`), `committer` (`name`, `email`), `bridge`
 (`enabled`), `workspace` (local provider only), and one table per provider (`fly`, `docker`, `ssh`, `local`,
-`runpod`). A `local` pool with `[pools.<name>.local] worktree_of = "<repo>"`
+`runpod`, `worker`, `ticket`). A `local` pool with `[pools.<name>.local] worktree_of = "<repo>"`
 makes each slot a Git worktree of a repository already on the machine, with no
 network. With a single-target pump, the pump reads a local worktree pool's
 unit branches straight from that repository, so no `shell_prefix` push hook is
@@ -466,10 +483,29 @@ each job discards the build. Their bounded-workspace documentation remains
 available for disposable work; use persistent repository slots for warm builds.
 
 On macOS the SSH host needs bash and the usual runner tools (`timeout`,
-`sha256sum`, and `grep -z`, for example from GNU packages). Slot processes are
-found by exact `VIVI_SLOT_ROOT` tags via `ps -E`, not `/proc`; when `setsid` is
-absent, Perl's `POSIX::setsid` detaches the boot process. No disk image is made
-or deleted per job by the `ssh` provider.
+`sha256sum`, and `grep -z`, for example from GNU packages). macOS shows no
+process environments, so a slot's processes are tracked by process group
+instead of by the `VIVI_SLOT_ROOT` tag that Linux reads from `/proc`: the boot
+runs under `setsid`, and the runner records each group it starts for the agent,
+the facts and the check in `job/agent.groups`, with its leader's start time so
+a reused pid is not mistaken for the slot. A process that leaves its group is
+not found. When `setsid` is absent, Perl's `POSIX::setsid` detaches the boot
+process. No disk image is made or deleted per job by the `ssh` provider.
+
+Slots of one repository on one host are worktrees of one full bare mirror.
+Fetches into it are full and incremental, never shallow, and jobs that start
+together wait out each other's Git locks. Every job's checkout also gets the
+target's integration branch fetched as `origin/<main>`. When a worker's
+multiplexed SSH master refuses a new session, Vivi closes that master and
+retries the call once without multiplexing instead of failing the dispatch.
+
+`vivi slot list` shows each declared slot as busy (with its job) or free;
+`slot show <slot>` and `slot history <slot>` show its current job and the jobs
+it ran, newest first. They read the `slot_runs` index in `mail.sqlite`, one
+row per pool job, which Vivi writes in the same transaction as the
+`pool_dispatched`, `pool_collected` and `pool_landed` events. The events stay
+the source of truth: `vivi slot rebuild` replays them, and a failed index
+write never fails the pool event. No host is contacted.
 
 `vivi pool doctor` checks pools, providers and repositories and names the fix
 for each finding. `doctor --test` creates throwaway slots (billable on Fly; on
@@ -617,6 +653,15 @@ the result line says so. Recover the commits from the slot, then free it
 deliberately with `vivi pool destroy --slot <slot> --yes`. Freeing earlier
 would destroy (per-dispatch slots) or reset (persistent slots) the only copy of
 the agent's work.
+
+**Landing is recorded on the task.** An orchestrator that lands a job's branch
+itself records the outcome with
+`vivi pool landed <task> --job <job> --outcome landed|red|conflict|raced`
+(optionally `--base`, `--tip`, `--secs`, `--command` with `--tail-file` for a
+red, and repeated `--file` for a conflict). It writes a `pool_landed` event on
+the task and the outcome and reason into `slot_runs`; a landing never opens or
+closes a dispatch. A job's result also carries the CPU seconds its agent and
+check stages used (`agent_cpu_s`, `check_cpu_s`).
 
 **Each job has its own temp directory.** On providers whose jobs run as an
 ordinary user (`local`, `ssh`, `worker`, `ticket`), the runner sets `TMPDIR` to
@@ -863,6 +908,12 @@ jobs and dispatching queued jobs still run.
 flow = false      # an outside orchestrator handles needs; cadence and board still run
 ```
 
+With `flow = false`, a flow job left pending stays queued until the flow is
+switched back on; command checks, cadence runs and digests still dispatch.
+A pool result that another caller's `vivi pool reconcile` collected is read and
+applied by the pump once the job is three minutes old, so the job does not stay
+dispatched.
+
 ### Role cadence
 
 Role cadence uses each role's latest durable outbound signal. Due runs appear
@@ -908,12 +959,12 @@ or `retired` does not run.
   recorded commit is red.
 - **A red files one need.** With no red need open for the check, the pump
   files one from the role to its reply recipient, marked `cadence`, with the
-  execution's `--target`, subject `<role>: <command> red on <target> at
+  execution's `--target`, subject `<role> red on <target> at
   <commit>`, a body naming the role, command, target, main, tested commit,
   exit, attempt and the job's task (`vivi mail thread <task>` shows the run's
-  receipt and log), and done_when `the <role> check passes on <main>
-  (<command>)`. A later red while that need is open files nothing new: the
-  pump replies once on the need with the new commit, exit and task.
+  receipt and log), and done_when `the <role> check passes on <main>`. The
+  command is in the body, not the subject or done_when. A later red while that
+  need is open files nothing new: the pump replies once on the need with the new commit, exit and task.
 - **A green closes it.** The next green closes the red need with `<role> is
   green again at <commit>` and records the commit as the check's last green.
   A red need someone else closed or withdrew counts as none: the next red
@@ -1154,6 +1205,48 @@ vivi mcp call overview '{}' [--json]         # ARGS_JSON, or --args-file PATH|-
 success, 1 when the tool reports `isError` (its text goes to stderr), and 2 on a
 transport, auth, or JSON-RPC error or arguments that are not a JSON object.
 
+### The project server and web console
+
+`vivi server` is the hosted project server. It serves project mailspaces, the
+MCP endpoint, rooms and Git over HTTP, and supervises one pump per project it
+serves; a link named `vivi-server` to the `vivi` binary runs the same server.
+
+```sh
+vivi server init [--port N]            # make $VIVI_HOME/server: config.toml, creds/, data dirs
+vivi server run                        # foreground; `run --help` lists the config keys and secrets
+vivi server pump pause|resume|status   # stop or let every project pump this server supervises run
+```
+
+`vivi project create <name> --projects-root <dir> --lanes-root <dir>
+--git-url-prefix <prefix>` makes a project on a host (a group-shared bare
+repository for the first target, a mailspace with the starter pump config, a
+checkout and a host registration); `vivi project lane add` attaches another
+repository and `vivi project delete` removes the project. `vivi key show`
+prints this machine's key and `vivi key git-credential` is a Git credential
+helper that signs in with it.
+
+The server mounts a read-only web console (`crates/vivi-console`) under `/ui`.
+It lists every hosted project that is neither archived nor retired, and shows
+each project's overview, needs (with each need's attempts and flow), jobs,
+slots (with each slot's history), failures, pump, pools and roles, and mail.
+It opens each project's stores through connections that cannot write. It has
+no sign-in: run the server on a trusted network. See
+[`docs/server/README.md`](docs/server/README.md) and
+[`docs/console-plan.md`](docs/console-plan.md).
+
+## Separate tools in this repository
+
+These live beside the `vivi` binary but are not part of it. Each has its own
+build or test command, and `cargo build` and `cargo test` at the root never
+compile the Cargo workspaces.
+
+| Path | What it is | Run or test |
+| --- | --- | --- |
+| [`temporal/`](temporal/README.md) | The Temporal runtime for large projects: `NeedWorkflow`, `SliceWorkflow` and `LanderWorkflow` with per-host task queues, typed failure classes (provider, infra, work), resume from the last pushed commit, backpressure and a hot-file mutex, served by the `vivi-temporal` worker. Vivi stays the record of needs and threads. Its own Cargo workspace | `cd temporal && cargo test` (needs the `temporal` CLI on `PATH`) |
+| [`deploy/temporal/`](deploy/temporal/README.md) | Install scripts for a self-hosted Temporal server and Postgres under systemd | read its README |
+| [`lab/lander/`](lab/lander) | Python `compose` (build one candidate merge from a base and ordered unit branches), `gate` (build and test a commit in a warm tree, rerunning new failures once to separate flaky tests) and `lander` (batch-and-bisect a queue of branches; dry run only, it never writes a branch). The Temporal runtime calls `compose` and `gate` as activities | `python3 lab/lander/test_lander.py` |
+| [`sim/`](sim/README.md) | The pump simulator: the real pump loop against a simulated world on a virtual clock, with no model calls. Its own Cargo workspace | `cd sim && cargo run --release` |
+
 ## Agent skills
 
 Three skills ship in [`skills/`](skills/) and are embedded in the binary, so
@@ -1179,6 +1272,8 @@ vivi skills install ~/.agents/skills     # writes vivi/, tugboat/, speedboat/
 - [`skills/vivi/SKILL.md`](skills/vivi/SKILL.md): the usage reference (also `vivi skills show vivi`)
 - [`skills/vivi/references/pump-contract.md`](skills/vivi/references/pump-contract.md) and [`pump-protocols.md`](skills/vivi/references/pump-protocols.md): the pump contract and wire protocols
 - [`AGENTS.md`](AGENTS.md): guide for contributors and coding agents
+- [`docs/server/README.md`](docs/server/README.md): the project server and its web console
+- [`temporal/README.md`](temporal/README.md), [`sim/README.md`](sim/README.md) and [`deploy/temporal/README.md`](deploy/temporal/README.md): the separate tools
 - [`docs/README.md`](docs/README.md): index of the historical planning and release record. Those files are kept as written and are not maintained
 
 ## Security
@@ -1193,6 +1288,9 @@ vivi skills install ~/.agents/skills     # writes vivi/, tugboat/, speedboat/
   copy it to a machine you do not trust.
 - `vivi pool dispatch` runs an agent with the account and environment the pool
   gives it. A `local` pool has no isolation: the worker runs as you.
+- The web console under `/ui` on `vivi server` has no sign-in and shows every
+  hosted project that is not archived or retired, including mail. Serve the
+  server where only trusted people can reach it.
 - `POST /v1/reply/check/<kind>` on `vivi server` takes no key: it only parses
   the posted text and stores nothing. Serve it where your pool workers, and
   not the public, can reach it.

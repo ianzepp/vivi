@@ -4,7 +4,9 @@
 
 Vivi is the project mailspace for private agents: durable, project-local
 coordination state — tasks, needs, wants, mail, memos, roles, goals, and
-executable work graphs — driven by the `vivi` CLI.
+executable work graphs — driven by the `vivi` CLI. Around the mailspace sit
+pools and declared slots, the pump and its flows, the model proxy, a project
+server with a read-only web console, and sync.
 
 The codebase is Rust, Edition 2024, with the toolchain pinned in
 `rust-toolchain.toml`. Treat `Cargo.toml`, `README.md`, and the code as the
@@ -13,11 +15,12 @@ source of truth when these instructions drift.
 ## Sibling repositories
 
 Vivi was split out of one repository on 2026-09-21. This repo owns the
-mailspace half only:
+mailspace half and everything built on it; the email and PTY halves live in
+the siblings:
 
 | Repo | Owns |
 | --- | --- |
-| `vivi` (this repo) | Project mailspaces, roles, goals, work graphs, the `vivi` binary, and the `vivi`, `tugboat` and `speedboat` agent skills |
+| `vivi` (this repo) | Project mailspaces, roles, goals, work graphs, pools and slots, the pump, the proxy, the project server and console, the `vivi` binary, and the `vivi`, `tugboat` and `speedboat` agent skills |
 | `vivi-mail` | IMAP, SMTP, the direct Proton API, sync, send, the local email archive, search, drafts, and the `~/.vivarium/` home |
 | `vivi-pty` | The project-scoped PTY runtime adapter |
 
@@ -28,16 +31,62 @@ The three share no code and no data. The mailspace lives at
 ## Current Shape
 
 - Package: `vivi`
-- Binary: `vivi`, defined explicitly with `autobins = false`
+- Binary: `vivi`, defined explicitly with `autobins = false`. A `vivi-server`
+  link to it runs the same server as `vivi server run`
 - Storage: project-local SQLite at `<project>/.vivi/mail.sqlite`, with
-  markdown bodies and blobs under the same directory
+  markdown bodies and blobs under the same directory. The schema version is
+  `STORAGE_SCHEMA_VERSION` in `crates/vivi-storage/src/storage/schema.rs`
+  (12); a binary refuses a store with a newer version
 - Project mailspaces: tasks, needs, wants, mail, memos, roles, **goal path
   registry** (pointers to on-disk factory/campaign goal files), and
   **executable work graphs** (Mermaid import, ready frontier, task-attempt
   binding)
+- Pools and slots: `vivi pool` dispatches tasks to preseeded machines. A
+  mailspace may declare `[[slot]]` entries, one working tree per repository
+  and host; `vivi slot` reads the `slot_runs` index of the jobs they ran
+- The pump (`vivi pump`) runs the shipped flows (`flows/*.mmd`) over needs
 - User-level **model proxy** (`vivi proxy`): one loopback front door that
   path-routes to native Codex/Kimi adapters, supervised children, or an
   already-running upstream. Config is `<config_dir>/vivi/proxy.toml`.
+- Project server (`vivi server`): hosted mailspaces, MCP and rooms over HTTP,
+  with the read-only web console under `/ui`
+
+### Workspace crates
+
+The root `Cargo.toml` is its own workspace root with the `vivi` package and
+the members `crates/*`:
+
+| Crate | Holds |
+| --- | --- |
+| `vivi-core` | The CLI definitions (`cli/`), mailspace, pump, pools, routing, sync and MCP client. Most code lives here |
+| `vivi-storage` | The SQLite message store, schema and `slot_runs` index |
+| `vivi-mail` | The letter format and EML composition |
+| `vivi-error` | `VivariumError` |
+| `vivi-util` | Small shared helpers |
+| `vivi-skills` | The skill files embedded in the binary |
+| `vivi-proxy` | The model proxy |
+| `vivi-server` | Hosted projects, MCP endpoint and rooms |
+| `vivi-console` | The read-only web console that the server mounts under `/ui` |
+| `vivi-mind` | The hub-wide mind service (`vivi mind`) |
+| `vivi-monitor` | The terminal monitor (`vivi monitor`) |
+| `vivi-doctor` | The `vivi doctor` checks |
+| `vivi-report` | The `vivi report` views |
+| `vivi-update` | `vivi update`, `versions` and `uninstall` |
+
+### Separate workspaces and tools
+
+These are not members of the root workspace. `cargo build` and
+`cargo test` at the root never compile them.
+
+| Path | What it is | How to test it |
+| --- | --- | --- |
+| `sim/` | The pump simulator: the real pump loop against a simulated world on a virtual clock (own Cargo workspace) | `cd sim && cargo run --release` |
+| `temporal/` | The Temporal runtime for large projects: need, slice and lander workflows and the `vivi-temporal` worker (own Cargo workspace) | `cd temporal && cargo test`; needs the `temporal` CLI on `PATH` |
+| `lab/lander/` | Python `compose`, `gate` and a dry-run batch-and-bisect `lander` | `python3 lab/lander/test_lander.py` |
+| `deploy/temporal/` | Install scripts for a self-hosted Temporal server and Postgres under systemd | none; read its README |
+
+The pump, flow, pool and slots stay supported for smaller projects. The
+Temporal runtime is the option for large ones.
 
 ## Agent skills
 
@@ -136,19 +185,26 @@ Do not encode Fleet roles inside Vivi core.
 
 `src/main.rs` should keep the current shape:
 
-- `main()` parses `Cli`, initializes tracing, calls `run(...)`, prints errors to
-  stderr, and exits nonzero on failure.
+- `main()` installs the broken-pipe guard, dispatches the `vivi-server` name
+  to the server before any runtime exists, then parses `Cli`, initializes
+  tracing, calls `run(...)`, prints errors to stderr, and exits nonzero on
+  failure.
 - `run(...)` returns `Result<(), VivariumError>`.
-- Shared library behavior belongs under `src/lib.rs` modules; CLI dispatch
-  glue can stay in `src/main.rs` and runner modules.
+- Library behavior belongs in the `crates/*` members, most of it in
+  `crates/vivi-core`. The root package holds the binary and its CLI dispatch
+  glue (`src/local_*_command.rs`, `src/remote_mode.rs`).
 
 ## Configuration
 
 - The mailspace config is `<project>/.vivi/mailspace.toml`.
 - `--project` names the project root; otherwise the nearest ancestor holding
   `.vivi/mailspace.toml` wins.
-- This repo holds no credentials and resolves no user-level home directory.
-- Config is `serde` + `toml`.
+- A base config (`base = true` in a `.vivi/mailspace.toml` above the project)
+  is merged under the project's file; see `crates/vivi-core/src/mailspace/inherit.rs`.
+- This repo holds no credentials. User-level state lives under `$VIVI_HOME`
+  (default `~/.vivi`: the machine key, the server home) and the platform config
+  dir (`vivi/proxy.toml`, the pump service registry).
+- Config is `serde` + `toml`; edits that must keep comments use `toml_edit`.
 
 ## Validation
 
@@ -165,8 +221,14 @@ as risk increases:
 - `cargo test --workspace` — the full gate. A bare `cargo test` at the root
   runs only the root `vivi` package (970 tests on 2026-11-10) and skips every
   `crates/*` member, `vivi-core` included
+- The separate workspaces and tools have their own checks (see Current
+  Shape): `cd temporal && cargo test` (needs the `temporal` CLI),
+  `cd sim && cargo run --release`, and `python3 lab/lander/test_lander.py`.
+  Run them when you change what they exercise; `vivi-core` changes can break
+  the `sim/` build, which depends on it
 
-Measured on burgus (M5 Max, 18 cores) on 2026-11-10, after the crate split:
+Measured on burgus (now pepper; M5 Max, 18 cores) on 2026-11-10, after the
+crate split:
 
 - `cargo test --workspace --quiet --no-fail-fast` (5,846 tests, 14 ignored,
   134 suites): 248 s from a fresh worktree, 229 s after a version bump that
@@ -189,7 +251,7 @@ Markdown link scan when the touched file contains links.
 
 ## Measured development loop
 
-Measured on burgus on 2026-10-19, before the crate split, with a warm
+Measured on burgus (now pepper) on 2026-10-19, before the crate split, with a warm
 development target; the `cargo test` rows then covered the whole codebase and
 now cover the root package only. These are
 wall times, including incremental compilation where applicable. Measure again
@@ -237,10 +299,13 @@ crates include:
 
 - CLI and runtime: `clap`, `tokio`, `tracing-subscriber`
 - Config and errors: `serde`, `serde_json`, `toml`, `thiserror`
-- Local message composition and parsing: `lettre`, `mail-builder`, `mail-parser`
-- Storage and identity: `rusqlite`, `sha2`, `hex`, `chrono`
+- Local message composition and parsing: `mail-builder`, `mail-parser`
+- Storage and identity: `rusqlite`, `sha2`, `hex`, `chrono`, `ed25519-dalek`
+- Config edits: `toml_edit` (comment-preserving writes)
+- HTTP: `axum` and `tower-http` (server, console, proxy), `reqwest`
+  (proxy, update, doctor, mind, judgment provider)
+- Terminal UI: `ratatui`, `crossterm` (`vivi-monitor`)
 - Process probing: `sysinfo`
-- Judgment provider: `reqwest`
 - Paths: `dirs`
 
 Do not add a new dependency for small local logic that is already covered by

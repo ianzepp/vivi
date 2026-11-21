@@ -3,7 +3,7 @@
 One letter format serves every stored need, want, task, pump record, mail and
 chat letter and every role reply: TOML front matter between two `+++` fence
 lines, then Markdown prose. The same parser reads all of them
-(`src/letter.rs`). In a stored letter the front matter carries the keys vivi
+(`crates/vivi-mail/src/letter.rs`). In a stored letter the front matter carries the keys vivi
 acts on (`done_when`, `depends_on`, and so on) and the prose is for the reader.
 In a role reply the front matter carries the answer word and the role's typed
 fields. The pump reads the front matter
@@ -311,8 +311,10 @@ An envelope carries judgment and reports only. No field is a SHA, a published
 ref, a merged flag, an exit code or a commit that the pump acts on. Those come
 from the runner and from the repository history.
 
-The `[[check]]` table is `{cmd, result, seconds}` with `result` one of the
-exact words `pass`, `fail` or `skipped`, and `seconds` a duration: any finite,
+The `[[check]]` table is `{cmd, result, seconds}` plus an optional `detail`
+(free text, for example which tests failed). `result` is exactly one of the
+words `pass`, `fail` or `skipped`, with no added text (put detail in `detail`
+or the prose), and `seconds` is a duration: any finite,
 non-negative number, written as an integer or a decimal, fractional seconds
 retained, e.g. `seconds = 41.5`.
 
