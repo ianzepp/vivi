@@ -6,7 +6,6 @@ use std::time::Instant;
 
 use vivi_core::pump::boardpass::BoardPass;
 use vivi_core::pump::run::{Carry, step};
-use vivi_core::pump::state::State;
 use vivi_core::pump::store::{DB_FILENAME, PumpStore};
 
 use crate::host::Record;
