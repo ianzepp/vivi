@@ -421,3 +421,7 @@ pub enum ServerSubcommand {
         args: Vec<String>,
     },
 }
+
+#[cfg(test)]
+#[path = "cli_test.rs"]
+mod tests;
