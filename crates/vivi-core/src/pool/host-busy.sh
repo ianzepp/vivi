@@ -26,10 +26,11 @@ busy_take() {
   for token in "$root"/.busy/*; do
     [ -f "$token" ] || continue
     read -r pid nonce_value < "$token"
-    # Verify identity, not merely kill -0 (which accepts reused PIDs).
-    if ! ps -ww -E -o command= -p "$pid" 2>/dev/null | tr ' \t' '\n\n' | grep -qxF "VIVI_BUSY_TOKEN=$nonce_value"; then
-      # Linux ps uses e, macOS -E. /proc is also exact and avoids ps variants.
-      if [ ! -r "/proc/$pid/environ" ] || ! tr '\0' '\n' < "/proc/$pid/environ" | grep -qxF "VIVI_BUSY_TOKEN=$nonce_value"; then rm -f "$token"; fi
+    # Verify identity, not merely kill -0 (which accepts reused PIDs): the
+    # guardian carries its nonce as an argument. Arguments, not the
+    # environment: macOS 27 shows no other process's environment.
+    if ! ps -ww -o command= -p "$pid" 2>/dev/null | tr ' \t' '\n\n' | grep -qxF "$nonce_value"; then
+      rm -f "$token"
     fi
   done
   n=$(find "$root/.busy" -type f | wc -l)
@@ -39,7 +40,7 @@ busy_take() {
     # The flock serialises token selection and complete record publication.
     export -f alive
     export SYSTEM
-    env VIVI_BUSY_TOKEN="$nonce" nohup bash -c '
+    nohup bash -c '
       token=$1; dir=$2; nonce=$3; seen=0
       : > "$dir/busy-ready.$nonce"
       for ((i=0; ; i++)); do

@@ -50,7 +50,9 @@ impl Runner for Shell {
 
 /// A worker home with its root and `worker.conf`.
 fn home(conf: &str) -> tempfile::TempDir {
-    let home = tempfile::tempdir().unwrap();
+    // The worker refuses symlinked slot paths, and macOS's temp dir is under
+    // the `/var` -> `/private/var` link, so build the home on the physical path.
+    let home = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let root = home.path().join("vivi-worker");
     std::fs::create_dir_all(&root).unwrap();
     let dirs = home.path().join("dirs");

@@ -29,6 +29,12 @@ impl Runner for Shell {
     }
 }
 
+/// A temp dir on its physical path. Explicit slots refuse symlinked
+/// directories, and macOS's temp dir is under the `/var` -> `/private/var` link.
+fn physical_tempdir() -> tempfile::TempDir {
+    tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap()
+}
+
 fn provider(home: &Path, space: &str, declarations: &[(&str, &str)]) -> ExplicitProvider {
     let mut config: PoolConfig = toml::from_str("provider='ssh'\nslots=20\n").unwrap();
     config.explicit_slots = declarations
@@ -66,7 +72,7 @@ fn claim(p: &ExplicitProvider, space: &str, repo: &str) -> super::super::claim::
 
 #[test]
 fn claims_only_a_free_slot_of_the_repository_by_declared_name() {
-    let home = tempfile::tempdir().unwrap();
+    let home = physical_tempdir();
     let p = provider(
         home.path(),
         "faberlang",
@@ -98,7 +104,7 @@ fn claims_only_a_free_slot_of_the_repository_by_declared_name() {
 
 #[test]
 fn host_budget_is_shared_between_mailspaces_released_and_dead_holders_reclaimed() {
-    let home = tempfile::tempdir().unwrap();
+    let home = physical_tempdir();
     budget(home.path(), 1);
     let a = provider(home.path(), "faberlang", &[("radix-1", "faberlang/radix")]);
     let b = provider(home.path(), "vivi", &[("vivi-1", "ianzepp/vivi")]);
@@ -219,7 +225,7 @@ fn run_job(p: &ExplicitProvider, home: &Path, source: &Path, number: u32) {
 
 #[test]
 fn two_jobs_reuse_exact_dir_preserve_mtimes_output_and_exclude_records() {
-    let home = tempfile::tempdir().unwrap();
+    let home = physical_tempdir();
     budget(home.path(), 1);
     let source = home.path().join("remotes/faberlang/radix");
     std::fs::create_dir_all(&source).unwrap();
@@ -278,7 +284,7 @@ fn two_jobs_reuse_exact_dir_preserve_mtimes_output_and_exclude_records() {
 
 #[test]
 fn concurrent_mailspace_claims_cannot_exceed_one_host_place() {
-    let home = tempfile::tempdir().unwrap();
+    let home = physical_tempdir();
     budget(home.path(), 1);
     let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
     let winners = std::thread::scope(|scope| {

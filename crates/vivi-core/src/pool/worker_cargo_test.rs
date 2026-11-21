@@ -2,6 +2,19 @@
 use super::*;
 use std::os::unix::fs::PermissionsExt;
 
+/// The build-related lines of a job's `env` dump. Failure messages print only
+/// these: the full dump carries the test runner's environment, secrets included.
+fn build_vars(env: &str) -> String {
+    env.lines()
+        .filter(|line| {
+            ["CARGO_", "RUSTC", "SCCACHE_", "TMPDIR="]
+                .iter()
+                .any(|p| line.starts_with(p))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn tool(home: &Path, name: &str, body: &str) {
     let bin = home.join("tools");
     std::fs::create_dir_all(&bin).unwrap();
@@ -63,7 +76,8 @@ fn persistent_cargo_paths_are_per_slot_padded_and_reused_after_boundary_removal(
     let env = String::from_utf8_lossy(&files["/work/env.txt"]);
     assert!(
         env.contains(&format!("CARGO_TARGET_DIR={}\n", a.display())),
-        "{env}"
+        "{}",
+        build_vars(&env)
     );
     assert!(!env.contains("SCCACHE_SERVER_UDS="));
     p.destroy(&first.id).unwrap();
@@ -163,7 +177,7 @@ fn persistent_cargo_sccache_server_has_stable_tmp_cwd_and_socket() {
         "CARGO_INCREMENTAL=0\n",
         "SCCACHE_SERVER_UDS=",
     ] {
-        assert!(env.contains(setting), "{env}");
+        assert!(env.contains(setting), "{}", build_vars(&env));
     }
     p.destroy(&slot.id).unwrap();
     assert!(
@@ -188,7 +202,7 @@ fn persistent_cargo_off_keeps_the_old_environment_and_creates_no_cache() {
         .unwrap()
         .unwrap();
     let env = String::from_utf8_lossy(&files["/work/env.txt"]);
-    assert!(!env.contains("CARGO_TARGET_DIR="), "{env}");
+    assert!(!env.contains("CARGO_TARGET_DIR="), "{}", build_vars(&env));
     p.destroy(&slot.id).unwrap();
     assert!(!home.path().join("vivi-worker/slot-targets").exists());
 }
