@@ -1,6 +1,6 @@
 [package]
 name = "vivi-console"
-version = "24.0.0"
+version = "25.0.0"
 edition = "2024"
 description = "The vivi read-only web console, mounted by vivi server under /ui"
 license = "MIT"

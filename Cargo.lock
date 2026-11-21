@@ -2561,7 +2561,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vivi"
-version = "24.0.0"
+version = "25.0.0"
 dependencies = [
  "axum",
  "base64",
@@ -2600,7 +2600,7 @@ dependencies = [
 
 [[package]]
 name = "vivi-console"
-version = "24.0.0"
+version = "25.0.0"
 dependencies = [
  "axum",
  "chrono",
@@ -2619,7 +2619,7 @@ dependencies = [
 
 [[package]]
 name = "vivi-core"
-version = "24.0.0"
+version = "25.0.0"
 dependencies = [
  "base64",
  "chrono",
@@ -2651,7 +2651,7 @@ dependencies = [
 
 [[package]]
 name = "vivi-doctor"
-version = "24.0.0"
+version = "25.0.0"
 dependencies = [
  "chrono",
  "reqwest",
@@ -2671,14 +2671,14 @@ dependencies = [
 
 [[package]]
 name = "vivi-error"
-version = "24.0.0"
+version = "25.0.0"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
 name = "vivi-mail"
-version = "24.0.0"
+version = "25.0.0"
 dependencies = [
  "chrono",
  "mail-builder",
@@ -2691,7 +2691,7 @@ dependencies = [
 
 [[package]]
 name = "vivi-mind"
-version = "24.0.0"
+version = "25.0.0"
 dependencies = [
  "chrono",
  "reqwest",
@@ -2709,7 +2709,7 @@ dependencies = [
 
 [[package]]
 name = "vivi-monitor"
-version = "24.0.0"
+version = "25.0.0"
 dependencies = [
  "chrono",
  "crossterm",
@@ -2728,7 +2728,7 @@ dependencies = [
 
 [[package]]
 name = "vivi-proxy"
-version = "24.0.0"
+version = "25.0.0"
 dependencies = [
  "axum",
  "bytes",
@@ -2753,7 +2753,7 @@ dependencies = [
 
 [[package]]
 name = "vivi-report"
-version = "24.0.0"
+version = "25.0.0"
 dependencies = [
  "chrono",
  "mail-parser",
@@ -2769,7 +2769,7 @@ dependencies = [
 
 [[package]]
 name = "vivi-server"
-version = "24.0.0"
+version = "25.0.0"
 dependencies = [
  "aes-gcm",
  "axum",
@@ -2803,7 +2803,7 @@ dependencies = [
 
 [[package]]
 name = "vivi-skills"
-version = "24.0.0"
+version = "25.0.0"
 dependencies = [
  "dirs",
  "serde",
@@ -2814,7 +2814,7 @@ dependencies = [
 
 [[package]]
 name = "vivi-storage"
-version = "24.0.0"
+version = "25.0.0"
 dependencies = [
  "chrono",
  "hex",
@@ -2831,7 +2831,7 @@ dependencies = [
 
 [[package]]
 name = "vivi-update"
-version = "24.0.0"
+version = "25.0.0"
 dependencies = [
  "dirs",
  "flate2",
@@ -2850,7 +2850,7 @@ dependencies = [
 
 [[package]]
 name = "vivi-util"
-version = "24.0.0"
+version = "25.0.0"
 dependencies = [
  "dirs",
  "mail-parser",
